@@ -1,0 +1,17 @@
+{
+  "name": "@railsim/data",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "路線・車両・シナリオのデータスキーマとコンパイラ",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*"
+  },
+  "dependencies": {
+    "@railsim/core": "*",
+    "zod": "^3.24.1"
+  }
+}
