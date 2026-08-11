@@ -4,6 +4,7 @@ import {
   type AdhesionSpec,
   type Alignment,
   type BrakeControlSpec,
+  DEFAULT_SUSPENSION,
   type ConsistSpec,
   type CouplerSpec,
   type DavisCoefficients,
@@ -114,6 +115,7 @@ export function testVehicle(options: TestVehicleOptions = {}): VehicleSpec {
     tractionLinkHeight: 0.6,
     brake: TEST_VEHICLE_BRAKE,
     traction: options.traction === undefined ? TEST_TRACTION : options.traction,
+    suspension: DEFAULT_SUSPENSION,
   };
 }
 

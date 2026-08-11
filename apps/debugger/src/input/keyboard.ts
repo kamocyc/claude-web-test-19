@@ -1,5 +1,5 @@
 import { NEUTRAL_INPUT, type ControlInput } from '@railsim/core';
-import type { CameraMode } from '../render/cameras.ts';
+import { CAMERA_MODES, type CameraMode } from '../render/cameras.ts';
 
 export interface DriverDeskOptions {
   readonly powerNotchCount: number;
@@ -64,17 +64,14 @@ export class DriverDesk {
           this.doorsClosed = !this.doorsClosed;
           break;
         case '1':
-          this.options.onCameraChange?.('chase');
-          break;
         case '2':
-          this.options.onCameraChange?.('side');
-          break;
         case '3':
-          this.options.onCameraChange?.('overhead');
-          break;
         case '4':
-          this.options.onCameraChange?.('free');
+        case '5': {
+          const mode = CAMERA_MODES[Number(key) - 1];
+          if (mode) this.options.onCameraChange?.(mode);
           break;
+        }
         case 'p':
           this.options.onPauseToggle?.();
           break;

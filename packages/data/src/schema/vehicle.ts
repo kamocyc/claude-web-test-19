@@ -66,6 +66,31 @@ export const vehicleBrakeSchema = z.object({
   brakedAxleRatio: z.number().min(0).max(1).default(1),
 });
 
+export const suspensionSchema = z.object({
+  /** ロールの固有振動数 [Hz] */
+  rollFrequency: z.number().positive().default(0.85),
+  /** ロールの減衰比 */
+  rollDamping: z.number().positive().default(0.22),
+  /** 車体傾斜率（フレキシビリティ係数）。大きいほど乗客の感じる横 G が増える。 */
+  rollFlexibility: z.number().nonnegative().default(0.3),
+  /** 上下動の固有振動数 [Hz] */
+  bounceFrequency: z.number().positive().default(1.2),
+  bounceDamping: z.number().positive().default(0.28),
+  /** ピッチングの固有振動数 [Hz] */
+  pitchFrequency: z.number().positive().default(1.35),
+  pitchDamping: z.number().positive().default(0.32),
+  /** 前後加速度 1 m/s^2 あたりのピッチ角 [rad] */
+  pitchGain: z.number().nonnegative().default(0.006),
+  /** 左右動の固有振動数 [Hz] */
+  swayFrequency: z.number().positive().default(1.0),
+  swayDamping: z.number().positive().default(0.24),
+  /** 横加速度 1 m/s^2 あたりの左右変位 [m] */
+  swayGain: z.number().nonnegative().default(0.012),
+  /** ヨーイングの固有振動数 [Hz] */
+  yawFrequency: z.number().positive().default(1.5),
+  yawDamping: z.number().positive().default(0.3),
+});
+
 export const carSchema = z.object({
   id: z.string(),
   /** 車種（表示用）。Mc/Tc は先頭車。 */
@@ -96,6 +121,8 @@ export const carSchema = z.object({
   tractionLinkHeight: z.number().positive().default(0.6),
   brake: vehicleBrakeSchema.default({}),
   traction: vvvfSchema.nullable().default(null),
+  /** 車体を支えるばねの動揺特性 */
+  suspension: suspensionSchema.default({}),
 });
 
 export const couplerSchema = z.object({

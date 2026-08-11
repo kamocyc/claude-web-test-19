@@ -1,4 +1,5 @@
 import type { PointTable, SpanTable, StepTable } from '../math/table.ts';
+import type { TrackIrregularity } from '../physics/irregularity.ts';
 import type { Alignment } from '../track/alignment.ts';
 import type { Meters, MetersPerSecond, Seconds } from '../units.ts';
 
@@ -125,6 +126,8 @@ export interface CompiledRoute {
   readonly tunnels: SpanTable<TunnelSection>;
   readonly beacons: PointTable<BeaconPayload>;
   readonly safetySections: SpanTable<SafetySystemKind>;
+  /** 軌道狂い（距離程の関数。線路そのものの性質なので路線データが持つ） */
+  readonly irregularity: TrackIrregularity;
   /** 現示ごとの既定許容速度 */
   readonly aspectSpeeds: AspectSpeeds;
 }

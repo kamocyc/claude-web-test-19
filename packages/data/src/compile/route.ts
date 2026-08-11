@@ -3,6 +3,7 @@ import {
   PointTable,
   SpanTable,
   StepTable,
+  TrackIrregularity,
   buildAlignment,
   kmhToMps,
   mmToM,
@@ -299,6 +300,20 @@ export function compileRoute(definition: RouteDefinition): CompiledRoute {
     G: kmhToMps(def.aspectSpeeds.G),
   };
 
+  const irr = def.trackIrregularity;
+  const irregularity = new TrackIrregularity(
+    irr.seed,
+    {
+      verticalAmplitude: mmToM(irr.verticalAmplitude),
+      lateralAmplitude: mmToM(irr.lateralAmplitude),
+      crossLevelAmplitude: mmToM(irr.crossLevelAmplitude),
+      minWavelength: irr.minWavelength,
+      maxWavelength: irr.maxWavelength,
+      components: 9,
+    },
+    irr.level,
+  );
+
   return {
     id: def.id,
     name: def.name,
@@ -313,6 +328,7 @@ export function compileRoute(definition: RouteDefinition): CompiledRoute {
     tunnels,
     beacons: new PointTable(beacons),
     safetySections,
+    irregularity,
     aspectSpeeds,
   };
 }

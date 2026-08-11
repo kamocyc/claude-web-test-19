@@ -90,6 +90,61 @@ export interface AdhesionSpec {
   readonly creepReferenceSpeed: MetersPerSecond;
 }
 
+/**
+ * 車体を支えるばね（枕ばね・軸ばね）の特性。
+ * 車体の動揺は各自由度の固有振動数と減衰比で決まるため、
+ * ばね定数そのものではなく振動特性としてパラメータ化する。
+ */
+export interface SuspensionSpec {
+  /** ロールの固有振動数 [Hz] */
+  readonly rollFrequency: number;
+  /** ロールの減衰比 */
+  readonly rollDamping: number;
+  /**
+   * 車体傾斜率（フレキシビリティ係数）。
+   * 横加速度によるつり合い角に対して、車体がどれだけ余分に外側へ傾くかの比。
+   * 空気ばね車で 0.2〜0.4 程度。大きいほど乗客の感じる横 G が増える。
+   */
+  readonly rollFlexibility: number;
+  /** 上下動の固有振動数 [Hz] */
+  readonly bounceFrequency: number;
+  /** 上下動の減衰比 */
+  readonly bounceDamping: number;
+  /** ピッチングの固有振動数 [Hz] */
+  readonly pitchFrequency: number;
+  /** ピッチングの減衰比 */
+  readonly pitchDamping: number;
+  /** 前後加速度 1 m/s^2 あたりのピッチ角 [rad] */
+  readonly pitchGain: number;
+  /** 左右動の固有振動数 [Hz] */
+  readonly swayFrequency: number;
+  /** 左右動の減衰比 */
+  readonly swayDamping: number;
+  /** 横加速度 1 m/s^2 あたりの左右変位 [m] */
+  readonly swayGain: number;
+  /** ヨーイングの固有振動数 [Hz] */
+  readonly yawFrequency: number;
+  /** ヨーイングの減衰比 */
+  readonly yawDamping: number;
+}
+
+/** 空気ばね付き通勤形電車の代表的な動揺特性 */
+export const DEFAULT_SUSPENSION: SuspensionSpec = {
+  rollFrequency: 0.85,
+  rollDamping: 0.22,
+  rollFlexibility: 0.3,
+  bounceFrequency: 1.2,
+  bounceDamping: 0.28,
+  pitchFrequency: 1.35,
+  pitchDamping: 0.32,
+  pitchGain: 0.006,
+  swayFrequency: 1.0,
+  swayDamping: 0.24,
+  swayGain: 0.012,
+  yawFrequency: 1.5,
+  yawDamping: 0.3,
+};
+
 /** 連結器（緩衝器を含む）の仕様 */
 export interface CouplerSpec {
   /** 遊間の全幅 [m]。この範囲では力を伝えない。 */
@@ -140,6 +195,8 @@ export interface VehicleSpec {
   readonly brake: VehicleBrakeSpec;
   /** 動力装置（付随車は null） */
   readonly traction: VehicleTractionSpec | null;
+  /** 車体を支えるばねの動揺特性 */
+  readonly suspension: SuspensionSpec;
 }
 
 /** 力行制御（編成としての取り扱い） */

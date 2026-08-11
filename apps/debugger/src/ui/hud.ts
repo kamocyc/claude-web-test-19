@@ -21,17 +21,29 @@ export class Hud {
       `<div class="speed">${mpsToKmh(snap.speed).toFixed(1)} <span class="label">km/h</span></div>`,
     );
     rows.push(
-      row('制限 / パターン', [
-        `${mpsToKmh(Math.min(snap.speedLimit, sim.scenario.route.maxSpeed)).toFixed(0)} km/h`,
-        snap.safety.indication.patternSpeed === null
-          ? '—'
-          : `${mpsToKmh(snap.safety.indication.patternSpeed).toFixed(0)} km/h`,
-      ].join(' / ')),
+      row(
+        '制限 / パターン',
+        [
+          `${mpsToKmh(Math.min(snap.speedLimit, sim.scenario.route.maxSpeed)).toFixed(0)} km/h`,
+          snap.safety.indication.patternSpeed === null
+            ? '—'
+            : `${mpsToKmh(snap.safety.indication.patternSpeed).toFixed(0)} km/h`,
+        ].join(' / '),
+      ),
     );
     rows.push(row('時刻', `${formatClock(snap.time)}（経過 ${snap.elapsed.toFixed(1)}s）`));
     rows.push(row('距離程', `${snap.front.toFixed(1)} m`));
     rows.push(
-      row('ノッチ', snap.emergency ? '<span class="danger">非常</span>' : snap.brakeNotch > 0 ? `B${snap.brakeNotch}` : snap.powerNotch > 0 ? `P${snap.powerNotch}` : '切'),
+      row(
+        'ノッチ',
+        snap.emergency
+          ? '<span class="danger">非常</span>'
+          : snap.brakeNotch > 0
+            ? `B${snap.brakeNotch}`
+            : snap.powerNotch > 0
+              ? `P${snap.powerNotch}`
+              : '切',
+      ),
     );
     rows.push(row('加速度', `${snap.acceleration.toFixed(3)} m/s²`));
     rows.push(row('引張力', `${(snap.tractiveEffort / 1000).toFixed(1)} kN`));
@@ -43,8 +55,21 @@ export class Hud {
     );
     rows.push(row('BC 圧', `${paToKpa(snap.cylinderPressure).toFixed(0)} kPa`));
     rows.push(row('主回路電流', `${snap.motorCurrent.toFixed(0)} A`));
-    rows.push(row('勾配 / 曲率', `${(snap.grade * 1000).toFixed(1)} ‰ / ${radius(snap.curvature)}`));
-    rows.push(row('左右加速度', `${snap.lateralAcceleration.toFixed(3)} m/s²`));
+    rows.push(
+      row('勾配 / 曲率', `${(snap.grade * 1000).toFixed(1)} ‰ / ${radius(snap.curvature)}`),
+    );
+    rows.push(
+      row(
+        '体感 前後 / 左右',
+        `${snap.body.feltLongitudinal.toFixed(2)} / ${snap.body.feltLateral.toFixed(2)} m/s²`,
+      ),
+    );
+    rows.push(
+      row(
+        '車体 ロール / ピッチ',
+        `${((snap.body.roll * 180) / Math.PI).toFixed(2)}° / ${((snap.body.pitch * 180) / Math.PI).toFixed(2)}°`,
+      ),
+    );
 
     if (snap.nextSignal) {
       const aspect = snap.nextSignal.state.aspect;
@@ -68,7 +93,8 @@ export class Hud {
     const flags: string[] = [];
     if (snap.safety.indication.bell) flags.push('<span class="warn">警報</span>');
     if (snap.safety.indication.chime) flags.push('<span class="ok">確認</span>');
-    if (snap.safety.indication.patternApproach) flags.push('<span class="warn">パターン接近</span>');
+    if (snap.safety.indication.patternApproach)
+      flags.push('<span class="warn">パターン接近</span>');
     if (snap.safety.emergencyBrake) flags.push('<span class="danger">保安非常</span>');
     if (snap.safety.serviceBrakeNotch !== null) flags.push('<span class="warn">保安常用</span>');
     if (snap.regenerationLost) flags.push('<span class="warn">回生失効</span>');
@@ -83,13 +109,18 @@ export class Hud {
         row(
           '直近の停止',
           `${last.stationName} 誤差 ${last.stopError >= 0 ? '+' : ''}${last.stopError.toFixed(2)} m` +
-            (last.delay === null ? '' : ` / ${last.delay >= 0 ? '+' : ''}${last.delay.toFixed(0)}s`),
+            (last.delay === null
+              ? ''
+              : ` / ${last.delay >= 0 ? '+' : ''}${last.delay.toFixed(0)}s`),
         ),
       );
     }
 
     rows.push(
-      row('表示', `${cameraLabel} / ${rate.toFixed(2)}x${paused ? ' <span class="warn">停止中</span>' : ''}`),
+      row(
+        '表示',
+        `${cameraLabel} / ${rate.toFixed(2)}x${paused ? ' <span class="warn">停止中</span>' : ''}`,
+      ),
     );
 
     this.element.innerHTML = rows.join('');

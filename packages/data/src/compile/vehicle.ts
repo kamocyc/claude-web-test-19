@@ -70,6 +70,7 @@ export function compileVehicle(definition: VehicleDefinition): ConsistSpec {
     tractionLinkHeight: car.tractionLinkHeight,
     brake: compileBrake(car.brake),
     traction: compileTraction(car.traction),
+    suspension: car.suspension,
   }));
 
   const notchDeceleration = def.brake.notchDeceleration?.map(kmhsToMps2);

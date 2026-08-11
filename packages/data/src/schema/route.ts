@@ -161,6 +161,29 @@ export const routeSchema = z.object({
     })
     .default({}),
 
+  /**
+   * 軌道狂い（軌道の不整）。距離程の関数として生成されるため、
+   * 同じ地点では常に同じ揺れ方になる。
+   */
+  trackIrregularity: z
+    .object({
+      /** 狂いの大きさの倍率（0 = 完全に平滑、1 = 整備された在来線、2 = 荒れた軌道） */
+      level: z.number().nonnegative().default(1),
+      /** 狂いの形状を決めるシード */
+      seed: z.number().int().default(12345),
+      /** 高低狂いの標準偏差 [mm] */
+      verticalAmplitude: z.number().nonnegative().default(2.5),
+      /** 通り狂いの標準偏差 [mm] */
+      lateralAmplitude: z.number().nonnegative().default(2.0),
+      /** 水準狂いの標準偏差 [mm] */
+      crossLevelAmplitude: z.number().nonnegative().default(2.2),
+      /** 最短波長 [m] */
+      minWavelength: z.number().positive().default(2.5),
+      /** 最長波長 [m] */
+      maxWavelength: z.number().positive().default(45),
+    })
+    .default({}),
+
   /** ATS-SN 地上子（ロング・直下）を自動配置する */
   autoAtsSn: z
     .object({

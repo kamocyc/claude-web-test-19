@@ -3,6 +3,8 @@ import type { AdhesionConditions } from '../physics/adhesion.ts';
 import { peakAdhesion } from '../physics/adhesion.ts';
 import { computeAxleLoads, solveAxle, type AxleSolveResult } from '../physics/axle.ts';
 import { couplerForce } from '../physics/coupler.ts';
+import { SMOOTH_TRACK, type TrackIrregularity } from '../physics/irregularity.ts';
+import { CarBodyMotion, type BodyMotionState } from './bodyMotion.ts';
 import {
   gradeAcceleration,
   specificCurveResistance,
@@ -74,6 +76,8 @@ export interface VehicleRuntime {
   railForce: Newtons;
   /** トンネル内か */
   inTunnel: boolean;
+  /** 車体の動揺（ロール・ピッチ・ヨー・左右・上下）と体感加速度 */
+  readonly body: BodyMotionState;
 }
 
 export interface DynamicsEnvironment {
@@ -92,6 +96,8 @@ export interface DynamicsOptions {
   readonly initialFrontPosition?: Meters;
   /** 初速 [m/s] */
   readonly initialSpeed?: MetersPerSecond;
+  /** 軌道狂い（省略時は狂いなし） */
+  readonly irregularity?: TrackIrregularity;
 }
 
 const scratchResult: AxleSolveResult = { omega: 0, creepForce: 0, slip: 0 };
@@ -118,6 +124,9 @@ export class TrainDynamics {
   /** 車両中心間の設計距離 [m] */
   private readonly nominalGap: Float64Array;
   private readonly axleLoadScratch: Float64Array;
+  private readonly bodyMotions: CarBodyMotion[] = [];
+  /** 軌道狂い（距離程の関数。同じ場所では常に同じ揺れになる） */
+  readonly irregularity: TrackIrregularity;
   /** 編成の総質量 [kg] */
   readonly totalMass: number;
 
@@ -126,6 +135,7 @@ export class TrainDynamics {
     this.alignment = alignment;
     this.rigid = options.rigidConsist ?? false;
     this.loadFactor = options.loadFactor ?? 0;
+    this.irregularity = options.irregularity ?? SMOOTH_TRACK;
 
     const n = consist.vehicles.length;
     this.couplerForces = new Float64Array(Math.max(0, n - 1));
@@ -157,6 +167,7 @@ export class TrainDynamics {
           sliding: false,
         });
       }
+      this.bodyMotions.push(new CarBodyMotion(spec.suspension));
       this.vehicles.push({
         spec,
         index: i,
@@ -175,6 +186,7 @@ export class TrainDynamics {
         rearCouplerForce: 0,
         railForce: 0,
         inTunnel: false,
+        body: this.bodyMotions[i]!.state,
       });
       if (i > 0) {
         this.nominalGap[i - 1] = (consist.vehicles[i - 1]!.length + spec.length) / 2;
@@ -367,6 +379,38 @@ export class TrainDynamics {
     // --- 位置の更新（半陰的オイラー: 速度を更新してから位置を進める） ---
     for (const veh of this.vehicles) {
       veh.s += veh.v * dt;
+    }
+
+    // --- 車体の動揺 ---
+    this.updateBodyMotion(dt);
+  }
+
+  /**
+   * 各車の車体動揺を進める。
+   *
+   * 励振源は「曲線通過による非平衡横加速度」「前後加速度」「軌道狂い」の 3 つ。
+   * 軌道狂いは前後の台車位置で別々に読み取るので、前後台車の高低差がピッチングを、
+   * 通り狂いの差がヨーイングを生む。
+   */
+  private updateBodyMotion(dt: number): void {
+    const gauge = this.alignment.gauge;
+    for (let i = 0; i < this.vehicles.length; i++) {
+      const veh = this.vehicles[i]!;
+      const half = veh.spec.bogieSpacing / 2;
+      const front = veh.s + half;
+      const rear = veh.s - half;
+      const irr = this.irregularity;
+      this.bodyMotions[i]!.step(dt, {
+        unbalancedLateral: this.alignment.lateralAcceleration(veh.s, veh.v),
+        longitudinalAcceleration: veh.a,
+        frontVertical: irr.verticalAt(front),
+        rearVertical: irr.verticalAt(rear),
+        frontLateral: irr.lateralAt(front),
+        rearLateral: irr.lateralAt(rear),
+        crossLevel: irr.crossLevelAt(veh.s),
+        bogieSpacing: veh.spec.bogieSpacing,
+        gauge,
+      });
     }
   }
 

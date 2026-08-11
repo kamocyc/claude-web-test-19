@@ -178,3 +178,16 @@ body {
   border: 1px solid var(--line);
   border-radius: 4px;
 }
+
+#gmeter {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  pointer-events: none;
+}
+
+#gmeter canvas {
+  display: block;
+  width: 340px;
+  height: 214px;
+}

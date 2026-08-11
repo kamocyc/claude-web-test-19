@@ -218,8 +218,10 @@ export class ElectroPneumaticBrakeSystem implements BrakeSystem {
     }
     ctx.traction.requestElectricBrakeForce(electricForce);
     this.state.electricForce = electricForce;
+    // 電空の受け渡し中はわずかに不足するのが普通なので、
+    // 明確に足りていないときだけ「回生失効」として表示する
     this.state.regenerationLost =
-      requiredForce > 0 && electricForce + airActual < requiredForce * 0.999;
+      requiredForce > 0 && electricForce + airActual < requiredForce * 0.95;
   }
 
   /**

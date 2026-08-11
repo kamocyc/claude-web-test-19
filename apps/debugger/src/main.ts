@@ -1,16 +1,12 @@
 import * as THREE from 'three';
-import {
-  InputRecorder,
-  Simulation,
-  replay,
-  type Recording,
-  type Scenario,
-} from '@railsim/core';
+import { InputRecorder, Simulation, replay, type Recording, type Scenario } from '@railsim/core';
 import { createDefaultLibrary } from '@railsim/data';
 import { ChartPanel } from './charts/panel.ts';
 import { DriverDesk } from './input/keyboard.ts';
+import { createCabInterior } from './render/cab.ts';
 import { CAMERA_LABEL, CameraRig, type CameraMode } from './render/cameras.ts';
 import { TrackScene } from './render/scene.ts';
+import { GMeter } from './ui/gmeter.ts';
 import { Hud } from './ui/hud.ts';
 
 const RATES = [0.1, 0.25, 0.5, 1, 2, 4, 8];
@@ -28,6 +24,7 @@ const pauseButton = document.querySelector<HTMLButtonElement>('#pause')!;
 const rateLabel = document.querySelector<HTMLElement>('#rate')!;
 const saveButton = document.querySelector<HTMLButtonElement>('#save')!;
 const loadInput = document.querySelector<HTMLInputElement>('#load')!;
+const gmeterElement = document.querySelector<HTMLElement>('#gmeter')!;
 
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -35,6 +32,12 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 const cameraRig = new CameraRig(canvas);
 const hud = new Hud(hudElement);
 const charts = new ChartPanel(chartsElement);
+const gmeter = new GMeter(gmeterElement);
+
+// 運転席の内装はカメラの子として取り付ける。こうすると車体動揺でカメラが揺れても
+// 内装は動かず、窓の外の景色だけが揺れる（実際の運転席の見え方と同じ）。
+const cabInterior = createCabInterior();
+cameraRig.camera.add(cabInterior.group);
 
 for (const id of library.scenarioIds) {
   const option = document.createElement('option');
@@ -57,7 +60,7 @@ let replaying: Recording | null = null;
 const desk = new DriverDesk({
   powerNotchCount: scenario.consist.traction.notchCount,
   brakeNotchCount: scenario.consist.brake.notchCount,
-  onCameraChange: (mode: CameraMode) => cameraRig.setMode(mode),
+  onCameraChange: (mode: CameraMode) => applyCameraMode(mode),
   onPauseToggle: () => setPaused(!paused),
   onSingleStep: () => {
     singleStep = true;
@@ -67,6 +70,12 @@ const desk = new DriverDesk({
     updateRateLabel();
   },
 });
+
+function applyCameraMode(mode: CameraMode): void {
+  cameraRig.setMode(mode);
+  cabInterior.group.visible = mode === 'cab';
+  scene.setLeadCarVisible(mode !== 'cab');
+}
 
 function setPaused(value: boolean): void {
   paused = value;
@@ -82,11 +91,15 @@ function restart(id = scenarioId): void {
   scenario = library.scenario(scenarioId);
   sim = new Simulation(scenario);
   scene = new TrackScene(scenario.route, sim);
+  // カメラの子（運転席内装）を描画させるため、カメラをシーングラフに入れる
+  scene.scene.add(cameraRig.camera);
   recorder = new InputRecorder();
   replaying = null;
   sampleTimer = 0;
   desk.reset();
   charts.clear();
+  gmeter.clear();
+  applyCameraMode(cameraRig.mode);
   setPaused(false);
 }
 
@@ -124,8 +137,7 @@ loadInput.addEventListener('change', async () => {
 });
 
 /** 編成長 [m] */
-const trainLength = (): number =>
-  scenario.consist.vehicles.reduce((a, v) => a + v.length, 0);
+const trainLength = (): number => scenario.consist.vehicles.reduce((a, v) => a + v.length, 0);
 
 function resize(): void {
   const width = canvas.clientWidth;
@@ -159,13 +171,21 @@ function frame(now: number): void {
   }
 
   scene.update(sim);
-  cameraRig.update({ frame: scene.frontFrame(sim), trainLength: trainLength() });
+  if (cameraRig.mode === 'cab') cabInterior.update(sim);
+  cameraRig.update({
+    frame: scene.frontFrame(sim),
+    trainLength: trainLength(),
+    cabPosition: scene.cabPosition,
+    cabQuaternion: scene.cabQuaternion,
+  });
   renderer.render(scene.scene, cameraRig.camera);
   hud.update(sim, CAMERA_LABEL[cameraRig.mode], RATES[rateIndex]!, paused);
+  gmeter.draw(sim);
   charts.draw();
 }
 
-cameraRig.setMode('chase');
+scene.scene.add(cameraRig.camera);
+applyCameraMode('cab');
 updateRateLabel();
 resize();
 requestAnimationFrame(frame);

@@ -12,6 +12,7 @@ import type { SafetyContext, SafetyOutput, SafetySystem } from '../safety/types.
 import { noOutput } from '../safety/types.ts';
 import { VigilanceSystem } from '../safety/vigilance.ts';
 import { SignallingSystem } from '../signalling/system.ts';
+import type { BodyMotionState } from '../train/bodyMotion.ts';
 import { TrainDynamics, type DynamicsEnvironment } from '../train/dynamics.ts';
 import { VvvfTractionSystem } from '../traction/vvvf.ts';
 import type { Meters, MetersPerSecond, Seconds } from '../units.ts';
@@ -105,6 +106,7 @@ export class Simulation {
       loadFactor: scenario.loadFactor,
       initialFrontPosition: scenario.startPosition,
       initialSpeed: scenario.startSpeed,
+      irregularity: scenario.route.irregularity,
       ...(scenario.rigidConsist === undefined ? {} : { rigidConsist: scenario.rigidConsist }),
     });
     this.traction = new VvvfTractionSystem(scenario.consist);
@@ -434,6 +436,7 @@ export class Simulation {
       curvature: dyn.vehicles[0]!.curvature,
       cant: alignment.cantAt(dyn.frontPosition),
       lateralAcceleration: alignment.lateralAcceleration(dyn.frontPosition, dyn.speed),
+      body: dyn.vehicles[0]!.body,
       speedLimit: this.currentSpeedLimit,
       tractiveEffort: this.traction.state.tractiveEffort,
       motorCurrent: this.traction.state.motorCurrent,
@@ -472,6 +475,8 @@ export interface SimSnapshot {
   curvature: number;
   cant: number;
   lateralAcceleration: number;
+  /** 先頭車の車体動揺と体感加速度 */
+  body: BodyMotionState;
   speedLimit: MetersPerSecond;
   tractiveEffort: number;
   motorCurrent: number;

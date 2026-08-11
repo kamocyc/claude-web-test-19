@@ -81,13 +81,24 @@ export class ChartPanel {
         zeroLine: true,
       }),
     );
+    this.ride = add(
+      new StripChart({
+        title: '体感加速度 [m/s²] と車体ロール [deg]',
+        series: [
+          { key: 'feltLong', label: '前後', color: '#4ea3ff' },
+          { key: 'feltLat', label: '左右', color: '#ffd23f' },
+          { key: 'roll', label: 'ロール', color: '#c792ea' },
+        ],
+        zeroLine: true,
+      }),
+    );
     this.coupler = add(
       new StripChart({
-        title: '連結器力 [kN] と加速度 [m/s²]',
+        title: '連結器力 [kN] と車体の揺れ [mm]',
         series: [
           { key: 'coupler', label: '連結器', color: '#c792ea' },
-          { key: 'accel', label: '加速度', color: '#4ea3ff' },
-          { key: 'lateral', label: '左右', color: '#ffd23f' },
+          { key: 'bounce', label: '上下', color: '#7ddc8a' },
+          { key: 'sway', label: '左右変位', color: '#ff9f43' },
         ],
         zeroLine: true,
       }),
@@ -100,6 +111,7 @@ export class ChartPanel {
   private readonly resistance: StripChart;
   private readonly pressure: StripChart;
   private readonly adhesion: StripChart;
+  private readonly ride: StripChart;
   private readonly coupler: StripChart;
 
   sample(sim: Simulation): void {
@@ -140,10 +152,15 @@ export class ChartPanel {
       slip: snap.maxSlip * 100,
       readhesion: snap.reAdhesionFactor * 10,
     });
+    this.ride.push(t, {
+      feltLong: snap.body.feltLongitudinal,
+      feltLat: snap.body.feltLateral,
+      roll: (snap.body.roll * 180) / Math.PI,
+    });
     this.coupler.push(t, {
       coupler: snap.maxCouplerForce / 1000,
-      accel: snap.acceleration,
-      lateral: snap.lateralAcceleration,
+      bounce: snap.body.vertical * 1000,
+      sway: snap.body.lateral * 1000,
     });
   }
 
