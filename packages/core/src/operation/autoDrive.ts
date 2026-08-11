@@ -89,7 +89,14 @@ export interface AutoDriveParameters {
   readonly lookahead: Meters;
   /** 停止制動の基準減速度 [m/s^2] */
   readonly stopDeceleration: MetersPerSecondSquared;
-  /** 止まる瞬間の減速度 [m/s^2]（衝撃緩和の到達点） */
+  /**
+   * 止まる瞬間の減速度 [m/s^2]（衝撃緩和の到達点）。
+   *
+   * いちばん浅いノッチ 1 段ぶんの減速度に合わせる。これより高く取ると、
+   * 止まる直前までノッチ 2 段目に居座ることになり、ブレーキシリンダの圧力が
+   * 抜け切らないまま停止する。停止の衝撃はそのときシリンダに残っている圧力で
+   * 決まるので、指令上は緩めていても衝撃は 2 段目のまま出てしまう。
+   */
   readonly finalDeceleration: MetersPerSecondSquared;
   /** 減速度の絞り込み（衝撃緩和）を始める速度 [m/s] */
   readonly easeSpeed: MetersPerSecond;
@@ -150,7 +157,7 @@ export const DEFAULT_AUTO_DRIVE: AutoDriveParameters = {
   terminusMargin: 40,
   lookahead: 2500,
   stopDeceleration: 0.62,
-  finalDeceleration: 0.24,
+  finalDeceleration: 0.12,
   easeSpeed: 5.5,
   stopDemandCap: 1.5,
   coastLead: 40,
