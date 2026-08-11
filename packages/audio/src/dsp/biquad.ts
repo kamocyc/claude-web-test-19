@@ -82,15 +82,15 @@ function clampFrequency(frequency: number, sampleRate: number): number {
 }
 
 /**
- * 直流阻止（1 次のハイパス）。
- * 電磁力は磁束の 2 乗なので必ず正の直流成分を持つ。音として出すには取り除く。
+ * 1 次の高域通過。遮断周波数より下では 6dB/oct で落ち、上では平坦になる。
+ * 直流阻止にも、周波数に比例して増える量（放射効率など）の表現にも使う。
  */
-export class DcBlocker {
+export class OnePoleHighPass {
   private x1 = 0;
   private y1 = 0;
   private readonly r: number;
 
-  constructor(sampleRate: number, cutoff = 18) {
+  constructor(sampleRate: number, cutoff: number) {
     this.r = Math.exp((-2 * Math.PI * cutoff) / sampleRate);
   }
 
@@ -104,6 +104,13 @@ export class DcBlocker {
   reset(): void {
     this.x1 = 0;
     this.y1 = 0;
+  }
+}
+
+/** 直流分を抜く（遮断周波数をごく低く取った 1 次高域通過） */
+export class DcBlocker extends OnePoleHighPass {
+  constructor(sampleRate: number, cutoff = 18) {
+    super(sampleRate, cutoff);
   }
 }
 

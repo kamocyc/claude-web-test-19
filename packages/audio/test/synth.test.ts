@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { TrainNoiseSynth, VOICE, VOICE_COUNT, type TrainNoiseParams } from '@railsim/audio';
-import { bandPower, peakProminence, rms } from './spectrum.ts';
+import { aWeightedRms, bandPower, peakProminence, rms } from './spectrum.ts';
 
 const SAMPLE_RATE = 48_000;
 
@@ -383,5 +383,65 @@ describe('レール継目の衝撃', () => {
       return Array.from(out).join(',');
     };
     expect(once()).toBe(once());
+  });
+});
+
+/**
+ * 高速域でインバータ音がどれだけ聞こえるか。
+ *
+ * 弱め界磁に入ると磁束が 1/f₁ に落ちるので、電磁力は 1/f₁²（−40·log₁₀f）で
+ * 減る。だから高速で静かになること自体は正しい。問題は**どこまで静かに
+ * なるか**で、放射効率（一致周波数より下では f² に比例）と 2.4kHz 以上の
+ * 構造モードを入れていなかったころは、電動機の音が高速域で走行音より 27dB も
+ * 下に沈んで完全に聞こえなくなっていた。回転子スロット高調波は高速で 3.8kHz
+ * まで上がるので、ちょうどモデルの穴に落ちていた。
+ */
+describe('高速域のインバータ音', () => {
+  /** 運転台で聞こえる A 特性音量（歯車は M 車の床下なので遠い） */
+  const heard = (kmh: number, f1: number, pulses: number, carrier: number) => {
+    const shaft = ((kmh / 3.6 / 0.43) * 7.07) / (2 * Math.PI);
+    const inverter = render(
+      merge({
+        inverter: {
+          gate: true,
+          fundamental: f1,
+          carrier,
+          modulation: Math.min(1, f1 / 53),
+          pulses,
+          slotFrequency: shaft * 44,
+          level: 0.385,
+        },
+      }),
+    );
+    const background = render(
+      merge({
+        gear: { meshFrequency: shaft * 17, shaftFrequency: shaft, load: 1, level: 0.385 },
+        rolling: { speed: kmh / 3.6, level: 1 },
+        wind: { speed: kmh / 3.6, level: 1 },
+      }),
+    );
+    return (
+      20 * Math.log10(aWeightedRms(inverter, SAMPLE_RATE) / aWeightedRms(background, SAMPLE_RATE))
+    );
+  };
+
+  it('低速では走行音を圧倒する', () => {
+    // 起動時の「ヒュイーン」が編成でいちばん目立つ音であること
+    expect(heard(20, 31, 9, 279)).toBeGreaterThan(6);
+  });
+
+  it('最高速度でも走行音に埋もれきらない', () => {
+    // 走行音より下にはいるが、聞き取れる範囲に留まる
+    const top = heard(120, 176, 1, 0);
+    expect(top).toBeLessThan(0);
+    expect(top).toBeGreaterThan(-22);
+  });
+
+  it('速度とともに主役が走行音へ移る（単調に下がる）', () => {
+    const low = heard(35, 53, 3, 159);
+    const mid = heard(80, 118, 1, 0);
+    const top = heard(120, 176, 1, 0);
+    expect(mid).toBeLessThan(low);
+    expect(top).toBeLessThan(mid);
   });
 });

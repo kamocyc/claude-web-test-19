@@ -1,4 +1,4 @@
-import { Biquad, DcBlocker, Smoothed } from './biquad.ts';
+import { Biquad, DcBlocker, OnePoleHighPass, Smoothed } from './biquad.ts';
 
 const TWO_PI = Math.PI * 2;
 
@@ -62,7 +62,27 @@ const DEFAULT_RESONANCES: ReadonlyArray<readonly [number, number, number]> = [
   [620, 7, 1.0],
   [1180, 9, 0.7],
   [2350, 11, 0.45],
+  [3400, 12, 0.3],
+  [4900, 14, 0.2],
 ];
+
+/**
+ * 放射効率の一致（コインシデンス）周波数 [Hz]。
+ *
+ * 構造の振動がそのまま音になるわけではない。曲げ波の速度が音速に追いつく
+ * 周波数（一致周波数）より下では、板が動いても空気が横へ逃げてしまうため
+ * 放射効率が **f² に比例して**低く、それより上では平坦になる。厚さ数 mm の
+ * 鋼板ならこのあたりに来る。
+ *
+ * これを入れていないと、高速域が実際より遥かに静かになる。弱め界磁で磁束が
+ * 1/f₁ に落ちるので力は 1/f₁²、つまり −40·log₁₀f で落ちる一方、成分は高域へ
+ * 動いていく。放射効率の +6dB/oct はその半分を打ち消す（正味 −20·log₁₀f）。
+ * 実車で高速域でも電動機の音が聞こえ続けるのはこの釣り合いによる。
+ */
+const COINCIDENCE_FREQUENCY = 2500;
+
+/** 放射効率を入れたことによる全体の落ちを補う（低速の音量を元の水準に戻す） */
+const RADIATION_GAIN = 3.2;
 
 /**
  * 磁束の正規化基準周波数 [Hz]。
@@ -108,6 +128,7 @@ export class InverterVoice {
   private readonly resonanceWeights: number[] = [];
   private readonly decimation: Biquad[] = [];
   private readonly dcBlock: DcBlocker;
+  private readonly radiation: OnePoleHighPass;
   private readonly levelSmooth: Smoothed;
   private readonly modulationSmooth: Smoothed;
   private readonly frequencySmooth: Smoothed;
@@ -151,6 +172,7 @@ export class InverterVoice {
       }
     }
     this.dcBlock = new DcBlocker(this.innerRate, 25);
+    this.radiation = new OnePoleHighPass(this.innerRate, COINCIDENCE_FREQUENCY);
     this.levelSmooth = new Smoothed(sampleRate, 0.02);
     /*
      * 変調率の鈍り ＝ 磁束を確立するのに掛ける時間。
@@ -255,7 +277,8 @@ export class InverterVoice {
     for (let r = 0; r < this.resonators.length; r++) {
       radiated += this.resonators[r]!.process(force) * this.resonanceWeights[r]!;
     }
-    let y = radiated;
+    // 構造の振動 → 空気への放射。一致周波数より下は放射効率が f² で落ちる。
+    let y = this.radiation.process(radiated) * RADIATION_GAIN;
     for (const filter of this.decimation) y = filter.process(y);
     return y;
   }
@@ -268,6 +291,7 @@ export class InverterVoice {
     this.lastPulses = 0;
     this.flux = 0;
     this.dcBlock.reset();
+    this.radiation.reset();
     for (const f of this.resonators) f.reset();
     for (const f of this.decimation) f.reset();
     this.levelSmooth.set(0);

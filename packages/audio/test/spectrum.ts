@@ -1,3 +1,5 @@
+import { Biquad, OnePoleHighPass } from '@railsim/audio';
+
 /**
  * テスト用のスペクトル測定。
  *
@@ -48,6 +50,45 @@ export function peakProminence(
   const high = goertzel(x, sampleRate, frequency + offset);
   const floor = Math.max((low + high) / 2, 1e-30);
   return peak / floor;
+}
+
+/**
+ * A 特性で重み付けした実効値。
+ *
+ * 「大きく聞こえるか」を測るには素の実効値では足りない。耳は 60Hz と 1kHz で
+ * 30dB 以上も感度が違うので、低い唸りは実効値を稼いでもさほど大きく聞こえず、
+ * 逆に高速域の高い成分は実効値が小さくてもよく聞こえる。音源どうしの
+ * 「聞こえ方」を比べるときはこちらを使う。
+ *
+ * IEC 61672 の A 特性を極そのもので組む（20.6Hz の 2 重極・107.7Hz・737.9Hz・
+ * 12194Hz の 2 重極）。1kHz で利得 1 になるよう、実際に 1kHz の正弦を通して
+ * 正規化するので、係数の書き間違いがあれば正規化の段で露見する。
+ */
+export function aWeightedRms(x: Float32Array, sampleRate: number): number {
+  const build = (): ((v: number) => number) => {
+    const hp2 = new Biquad().highPass(sampleRate, 20.6, 0.5);
+    const hp1a = new OnePoleHighPass(sampleRate, 107.7);
+    const hp1b = new OnePoleHighPass(sampleRate, 737.9);
+    const lp2 = new Biquad().lowPass(sampleRate, 12194, 0.5);
+    return (v) => lp2.process(hp1b.process(hp1a.process(hp2.process(v))));
+  };
+
+  // 1kHz の正弦を通して利得を測り、それで割る
+  const probe = build();
+  let reference = 0;
+  const cycles = Math.floor(sampleRate / 1000) * 20;
+  for (let i = 0; i < cycles; i++) {
+    const y = probe(Math.sin((2 * Math.PI * 1000 * i) / sampleRate));
+    if (i > cycles / 2) reference = Math.max(reference, Math.abs(y));
+  }
+
+  const filter = build();
+  let sum = 0;
+  for (let i = 0; i < x.length; i++) {
+    const y = filter(x[i]!);
+    if (i > sampleRate * 0.02) sum += y * y;
+  }
+  return Math.sqrt(sum / x.length) / reference;
 }
 
 /** 帯域 [lo, hi] のパワーを粗く積分する */
