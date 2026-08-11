@@ -77,8 +77,8 @@ export interface VehicleRuntime {
 }
 
 export interface DynamicsEnvironment {
-  /** 粘着条件 */
-  readonly adhesion: AdhesionConditions;
+  /** 粘着条件（砂撒きの入切などでステップごとに変わりうる） */
+  adhesion: AdhesionConditions;
   /** 指定距離程がトンネル内かどうか */
   isTunnel(s: Meters): boolean;
 }
