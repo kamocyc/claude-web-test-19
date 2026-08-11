@@ -215,14 +215,17 @@ export class TrainAudio {
         slotFrequency: inv.slotFrequency,
         level: inverterLoad * motorGain * mix.inverter,
       },
-      runningGear: {
-        speed,
-        gearMeshFrequency: running ? inv.gearMeshFrequency : 0,
+      gear: {
+        meshFrequency: running ? inv.gearMeshFrequency : 0,
         shaftFrequency: running ? inv.motorRpm / 60 : 0,
-        gearLoad: 1 - mix.gearLoadTracking + mix.gearLoadTracking * load,
-        // 歯車は M 車、転動音は全車の足元から来るので、減衰は控えめにする
-        level: (0.5 + 0.5 * motorGain) * mix.runningGear,
+        load: 1 - mix.gearLoadTracking + mix.gearLoadTracking * load,
+        // 歯車箱は M 車の床下にしか無いので、電動機と同じだけ遠い
+        level: motorGain * mix.gear,
       },
+      // 転動音と風切り音は編成のどこからでも来る。運転台の真下にも軸があるし、
+      // 前面は自分が風を切っている当人なので、距離減衰は掛からない。
+      rolling: { speed, level: mix.rolling },
+      wind: { speed, level: mix.wind },
       brake: {
         speed,
         cylinderPressure: cylinder,

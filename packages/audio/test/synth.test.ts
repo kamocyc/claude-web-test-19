@@ -14,13 +14,9 @@ const silence = (): TrainNoiseParams => ({
     slotFrequency: 0,
     level: 0,
   },
-  runningGear: {
-    speed: 0,
-    gearMeshFrequency: 0,
-    shaftFrequency: 0,
-    gearLoad: 0,
-    level: 0,
-  },
+  gear: { meshFrequency: 0, shaftFrequency: 0, load: 0, level: 0 },
+  rolling: { speed: 0, level: 0 },
+  wind: { speed: 0, level: 0 },
   brake: { speed: 0, cylinderPressure: 0, pressureRate: 0, level: 0 },
   auxiliary: { compressor: 0, level: 0 },
 });
@@ -36,17 +32,16 @@ function render(p: TrainNoiseParams, seconds = 1): Float32Array {
   return out;
 }
 
-/** 80km/h で惰行しているときの走行装置の音（バランスの基準になる） */
+/**
+ * 80km/h で惰行しているときの走行音（音量バランスの基準になる）。
+ * 車輪径 0.86m・歯車比 7.07・小歯車 17 枚。歯車だけは M 車の床下なので
+ * 運転台から遠く、そのぶん小さい。
+ */
 const COASTING_80 = (): TrainNoiseParams =>
   merge({
-    runningGear: {
-      speed: 80 / 3.6,
-      // 車輪径 0.86m・歯車比 7.07・小歯車 17 枚
-      gearMeshFrequency: 989,
-      shaftFrequency: 58.2,
-      gearLoad: 0.4,
-      level: 0.69,
-    },
+    gear: { meshFrequency: 989, shaftFrequency: 58.2, load: 0.4, level: 0.385 },
+    rolling: { speed: 80 / 3.6, level: 1 },
+    wind: { speed: 80 / 3.6, level: 1 },
   });
 
 describe('走行音の合成全体', () => {
@@ -88,14 +83,23 @@ describe('走行音の合成全体', () => {
     it('鳴っている音源だけが値を持つ', () => {
       const levels = levelsOf(merge({ auxiliary: { compressor: 1, level: 1 } }));
       expect(levels[VOICE.auxiliary]!).toBeGreaterThan(1e-3);
-      for (const voice of [VOICE.inverter, VOICE.runningGear, VOICE.brake, VOICE.railJoint]) {
+      for (const voice of [
+        VOICE.inverter,
+        VOICE.gear,
+        VOICE.rolling,
+        VOICE.wind,
+        VOICE.brake,
+        VOICE.railJoint,
+      ]) {
         expect(levels[voice]!).toBeLessThan(1e-6);
       }
     });
 
     it('混ざる前の値なので、支配している音源が分かる', () => {
       const levels = levelsOf(merge({ ...COASTING_80(), auxiliary: { compressor: 1, level: 1 } }));
-      expect(levels[VOICE.runningGear]!).toBeGreaterThan(levels[VOICE.auxiliary]! * 2);
+      // 80km/h では転動音が支配していて、補機はそのはるか下にいる
+      expect(levels[VOICE.rolling]!).toBeGreaterThan(levels[VOICE.auxiliary]! * 2);
+      expect(levels[VOICE.rolling]!).toBeGreaterThan(levels[VOICE.gear]!);
     });
 
     it('読み出すたびに直近のぶんだけを返す（積算が残らない）', () => {
@@ -109,7 +113,7 @@ describe('走行音の合成全体', () => {
       // レンダせずにもう一度読めば、積算が空なので 0 が返る
       const again = new Float32Array(VOICE_COUNT).fill(1);
       synth.readLevels(again);
-      expect(Array.from(again)).toEqual([0, 0, 0, 0, 0]);
+      expect(Array.from(again)).toEqual(Array<number>(VOICE_COUNT).fill(0));
     });
   });
 
@@ -125,13 +129,9 @@ describe('走行音の合成全体', () => {
           slotFrequency: 900,
           level: 1,
         },
-        runningGear: {
-          speed: 30,
-          gearMeshFrequency: 1200,
-          shaftFrequency: 70,
-          gearLoad: 1,
-          level: 1,
-        },
+        gear: { meshFrequency: 1200, shaftFrequency: 70, load: 1, level: 1 },
+        rolling: { speed: 30, level: 1 },
+        wind: { speed: 30, level: 1 },
         brake: { speed: 30, cylinderPressure: 1, pressureRate: -2, level: 1 },
         auxiliary: { compressor: 1, level: 1 },
       }),
@@ -144,17 +144,13 @@ describe('走行音の合成全体', () => {
   });
 });
 
-describe('走行装置の音', () => {
-  const running = (over: Partial<TrainNoiseParams['runningGear']>): TrainNoiseParams =>
-    merge({
-      runningGear: { ...silence().runningGear, level: 1, ...over },
-    });
+describe('歯車の音', () => {
+  const gear = (over: Partial<TrainNoiseParams['gear']>): TrainNoiseParams =>
+    merge({ gear: { ...silence().gear, level: 1, ...over } });
 
-  it('歯車のかみ合い周波数に峰が立ち、その高調波も出る', () => {
+  it('かみ合い周波数に峰が立ち、その高調波も出る', () => {
     const mesh = 900;
-    const x = render(
-      running({ speed: 20, gearMeshFrequency: mesh, shaftFrequency: 53, gearLoad: 1 }),
-    );
+    const x = render(gear({ meshFrequency: mesh, shaftFrequency: 53, load: 1 }));
     expect(peakProminence(x, SAMPLE_RATE, mesh, 120)).toBeGreaterThan(10);
     expect(peakProminence(x, SAMPLE_RATE, 2 * mesh, 120)).toBeGreaterThan(10);
   });
@@ -162,21 +158,15 @@ describe('走行装置の音', () => {
   it('歯形誤差で 1 回転ごとの側帯波が付く（うなりの正体）', () => {
     const mesh = 900;
     const shaft = 53;
-    const x = render(
-      running({ speed: 20, gearMeshFrequency: mesh, shaftFrequency: shaft, gearLoad: 1 }),
-    );
+    const x = render(gear({ meshFrequency: mesh, shaftFrequency: shaft, load: 1 }));
     expect(peakProminence(x, SAMPLE_RATE, mesh - shaft, shaft / 2)).toBeGreaterThan(6);
     expect(peakProminence(x, SAMPLE_RATE, mesh + shaft, shaft / 2)).toBeGreaterThan(6);
   });
 
-  it('惰行しても歯車の音は消えない（インバータ音との決定的な違い）', () => {
+  it('惰行しても消えない（インバータ音との決定的な違い）', () => {
     const mesh = 900;
-    const powering = render(
-      running({ speed: 20, gearMeshFrequency: mesh, shaftFrequency: 53, gearLoad: 1 }),
-    );
-    const coasting = render(
-      running({ speed: 20, gearMeshFrequency: mesh, shaftFrequency: 53, gearLoad: 0 }),
-    );
+    const powering = render(gear({ meshFrequency: mesh, shaftFrequency: 53, load: 1 }));
+    const coasting = render(gear({ meshFrequency: mesh, shaftFrequency: 53, load: 0 }));
     expect(peakProminence(coasting, SAMPLE_RATE, mesh, 120)).toBeGreaterThan(10);
     // 力行のほうが強いが、惰行でも半分程度は残る
     const ratio =
@@ -185,24 +175,26 @@ describe('走行装置の音', () => {
     expect(ratio).toBeLessThan(1);
   });
 
-  it('転動音が 30·log₁₀v で増える（速度 2 倍で約 9dB）', () => {
-    const level = (v: number): number =>
-      rms(render(running({ speed: v, gearMeshFrequency: 0, shaftFrequency: 0, gearLoad: 0 })));
-    const a = level(10);
-    const b = level(20);
-    const db = 20 * Math.log10(b / a);
+  it('電動機が回っていなければ無音（車速ではなく回転で決まる）', () => {
+    expect(rms(render(gear({ meshFrequency: 0, shaftFrequency: 0, load: 1 })))).toBeLessThan(1e-5);
+  });
+});
+
+describe('転動音', () => {
+  const rolling = (speed: number): TrainNoiseParams => merge({ rolling: { speed, level: 1 } });
+
+  it('30·log₁₀v で増える（速度 2 倍で約 9dB）', () => {
+    const db = 20 * Math.log10(rms(render(rolling(20))) / rms(render(rolling(10))));
     // 振幅 ∝ v^1.5 なので、速度 2 倍で 20·log10(2^1.5) = 9.03 dB
     expect(db).toBeGreaterThan(8);
     expect(db).toBeLessThan(10);
   });
 
-  it('停止していれば走行装置は無音', () => {
-    expect(rms(render(running({ speed: 0 })))).toBeLessThan(1e-5);
+  it('停止していれば無音', () => {
+    expect(rms(render(rolling(0)))).toBeLessThan(1e-5);
   });
 
-  it('高速ほど転動音のスペクトル重心が上がる', () => {
-    const slow = render(running({ speed: 8 }));
-    const fast = render(running({ speed: 33 }));
+  it('高速ほどスペクトル重心が上がる', () => {
     const centroid = (x: Float32Array): number => {
       let num = 0;
       let den = 0;
@@ -213,10 +205,56 @@ describe('走行装置の音', () => {
       }
       return num / den;
     };
-    expect(centroid(fast)).toBeGreaterThan(centroid(slow));
+    expect(centroid(render(rolling(33)))).toBeGreaterThan(centroid(render(rolling(8))));
   });
 });
 
+describe('風切り音', () => {
+  const wind = (speed: number): TrainNoiseParams => merge({ wind: { speed, level: 1 } });
+
+  it('60·log₁₀v で増える（速度 2 倍で約 18dB）', () => {
+    const db = 20 * Math.log10(rms(render(wind(20))) / rms(render(wind(10))));
+    // 四重極音源なので振幅 ∝ v³ → 20·log10(2³) = 18.06 dB
+    expect(db).toBeGreaterThan(17);
+    expect(db).toBeLessThan(19);
+  });
+
+  it('最高速度でもまだ転動音のはるか下にいる', () => {
+    // 速度依存の指数が違うのでいつかは逆転するが、鉄道で空力音が支配するのは
+    // 250〜300km/h から。この車両の最高速度 120km/h では 6dB 以上下にいる。
+    // 分けて測れなかったころは 90km/h で追い越していた（その回帰テスト）。
+    const speed = 120 / 3.6;
+    const w = rms(render(merge({ wind: { speed, level: 1 } })));
+    const r = rms(render(merge({ rolling: { speed, level: 1 } })));
+    expect(w).toBeLessThan(r * 0.5);
+  });
+});
+
+describe('走行音の主役が速度で入れ替わる', () => {
+  /** 運転台から見た音量。歯車だけは M 車の床下なので遠い。 */
+  const at = (kmh: number): { rolling: number; gear: number } => {
+    const shaft = ((kmh / 3.6 / 0.43) * 7.07) / (2 * Math.PI);
+    return {
+      rolling: rms(render(merge({ rolling: { speed: kmh / 3.6, level: 1 } }))),
+      gear: rms(
+        render(
+          merge({
+            gear: { meshFrequency: shaft * 17, shaftFrequency: shaft, load: 0.4, level: 0.385 },
+          }),
+        ),
+      ),
+    };
+  };
+
+  it('低速では歯車、高速では転動音が支配する', () => {
+    // 通勤形の車内で実際に起きる移り変わり。歯車は回転数にしか比例しないのに
+    // 対して転動音は 30·log₁₀v で増えるので、どこかで必ず入れ替わる。
+    const slow = at(20);
+    const fast = at(80);
+    expect(slow.gear).toBeGreaterThan(slow.rolling * 1.5);
+    expect(fast.rolling).toBeGreaterThan(fast.gear * 1.5);
+  });
+});
 describe('ブレーキと空気の音', () => {
   const brake = (over: Partial<TrainNoiseParams['brake']>): TrainNoiseParams =>
     merge({ brake: { ...silence().brake, level: 1, ...over } });
@@ -294,13 +332,10 @@ describe('レール継目の衝撃', () => {
     // 「鳴ってはいるが転動音に埋もれて区別できない」という失敗をしたので、
     // 実際の走行音を背景に置いて突出しているかどうかで固める。
     const background: TrainNoiseParams = merge({
-      runningGear: {
-        speed: 24.7, // 約 90km/h
-        gearMeshFrequency: 1050,
-        shaftFrequency: 62,
-        gearLoad: 0,
-        level: 1,
-      },
+      // 約 90km/h
+      gear: { meshFrequency: 1050, shaftFrequency: 62, load: 0, level: 0.385 },
+      rolling: { speed: 24.7, level: 1 },
+      wind: { speed: 24.7, level: 1 },
     });
 
     const synth = new TrainNoiseSynth(SAMPLE_RATE);
@@ -338,13 +373,8 @@ describe('レール継目の衝撃', () => {
       const synth = new TrainNoiseSynth(SAMPLE_RATE);
       synth.setParams(
         merge({
-          runningGear: {
-            speed: 25,
-            gearMeshFrequency: 1000,
-            shaftFrequency: 59,
-            gearLoad: 0.7,
-            level: 1,
-          },
+          gear: { meshFrequency: 1000, shaftFrequency: 59, load: 0.7, level: 1 },
+          rolling: { speed: 25, level: 1 },
         }),
       );
       synth.triggerJoint({ delay: 128, strength: 0.8 });

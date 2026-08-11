@@ -3,12 +3,21 @@ import { AuxiliaryVoice, type AuxiliaryParams } from './auxiliary.ts';
 import { BrakeVoice, type BrakeParams } from './brake.ts';
 import { InverterVoice, type InverterVoiceParams } from './inverterVoice.ts';
 import { RailJointVoice, type JointImpact } from './railJointVoice.ts';
-import { RunningGearVoice, type RunningGearParams } from './runningGear.ts';
+import {
+  GearVoice,
+  RollingVoice,
+  WindVoice,
+  type GearParams,
+  type RollingParams,
+  type WindParams,
+} from './runningGear.ts';
 
 /** 走行音全体を決める量。シミュレーションのスナップショットから素直に写せる。 */
 export interface TrainNoiseParams {
   readonly inverter: InverterVoiceParams;
-  readonly runningGear: RunningGearParams;
+  readonly gear: GearParams;
+  readonly rolling: RollingParams;
+  readonly wind: WindParams;
   readonly brake: BrakeParams;
   readonly auxiliary: AuxiliaryParams;
 }
@@ -27,7 +36,9 @@ export interface TrainNoiseParams {
  */
 export class TrainNoiseSynth {
   readonly inverter: InverterVoice;
-  readonly runningGear: RunningGearVoice;
+  readonly gear: GearVoice;
+  readonly rolling: RollingVoice;
+  readonly wind: WindVoice;
   readonly brake: BrakeVoice;
   readonly auxiliary: AuxiliaryVoice;
   readonly railJoint: RailJointVoice;
@@ -39,7 +50,9 @@ export class TrainNoiseSynth {
 
   constructor(readonly sampleRate: number) {
     this.inverter = new InverterVoice(sampleRate);
-    this.runningGear = new RunningGearVoice(sampleRate);
+    this.gear = new GearVoice(sampleRate);
+    this.rolling = new RollingVoice(sampleRate);
+    this.wind = new WindVoice(sampleRate);
     this.brake = new BrakeVoice(sampleRate);
     this.auxiliary = new AuxiliaryVoice(sampleRate);
     this.railJoint = new RailJointVoice(sampleRate);
@@ -47,7 +60,9 @@ export class TrainNoiseSynth {
 
   setParams(params: TrainNoiseParams): void {
     this.inverter.setParams(params.inverter);
-    this.runningGear.setParams(params.runningGear);
+    this.gear.setParams(params.gear);
+    this.rolling.setParams(params.rolling);
+    this.wind.setParams(params.wind);
     this.brake.setParams(params.brake);
     this.auxiliary.setParams(params.auxiliary);
   }
@@ -64,7 +79,9 @@ export class TrainNoiseSynth {
     if (this.scratch.length !== out.length) this.scratch = new Float32Array(out.length);
     out.fill(0);
     this.mix(out, VOICE.inverter, (b) => this.inverter.render(b));
-    this.mix(out, VOICE.runningGear, (b) => this.runningGear.render(b));
+    this.mix(out, VOICE.gear, (b) => this.gear.render(b));
+    this.mix(out, VOICE.rolling, (b) => this.rolling.render(b));
+    this.mix(out, VOICE.wind, (b) => this.wind.render(b));
     this.mix(out, VOICE.brake, (b) => this.brake.render(b));
     this.mix(out, VOICE.auxiliary, (b) => this.auxiliary.render(b));
     this.mix(out, VOICE.railJoint, (b) => this.railJoint.render(b));
@@ -103,7 +120,9 @@ export class TrainNoiseSynth {
 
   reset(): void {
     this.inverter.reset();
-    this.runningGear.reset();
+    this.gear.reset();
+    this.rolling.reset();
+    this.wind.reset();
     this.brake.reset();
     this.auxiliary.reset();
     this.railJoint.reset();

@@ -13,8 +13,12 @@ export interface NoiseMix {
   readonly master: number;
   /** インバータ・主電動機 */
   readonly inverter: number;
-  /** 走行装置（歯車・転動・風切り） */
-  readonly runningGear: number;
+  /** 歯車のかみ合い（M 車の床下） */
+  readonly gear: number;
+  /** 転動音（全車の足元） */
+  readonly rolling: number;
+  /** 風切り音（高速でだけ効く） */
+  readonly wind: number;
   /** レール継目 */
   readonly railJoint: number;
   /** ブレーキ（摩擦・鳴き・空気） */
@@ -43,7 +47,9 @@ export interface NoiseMix {
 export const DEFAULT_NOISE_MIX: NoiseMix = {
   master: 0.7,
   inverter: 1,
-  runningGear: 1,
+  gear: 1,
+  rolling: 1,
+  wind: 1,
   railJoint: 1,
   brake: 1,
   auxiliary: 1,
@@ -65,22 +71,26 @@ export interface NoiseMixControl {
  */
 export const VOICE = {
   inverter: 0,
-  runningGear: 1,
-  brake: 2,
-  auxiliary: 3,
+  gear: 1,
+  rolling: 2,
+  wind: 3,
   railJoint: 4,
+  brake: 5,
+  auxiliary: 6,
 } as const;
 
 export type VoiceIndex = (typeof VOICE)[keyof typeof VOICE];
 
 /** 音源の数（メータの配列長） */
-export const VOICE_COUNT = 5;
+export const VOICE_COUNT = 7;
 
 /** 音量のつまみ */
 export const NOISE_MIX_LEVELS: readonly NoiseMixControl[] = [
   { key: 'master', label: 'マスター' },
   { key: 'inverter', label: 'インバータ・主電動機', voice: VOICE.inverter },
-  { key: 'runningGear', label: '走行装置（歯車・転動・風）', voice: VOICE.runningGear },
+  { key: 'gear', label: '歯車', voice: VOICE.gear },
+  { key: 'rolling', label: '転動音', voice: VOICE.rolling },
+  { key: 'wind', label: '風切り', voice: VOICE.wind },
   { key: 'railJoint', label: 'レール継目', voice: VOICE.railJoint },
   { key: 'brake', label: 'ブレーキ', voice: VOICE.brake },
   { key: 'auxiliary', label: '補機（空気圧縮機）', voice: VOICE.auxiliary },
