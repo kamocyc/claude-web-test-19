@@ -9,6 +9,7 @@ import {
   type ConsistSpec,
   type CouplerSpec,
   type DavisCoefficients,
+  DEFAULT_INVERTER,
   type TractionControlSpec,
   type VehicleBrakeSpec,
   type VehicleSpec,
@@ -31,6 +32,7 @@ export const TEST_TRACTION: VvvfTractionSpec = {
   regenFadeEndSpeed: kmhToMps(3),
   lineVoltage: 1500,
   converterEfficiency: 0.97,
+  inverter: DEFAULT_INVERTER,
 };
 
 export const TEST_VEHICLE_BRAKE: VehicleBrakeSpec = {

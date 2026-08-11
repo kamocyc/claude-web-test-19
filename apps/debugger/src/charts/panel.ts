@@ -81,6 +81,20 @@ export class ChartPanel {
         zeroLine: true,
       }),
     );
+    // インバータの変調。音は完全にこの 3 本から作られるので、これを見れば
+    // 「いま鳴っている音が仕様どおりか」を耳で確かめる前に目で確かめられる。
+    this.inverter = add(
+      new StripChart({
+        title: 'インバータ [Hz]（キャリアは 1/10、パルス数は ×10）',
+        series: [
+          { key: 'fundamental', label: '出力周波数', color: '#4ea3ff' },
+          { key: 'carrier', label: 'キャリア/10', color: '#ff9f43' },
+          { key: 'pulses', label: 'パルス数×10', color: '#7ddc8a', dashed: true },
+          { key: 'slip', label: 'すべり', color: '#c792ea' },
+        ],
+        zeroLine: true,
+      }),
+    );
     this.ride = add(
       new StripChart({
         title: '体感加速度 [m/s²]・ロール [deg]・カント不足 [cm]',
@@ -126,6 +140,7 @@ export class ChartPanel {
   private readonly resistance: StripChart;
   private readonly pressure: StripChart;
   private readonly adhesion: StripChart;
+  private readonly inverter: StripChart;
   private readonly ride: StripChart;
   private readonly sway: StripChart;
   private readonly coupler: StripChart;
@@ -167,6 +182,13 @@ export class ChartPanel {
     this.adhesion.push(t, {
       slip: snap.maxSlip * 100,
       readhesion: snap.reAdhesionFactor * 10,
+    });
+    const inv = snap.inverter;
+    this.inverter.push(t, {
+      fundamental: inv.fundamentalFrequency,
+      carrier: inv.carrierFrequency / 10,
+      pulses: inv.pulses * 10,
+      slip: inv.slipFrequency,
     });
     this.ride.push(t, {
       feltLong: snap.body.feltLongitudinal,

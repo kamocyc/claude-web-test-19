@@ -21,6 +21,13 @@ const motorSpec = {
   regenFadeEndSpeed: 3,
   lineVoltage: 1500,
   converterEfficiency: 0.97,
+  /**
+   * 変調は GTO サイリスタ素子の既定値（`inverterSchema`）をそのまま使う。
+   * 4 極・歯車比 7.07・車輪径 0.86m なので、定トルク域の上限 35km/h が
+   * 電動機 1526rpm・出力周波数 53Hz にあたり、そこで変調率が飽和して一パルスへ入る。
+   * それまでに非同期 → 15 → 9 → 5 → 3 パルスと段階的に落ちる。
+   */
+  inverter: {},
 } as const;
 
 /** 先頭車の走行抵抗係数 [kgf/t]（前面の空気抵抗が大きいぶん速度 2 乗項が大きい） */

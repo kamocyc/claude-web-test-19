@@ -14,6 +14,7 @@ import { VigilanceSystem } from '../safety/vigilance.ts';
 import { SignallingSystem } from '../signalling/system.ts';
 import type { BodyMotionState } from '../train/bodyMotion.ts';
 import { TrainDynamics, type DynamicsEnvironment } from '../train/dynamics.ts';
+import { createInverterState, type InverterState } from '../traction/modulation.ts';
 import { VvvfTractionSystem } from '../traction/vvvf.ts';
 import type { Meters, MetersPerSecond, Seconds } from '../units.ts';
 import { NEUTRAL_INPUT, type ControlInput, type Scenario } from './types.ts';
@@ -26,6 +27,9 @@ const PHYSICS_MICROS = 1000;
 export const CONTROL_DT = 0.01;
 /** 1 回の step() で進める最大の物理ステップ数（処理落ち時の暴走防止） */
 const MAX_SUBSTEPS = 2000;
+
+/** 動力装置を持たない編成（付随車のみ）のときのインバータ状態 */
+const NO_INVERTER: InverterState = createInverterState();
 
 /** 駅での取り扱い状態 */
 export interface StationProgress {
@@ -451,6 +455,7 @@ export class Simulation {
       regenerationLost: this.brake.state.regenerationLost,
       antiSkidActive: this.brake.state.antiSkidActive,
       reAdhesionFactor: this.traction.state.reAdhesionFactor,
+      inverter: this.traction.modulation?.state ?? NO_INVERTER,
       maxSlip: dyn.vehicles.reduce(
         (m, v) => v.axles.reduce((mm, a) => (Math.abs(a.slip) > Math.abs(mm) ? a.slip : mm), m),
         0,
@@ -494,6 +499,8 @@ export interface SimSnapshot {
   regenerationLost: boolean;
   antiSkidActive: boolean;
   reAdhesionFactor: number;
+  /** インバータの変調状態（出力周波数・パルスモード・キャリア周波数） */
+  inverter: InverterState;
   maxSlip: number;
   maxCouplerForce: number;
   safety: SafetyOutput;

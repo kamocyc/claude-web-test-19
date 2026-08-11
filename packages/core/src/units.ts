@@ -27,6 +27,8 @@ export type Pascals = number;
 export type Radians = number;
 /** [rad/s] 角速度 */
 export type RadiansPerSecond = number;
+/** [Hz] 周波数 */
+export type Hertz = number;
 /** [1/m] 曲率（正 = 左曲がり） */
 export type PerMeter = number;
 /** [m/m] 勾配（正 = 上り） */
@@ -83,6 +85,11 @@ export const mToMm = (x: Meters): number => x * 1000;
 
 /** [km] -> [m] */
 export const kmToM = (x: number): Meters => x * 1000;
+
+/** [rad/s] -> [rpm] */
+export const radPerSecToRpm = (w: RadiansPerSecond): number => (w * 60) / (2 * Math.PI);
+/** [rpm] -> [rad/s] */
+export const rpmToRadPerSec = (n: number): RadiansPerSecond => (n * 2 * Math.PI) / 60;
 
 /**
  * [kgf/t] -> [N/kg]（比抵抗）。

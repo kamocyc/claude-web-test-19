@@ -25,7 +25,9 @@
       "@railsim/core": ["packages/core/src/index.ts"],
       "@railsim/core/*": ["packages/core/src/*"],
       "@railsim/data": ["packages/data/src/index.ts"],
-      "@railsim/data/*": ["packages/data/src/*"]
+      "@railsim/data/*": ["packages/data/src/*"],
+      "@railsim/audio": ["packages/audio/src/index.ts"],
+      "@railsim/audio/*": ["packages/audio/src/*"]
     }
   },
   "include": ["packages/*/src/**/*.ts", "packages/*/test/**/*.ts", "apps/*/src/**/*.ts", "*.ts"],

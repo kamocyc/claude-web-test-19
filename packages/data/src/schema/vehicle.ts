@@ -14,6 +14,52 @@ export const davisSchema = z.object({
   c: z.number().default(0.00028),
 });
 
+/**
+ * 変調方式と、電動機・駆動装置の音に関わる諸元。
+ *
+ * 引張力には一切影響しない（引張力は 3 領域のトルク特性で決まる）。ここは
+ * 「その出力をどういうスイッチングで作るか」だけを持つ。既定値は GTO
+ * サイリスタ素子の通勤形で、キャリアが低く、パルスモードの切り替わりが
+ * 音程の段差としてはっきり聞こえる。IGBT にするならキャリアの表を高く平坦に、
+ * 音階インバータにするなら階段状にすればよい。
+ */
+export const inverterSchema = z.object({
+  /** 極対数（4 極機なら 2） */
+  polePairs: z.number().int().positive().default(2),
+  /** 定格トルクでのすべり周波数 [Hz] */
+  ratedSlipFrequency: z.number().positive().default(2.0),
+  /** 基底周波数 [Hz]。ここで変調率が 1 に飽和し、以降は弱め界磁になる。 */
+  baseFrequency: z.number().positive().default(53),
+  /** 非同期モードのキャリア [出力周波数 Hz, キャリア Hz] の折れ線 */
+  asyncCarrier: z
+    .array(z.tuple([z.number(), z.number()]))
+    .default([
+      [0, 250],
+      [6, 250],
+      [7, 350],
+      [12, 350],
+      [13, 480],
+      [18, 480],
+    ]),
+  /** パルスモードの梯子（出力周波数の昇順。pulses = 0 が非同期、1 が一パルス） */
+  pulseModes: z
+    .array(z.object({ minFrequency: z.number().nonnegative(), pulses: z.number().int().min(0) }))
+    .default([
+      { minFrequency: 0, pulses: 0 },
+      { minFrequency: 18, pulses: 15 },
+      { minFrequency: 28, pulses: 9 },
+      { minFrequency: 38, pulses: 5 },
+      { minFrequency: 47, pulses: 3 },
+      { minFrequency: 53, pulses: 1 },
+    ]),
+  /** モード切替のヒステリシス幅 [Hz] */
+  modeHysteresis: z.number().nonnegative().default(1.5),
+  /** 回転子スロット数 */
+  rotorSlots: z.number().int().positive().default(44),
+  /** 小歯車の歯数 */
+  pinionTeeth: z.number().int().positive().default(17),
+});
+
 export const vvvfSchema = z.object({
   kind: z.literal('vvvf').default('vvvf'),
   /** 1 両あたりの主電動機数 */
@@ -38,6 +84,8 @@ export const vvvfSchema = z.object({
   lineVoltage: z.number().positive().default(1500),
   /** 主変換装置の効率 */
   converterEfficiency: z.number().positive().max(1).default(0.97),
+  /** 変調方式と音に関わる諸元 */
+  inverter: inverterSchema.default({}),
 });
 
 export const vehicleBrakeSchema = z.object({

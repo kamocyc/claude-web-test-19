@@ -1,4 +1,5 @@
 import type {
+  Hertz,
   Kilograms,
   Meters,
   MetersPerSecond,
@@ -17,6 +18,63 @@ export interface DavisCoefficients {
   readonly a: number;
   readonly b: number;
   readonly c: number;
+}
+
+/**
+ * パルスモードの 1 段。
+ *
+ * VVVF インバータは、出力周波数が上がるほどキャリア（スイッチング）周波数を
+ * 素子の能力内に収める必要がある。そのため低速では出力周波数と無関係な
+ * **非同期**キャリアを使い、ある周波数から先は**同期**モードへ移って
+ * キャリアを出力周波数の整数倍（27 → 15 → 9 → 5 → 3 → 1 パルス）に固定し、
+ * 速度が上がるにつれてこの整数を段階的に落としていく。
+ *
+ * この段階の切り替わりが、日本の VVVF 車で聞こえる「音程が上がっていって
+ * 途中でガクッと落ちる」の正体である。
+ */
+export interface PulseModeStep {
+  /** この段へ切り替わる出力周波数の下限 [Hz] */
+  readonly minFrequency: Hertz;
+  /**
+   * 出力 1 周期あたりのパルス数。
+   * 0 = 非同期（キャリアは出力周波数と無関係）、1 = 一パルス（矩形波・搬送波なし）。
+   */
+  readonly pulses: number;
+}
+
+/**
+ * インバータの変調と、電動機・駆動装置の音を決める諸元。
+ *
+ * ここに入るのは**引張力には影響しない**量だけである。引張力は 3 領域の
+ * トルク特性（`motorTorqueAt`）で決まっており、変調方式はその同じ出力を
+ * どういうスイッチングで作るかという話にすぎない。したがってこのブロックを
+ * 差し替えても走りは 1 ミリも変わらず、音と表示だけが変わる。
+ */
+export interface InverterSpec {
+  /** 極対数（4 極機なら 2）。回転子周波数 = 極対数 × 回転数/60 */
+  readonly polePairs: number;
+  /** 定格トルクを出しているときのすべり周波数 [Hz] */
+  readonly ratedSlipFrequency: Hertz;
+  /**
+   * 基底周波数 [Hz]。ここまでは V/f 一定で変調率が比例して上がり、
+   * ここで変調率が 1 に飽和して以降は定電圧（弱め界磁）になる。
+   * 定トルク域の上限速度に対応する出力周波数を入れる。
+   */
+  readonly baseFrequency: Hertz;
+  /**
+   * 非同期モードのキャリア周波数 [出力周波数 Hz, キャリア Hz] の折れ線。
+   * この表 1 つで、GTO の段階的な変化・IGBT の一定キャリア・
+   * 音階インバータ（起動時に音程が階段状に上がる）をすべて表せる。
+   */
+  readonly asyncCarrier: ReadonlyArray<readonly [Hertz, Hertz]>;
+  /** パルスモードの梯子（出力周波数の昇順） */
+  readonly pulseModes: readonly PulseModeStep[];
+  /** モード切替のヒステリシス幅 [Hz]（実機もチャタリング防止に持つ） */
+  readonly modeHysteresis: Hertz;
+  /** 回転子スロット数。スロット高調波 = スロット数 × 回転数/60 が磁気音に乗る */
+  readonly rotorSlots: number;
+  /** 小歯車の歯数。かみ合い周波数 = 電動機回転数/60 × 歯数 */
+  readonly pinionTeeth: number;
 }
 
 /** VVVF インバータ制御・誘導電動機の仕様 */
@@ -44,7 +102,42 @@ export interface VvvfTractionSpec {
   readonly lineVoltage: number;
   /** 主変換装置の効率（電力計算用） */
   readonly converterEfficiency: number;
+  /** 変調方式と音に関わる諸元 */
+  readonly inverter: InverterSpec;
 }
+
+/**
+ * GTO サイリスタ素子の通勤形の代表的な変調（車輪径 0.86m・歯車比 7.07・4 極）。
+ *
+ * 定トルク域の上限 35km/h が出力周波数 53Hz にあたるので、そこで変調率が飽和して
+ * 一パルスへ入る。素子の許容スイッチング周波数が低いため、同期モードのパルス数を
+ * 15 → 9 → 5 → 3 と落としながらキャリアを 500Hz 以下に抑えている。
+ */
+export const DEFAULT_INVERTER: InverterSpec = {
+  polePairs: 2,
+  ratedSlipFrequency: 2.0,
+  baseFrequency: 53,
+  // GTO は素子の損失が大きいのでキャリアを高くできない。段階的に上げる。
+  asyncCarrier: [
+    [0, 250],
+    [6, 250],
+    [7, 350],
+    [12, 350],
+    [13, 480],
+    [18, 480],
+  ],
+  pulseModes: [
+    { minFrequency: 0, pulses: 0 },
+    { minFrequency: 18, pulses: 15 },
+    { minFrequency: 28, pulses: 9 },
+    { minFrequency: 38, pulses: 5 },
+    { minFrequency: 47, pulses: 3 },
+    { minFrequency: 53, pulses: 1 },
+  ],
+  modeHysteresis: 1.5,
+  rotorSlots: 44,
+  pinionTeeth: 17,
+};
 
 export type VehicleTractionSpec = VvvfTractionSpec;
 

@@ -8,6 +8,7 @@ export default defineConfig({
     alias: {
       '@railsim/core': r('./packages/core/src/index.ts'),
       '@railsim/data': r('./packages/data/src/index.ts'),
+      '@railsim/audio': r('./packages/audio/src/index.ts'),
     },
   },
   test: {

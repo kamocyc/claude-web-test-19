@@ -1,4 +1,4 @@
-import { formatClock, mpsToKmh, paToKpa, type Simulation } from '@railsim/core';
+import { formatClock, modulationLabel, mpsToKmh, paToKpa, type Simulation } from '@railsim/core';
 
 const ASPECT_TEXT: Record<string, string> = {
   R: '停止',
@@ -81,6 +81,18 @@ export class Hud {
     );
     rows.push(row('BC 圧', `${paToKpa(snap.cylinderPressure).toFixed(0)} kPa`));
     rows.push(row('主回路電流', `${snap.motorCurrent.toFixed(0)} A`));
+    // インバータの変調。音がこの数値どおりに鳴っているかを耳と目で突き合わせられる。
+    const inv = snap.inverter;
+    rows.push(row('変調', modulationLabel(inv)));
+    rows.push(
+      row(
+        '出力 / すべり',
+        inv.mode === 'off'
+          ? `— / — （${inv.motorRpm.toFixed(0)} rpm）`
+          : `${inv.fundamentalFrequency.toFixed(1)} / ${inv.slipFrequency.toFixed(2)} Hz` +
+              `（${inv.motorRpm.toFixed(0)} rpm）`,
+      ),
+    );
     rows.push(
       row('勾配 / 曲率', `${(snap.grade * 1000).toFixed(1)} ‰ / ${radius(snap.curvature)}`),
     );

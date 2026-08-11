@@ -4,6 +4,7 @@ import { GRAVITY } from '../units.ts';
 import type { TrainDynamics } from '../train/dynamics.ts';
 import type { ConsistSpec, VehicleSpec, VvvfTractionSpec } from '../vehicle/spec.ts';
 import { vehicleMass } from '../vehicle/spec.ts';
+import { InverterModulation } from './modulation.ts';
 import type { TractionContext, TractionState, TractionSystem } from './types.ts';
 
 /**
@@ -84,14 +85,25 @@ export class VvvfTractionSystem implements TractionSystem {
     slipDetected: false,
   };
 
+  /**
+   * インバータの変調状態（音響・表示用）。
+   * 引張力の計算には一切関与しない — 同じ出力をどのスイッチングで作っているかを
+   * 追いかけているだけである。
+   */
+  readonly modulation: InverterModulation | null;
+
   private readonly consist: ConsistSpec;
   private readonly opts: Required<VvvfOptions>;
   /** ブレーキ装置から要求された電気ブレーキ力 [N]（正値） */
   private electricBrakeRequest = 0;
   private cutOffActive = false;
+  /** 直近に各電動機へ出したトルク [N*m]（正 = 力行、負 = 電気ブレーキ） */
+  private lastMotorTorque = 0;
 
   constructor(consist: ConsistSpec, options: VvvfOptions = {}) {
     this.consist = consist;
+    const spec = this.firstTractionSpec();
+    this.modulation = spec ? new InverterModulation(spec) : null;
     this.opts = {
       slipThreshold: options.slipThreshold ?? 2.0,
       cutTime: options.cutTime ?? 0.35,
@@ -204,6 +216,7 @@ export class VvvfTractionSystem implements TractionSystem {
     this.state.electricBraking = braking;
 
     let totalRimForce = 0;
+    this.lastMotorTorque = 0;
     if (braking) {
       totalRimForce = -this.distributeElectricBrake(dyn, v, ctx);
     } else {
@@ -211,6 +224,7 @@ export class VvvfTractionSystem implements TractionSystem {
     }
 
     this.state.tractiveEffort = totalRimForce;
+    this.updateModulation(dt, dyn);
     const mechanicalPower = totalRimForce * v;
     // 力行時は効率で割り、回生時は効率を掛けて架線側の電力とする
     let elecPower: number;
@@ -228,6 +242,34 @@ export class VvvfTractionSystem implements TractionSystem {
   private firstTractionSpec(): VvvfTractionSpec | null {
     for (const veh of this.consist.vehicles) if (veh.traction) return veh.traction;
     return null;
+  }
+
+  /**
+   * 変調状態を更新する（表示・音響用）。
+   *
+   * 電動機の回転は**動軸の実角速度**から取る。車速から逆算すると、空転しているのに
+   * 音が上がらないという実車ではありえない挙動になる。
+   */
+  private updateModulation(dt: number, dyn: TrainDynamics): void {
+    const mod = this.modulation;
+    if (!mod) return;
+    const spec = this.firstTractionSpec();
+    if (!spec) return;
+
+    let omegaSum = 0;
+    let count = 0;
+    for (const veh of dyn.vehicles) {
+      if (!veh.spec.traction) continue;
+      for (const ax of veh.axles) {
+        if (!ax.driven) continue;
+        omegaSum += ax.omega;
+        count++;
+      }
+    }
+    mod.step(dt, {
+      axleAngularVelocity: count > 0 ? omegaSum / count : 0,
+      torqueRatio: spec.maxMotorTorque > 0 ? this.lastMotorTorque / spec.maxMotorTorque : 0,
+    });
   }
 
   /** 力行トルクを各動軸へ配分する。戻り値は車輪周の引張力合計 [N]。 */
@@ -265,6 +307,7 @@ export class VvvfTractionSystem implements TractionSystem {
       const perAxle = axleTorqueTotal / veh.spec.drivenAxleCount;
       for (const ax of veh.axles) ax.driveTorque = ax.driven ? perAxle : 0;
       total += rimForceFromMotorTorque(spec, veh.spec, motorTorque);
+      this.lastMotorTorque = motorTorque;
     }
     return total;
   }
@@ -297,6 +340,8 @@ export class VvvfTractionSystem implements TractionSystem {
       const dir = v >= 0 ? -1 : 1;
       for (const ax of veh.axles) ax.driveTorque = ax.driven ? dir * perAxle : 0;
       total += rimForceFromMotorTorque(spec, veh.spec, motorTorque);
+      // 変調から見ると回生はすべりが負の側なので、トルクは負として扱う
+      this.lastMotorTorque = -motorTorque;
     }
     return total;
   }

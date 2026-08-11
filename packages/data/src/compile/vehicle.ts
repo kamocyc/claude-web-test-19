@@ -29,6 +29,17 @@ function compileTraction(spec: ParsedCar['traction']): VvvfTractionSpec | null {
     regenFadeEndSpeed: kmhToMps(spec.regenFadeEndSpeed),
     lineVoltage: spec.lineVoltage,
     converterEfficiency: spec.converterEfficiency,
+    // 変調の諸元はもともと Hz と個数なので換算は要らない
+    inverter: {
+      polePairs: spec.inverter.polePairs,
+      ratedSlipFrequency: spec.inverter.ratedSlipFrequency,
+      baseFrequency: spec.inverter.baseFrequency,
+      asyncCarrier: spec.inverter.asyncCarrier.map(([f, c]) => [f, c] as [number, number]),
+      pulseModes: spec.inverter.pulseModes,
+      modeHysteresis: spec.inverter.modeHysteresis,
+      rotorSlots: spec.inverter.rotorSlots,
+      pinionTeeth: spec.inverter.pinionTeeth,
+    },
   };
 }
 
