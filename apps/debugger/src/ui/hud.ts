@@ -110,7 +110,21 @@ export class Hud {
         `${deg(snap.body.trackRoll)}° + ${deg(snap.body.roll)}° = ${deg(snap.body.absoluteRoll)}°`,
       ),
     );
-    rows.push(row('車体 ピッチ / ヨー', `${deg(snap.body.pitch)}° / ${deg(snap.body.yaw)}°`));
+    rows.push(
+      row(
+        'ピッチ 勾配 + 車体',
+        `${deg(snap.body.trackPitch)}° + ${deg(snap.body.pitch)}° = ${deg(snap.body.absolutePitch)}°`,
+      ),
+    );
+    // 乗客の振れは比力に遅れて追従するので、瞬時の平衡角との差がジャークの効き具合になる
+    const sway = snap.body.sway;
+    rows.push(
+      row(
+        '乗客の振れ 前後 / 左右',
+        `${deg(sway.longitudinal)}° / ${deg(sway.lateral)}°` +
+          `（遅れ ${deg(sway.equilibriumLongitudinal - sway.longitudinal)}° / ${deg(sway.equilibriumLateral - sway.lateral)}°）`,
+      ),
+    );
 
     if (snap.nextSignal) {
       const aspect = snap.nextSignal.state.aspect;

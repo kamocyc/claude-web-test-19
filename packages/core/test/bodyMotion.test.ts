@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   CarBodyMotion,
   DEFAULT_IRREGULARITY,
+  DEFAULT_PASSENGER,
   DEFAULT_SUSPENSION,
   GRAVITY,
   Oscillator,
@@ -19,6 +20,7 @@ const DT = 0.001;
 const baseInput = (over: Partial<BodyMotionInput> = {}): BodyMotionInput => ({
   unbalancedLateral: 0,
   cantAngle: 0,
+  gradeAngle: 0,
   longitudinalAcceleration: 0,
   frontVertical: 0,
   rearVertical: 0,
@@ -98,16 +100,20 @@ describe('軌道狂い', () => {
   });
 });
 
+/** 傾いた床（総ピッチ角 p、正 = 前下がり）の上で、前後加速度 a のときに感じる比力 */
+const feltFromPitch = (pitch: number, a: number): number =>
+  GRAVITY * Math.sin(pitch) - a * Math.cos(pitch);
+
 describe('車体の動揺', () => {
   it('横加速度がゼロなら車体は傾かない', () => {
-    const body = new CarBodyMotion(DEFAULT_SUSPENSION);
+    const body = new CarBodyMotion(DEFAULT_SUSPENSION, DEFAULT_PASSENGER);
     for (let i = 0; i < 10_000; i++) body.step(DT, baseInput());
     expect(body.state.roll).toBeCloseTo(0, 6);
     expect(body.state.feltLateral).toBeCloseTo(0, 6);
   });
 
   it('曲線の横加速度で車体が外側へロールする', () => {
-    const body = new CarBodyMotion(DEFAULT_SUSPENSION);
+    const body = new CarBodyMotion(DEFAULT_SUSPENSION, DEFAULT_PASSENGER);
     const a = 0.8; // 右へ押される
     for (let i = 0; i < 20_000; i++) body.step(DT, baseInput({ unbalancedLateral: a }));
     // 車体傾斜率 0.3、つり合い角 atan(0.8/g) = 0.0815 rad
@@ -117,7 +123,7 @@ describe('車体の動揺', () => {
   });
 
   it('車体ロールにより乗客が感じる横 G は軌道面の値より大きくなる', () => {
-    const body = new CarBodyMotion(DEFAULT_SUSPENSION);
+    const body = new CarBodyMotion(DEFAULT_SUSPENSION, DEFAULT_PASSENGER);
     const a = 0.8;
     for (let i = 0; i < 20_000; i++) body.step(DT, baseInput({ unbalancedLateral: a }));
     expect(body.state.feltLateral).toBeGreaterThan(a);
@@ -128,14 +134,14 @@ describe('車体の動揺', () => {
 
   it('車体傾斜率が 0 なら体感横 G は軌道面の値と一致する', () => {
     const rigid = { ...DEFAULT_SUSPENSION, rollFlexibility: 0 };
-    const body = new CarBodyMotion(rigid);
+    const body = new CarBodyMotion(rigid, DEFAULT_PASSENGER);
     const a = 0.8;
     for (let i = 0; i < 20_000; i++) body.step(DT, baseInput({ unbalancedLateral: a }));
     expect(body.state.feltLateral).toBeCloseTo(a, 5);
   });
 
   it('カントは軌道面自体の傾きとして車体を曲線内側へ傾ける', () => {
-    const body = new CarBodyMotion(DEFAULT_SUSPENSION);
+    const body = new CarBodyMotion(DEFAULT_SUSPENSION, DEFAULT_PASSENGER);
     // 左曲線のカント（外軌 = 右レールが高い）→ カント角は正
     const cantAngle = Math.asin(mmToM(90) / 1.067);
     for (let i = 0; i < 20_000; i++) body.step(DT, baseInput({ cantAngle }));
@@ -146,7 +152,7 @@ describe('車体の動揺', () => {
   });
 
   it('停車中の曲線ではカント超過で内側へ引かれる', () => {
-    const body = new CarBodyMotion(DEFAULT_SUSPENSION);
+    const body = new CarBodyMotion(DEFAULT_SUSPENSION, DEFAULT_PASSENGER);
     const cantAngle = Math.asin(mmToM(90) / 1.067);
     // 速度 0 なら軌道面の非平衡横加速度は -g*sin(カント角)
     const unbalancedLateral = -GRAVITY * Math.sin(cantAngle);
@@ -159,7 +165,7 @@ describe('車体の動揺', () => {
   });
 
   it('均衡カントで通過すると体感横 G が消え、体感上下 G が 1G を超える', () => {
-    const body = new CarBodyMotion(DEFAULT_SUSPENSION);
+    const body = new CarBodyMotion(DEFAULT_SUSPENSION, DEFAULT_PASSENGER);
     const cantAngle = Math.asin(mmToM(90) / 1.067);
     // 均衡状態では軌道面の非平衡横加速度が 0 になる（このとき a_h = g*tan(φ)）
     for (let i = 0; i < 20_000; i++) {
@@ -173,33 +179,73 @@ describe('車体の動揺', () => {
   });
 
   it('加速すると乗客は後ろへ押され、車体は前上がりにピッチングする', () => {
-    const body = new CarBodyMotion(DEFAULT_SUSPENSION);
+    const body = new CarBodyMotion(DEFAULT_SUSPENSION, DEFAULT_PASSENGER);
     for (let i = 0; i < 20_000; i++) {
       body.step(DT, baseInput({ longitudinalAcceleration: 1.0 }));
     }
-    expect(body.state.feltLongitudinal).toBeCloseTo(-1.0, 6);
     expect(body.state.pitch).toBeLessThan(0);
     expect(body.state.pitch).toBeCloseTo(-DEFAULT_SUSPENSION.pitchGain * 1.0, 4);
+    // 加速度ぶんに加えて、前上がりに傾いた床に沿う重力成分も後ろ向きに効く
+    // （スクォートしている車内では押し付けられ感が少し強くなる）
+    expect(body.state.feltLongitudinal).toBeLessThan(-1.0);
+    expect(body.state.feltLongitudinal).toBeCloseTo(
+      feltFromPitch(body.state.absolutePitch, 1.0),
+      9,
+    );
   });
 
   it('制動すると乗客は前へ押され、車体は前下がりにピッチングする', () => {
-    const body = new CarBodyMotion(DEFAULT_SUSPENSION);
+    const body = new CarBodyMotion(DEFAULT_SUSPENSION, DEFAULT_PASSENGER);
     for (let i = 0; i < 20_000; i++) {
       body.step(DT, baseInput({ longitudinalAcceleration: -1.0 }));
     }
-    expect(body.state.feltLongitudinal).toBeCloseTo(1.0, 6);
     expect(body.state.pitch).toBeGreaterThan(0);
+    expect(body.state.feltLongitudinal).toBeGreaterThan(1.0);
+    expect(body.state.feltLongitudinal).toBeCloseTo(
+      feltFromPitch(body.state.absolutePitch, -1.0),
+      9,
+    );
+  });
+
+  it('上り勾配で停車していると乗客は後ろへ押される', () => {
+    const body = new CarBodyMotion(DEFAULT_SUSPENSION, DEFAULT_PASSENGER);
+    const gradeAngle = Math.atan(0.033); // 33‰ 上り
+    for (let i = 0; i < 20_000; i++) body.step(DT, baseInput({ gradeAngle }));
+    expect(body.state.trackPitch).toBeCloseTo(-gradeAngle, 12);
+    expect(body.state.feltLongitudinal).toBeLessThan(0);
+    expect(body.state.feltLongitudinal).toBeCloseTo(-GRAVITY * Math.sin(gradeAngle), 3);
+  });
+
+  /**
+   * 前後の比力から勾配の重力成分が抜けていると、下り勾配を惰行しているだけで
+   * 「後ろへ押される」と出てしまう（実際には斜面成分と加速度が打ち消し合う）。
+   */
+  it('下り勾配を自由に転がっているときは前後の比力がほぼ 0 になる', () => {
+    const body = new CarBodyMotion(DEFAULT_SUSPENSION, DEFAULT_PASSENGER);
+    const gradeAngle = -Math.atan(0.033); // 33‰ 下り
+    // 抵抗も回転部慣性も無いとすれば a = g*sin(下り角)
+    const a = -GRAVITY * Math.sin(gradeAngle);
+    expect(a).toBeGreaterThan(0);
+    for (let i = 0; i < 20_000; i++) {
+      body.step(DT, baseInput({ gradeAngle, longitudinalAcceleration: a }));
+    }
+    // 勾配成分が入っていなければ -a = -0.32 m/s²（後ろへ押される）と出るところ、
+    // ほぼ打ち消し合って 1 桁以上小さくなる。残るのは車体がスクォートして
+    // 床が起きるぶんで、これは実在する効果。
+    expect(Math.abs(body.state.feltLongitudinal)).toBeLessThan(a / 10);
+    // 吊り革もほぼ鉛直のまま（下り勾配で後ろへ倒れたりしない）
+    expect(Math.abs(body.state.sway.longitudinal)).toBeLessThan(0.005);
   });
 
   it('水準狂いは軌道の傾きとしてそのまま車体を傾ける', () => {
-    const body = new CarBodyMotion(DEFAULT_SUSPENSION);
+    const body = new CarBodyMotion(DEFAULT_SUSPENSION, DEFAULT_PASSENGER);
     const crossLevel = mmToM(10);
     for (let i = 0; i < 20_000; i++) body.step(DT, baseInput({ crossLevel }));
     expect(body.state.roll).toBeCloseTo(Math.asin(crossLevel / 1.067), 4);
   });
 
   it('前後台車の高低差はピッチングを、通り狂いの差はヨーイングを生む', () => {
-    const body = new CarBodyMotion(DEFAULT_SUSPENSION);
+    const body = new CarBodyMotion(DEFAULT_SUSPENSION, DEFAULT_PASSENGER);
     for (let i = 0; i < 20_000; i++) {
       body.step(
         DT,
@@ -215,6 +261,98 @@ describe('車体の動揺', () => {
     expect(body.state.yaw).toBeCloseTo(0.02 / 13.8, 4);
     // 上下動は前後の平均なのでゼロ
     expect(body.state.vertical).toBeCloseTo(0, 5);
+  });
+});
+
+describe('乗客の振られ方（減衰振り子）', () => {
+  const run = (steps: number, input: Partial<BodyMotionInput>, spec = DEFAULT_PASSENGER) => {
+    const body = new CarBodyMotion({ ...DEFAULT_SUSPENSION, rollFlexibility: 0 }, spec);
+    const history: number[] = [];
+    for (let i = 0; i < steps; i++) {
+      body.step(DT, baseInput(input));
+      history.push(body.state.sway.lateral);
+    }
+    return { body, history };
+  };
+
+  it('静止していれば振れない', () => {
+    const { body } = run(5000, {});
+    expect(body.state.sway.lateral).toBeCloseTo(0, 9);
+    expect(body.state.sway.longitudinal).toBeCloseTo(0, 9);
+  });
+
+  it('一定加速度では tan θ = a / g へ収束する', () => {
+    const a = 1.0;
+    const { body } = run(40_000, { unbalancedLateral: a });
+    expect(Math.tan(body.state.sway.lateral)).toBeCloseTo(a / GRAVITY, 4);
+    // 平衡角は瞬時値そのもの
+    expect(body.state.sway.equilibriumLateral).toBeCloseTo(
+      Math.atan2(body.state.feltLateral, body.state.feltVertical),
+      9,
+    );
+  });
+
+  it('加速度に遅れて追従する（＝加加速度が見える）', () => {
+    const a = 1.0;
+    const { body, history } = run(300, { unbalancedLateral: a });
+    // 0.3 秒後にはまだ平衡角へ届いていない
+    const target = Math.atan2(a, GRAVITY);
+    expect(history[299]!).toBeLessThan(target);
+    expect(history[299]!).toBeGreaterThan(0);
+    // 瞬時値との差が「まだ振れ切っていない量」
+    expect(body.state.sway.equilibriumLateral - body.state.sway.lateral).toBeGreaterThan(0.005);
+  });
+
+  it('減衰が弱いと行き過ぎてから収束する', () => {
+    const light = { ...DEFAULT_PASSENGER, dampingRatio: 0.05 };
+    const target = Math.atan2(1.0, GRAVITY);
+    const { history } = run(4000, { unbalancedLateral: 1.0 }, light);
+    expect(Math.max(...history)).toBeGreaterThan(target * 1.5);
+    // 減衰が強ければ行き過ぎない
+    const heavy = { ...DEFAULT_PASSENGER, dampingRatio: 1.0 };
+    const h2 = run(4000, { unbalancedLateral: 1.0 }, heavy).history;
+    expect(Math.max(...h2)).toBeLessThan(target * 1.02);
+  });
+
+  it('固有周期が 2π√(L/g) と一致する', () => {
+    const L = 0.6;
+    const undamped = { pendulumLength: L, dampingRatio: 0.0005 };
+    const { history } = run(4000, { unbalancedLateral: 1.0 }, undamped);
+    let peak = 0;
+    for (let i = 1; i < history.length; i++) {
+      if (history[i]! > history[peak]!) peak = i;
+      else if (history[i]! < history[i - 1]!) break;
+    }
+    // ステップ応答の最初のピークは半周期後
+    expect(peak * DT).toBeCloseTo(Math.PI * Math.sqrt(L / GRAVITY), 2);
+  });
+
+  it('振り子が短いほど速く追従する', () => {
+    const shortP = run(
+      300,
+      { unbalancedLateral: 1.0 },
+      { ...DEFAULT_PASSENGER, pendulumLength: 0.2 },
+    );
+    const longP = run(
+      300,
+      { unbalancedLateral: 1.0 },
+      { ...DEFAULT_PASSENGER, pendulumLength: 1.2 },
+    );
+    expect(shortP.body.state.sway.lateral).toBeGreaterThan(longP.body.state.sway.lateral);
+  });
+
+  it('制動では前へ、力行では後ろへ振れる', () => {
+    const braking = run(20_000, { longitudinalAcceleration: -1.0 });
+    const powering = run(20_000, { longitudinalAcceleration: 1.0 });
+    expect(braking.body.state.sway.longitudinal).toBeGreaterThan(0);
+    expect(powering.body.state.sway.longitudinal).toBeLessThan(0);
+  });
+
+  it('同じ入力なら同じ振れになる（決定論）', () => {
+    const a = run(2000, { unbalancedLateral: 0.7, longitudinalAcceleration: -0.5 });
+    const b = run(2000, { unbalancedLateral: 0.7, longitudinalAcceleration: -0.5 });
+    expect(a.body.state.sway.lateral).toBe(b.body.state.sway.lateral);
+    expect(a.body.state.sway.longitudinal).toBe(b.body.state.sway.longitudinal);
   });
 });
 

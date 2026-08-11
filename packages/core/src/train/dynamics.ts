@@ -167,7 +167,7 @@ export class TrainDynamics {
           sliding: false,
         });
       }
-      this.bodyMotions.push(new CarBodyMotion(spec.suspension));
+      this.bodyMotions.push(new CarBodyMotion(spec.suspension, spec.passenger));
       this.vehicles.push({
         spec,
         index: i,
@@ -403,6 +403,8 @@ export class TrainDynamics {
       this.bodyMotions[i]!.step(dt, {
         unbalancedLateral: this.alignment.lateralAcceleration(veh.s, veh.v),
         cantAngle: this.alignment.cantAngleAt(veh.s),
+        // 車体長にわたって平均した勾配（先頭が勾配へ入りかけている状態も表せる）
+        gradeAngle: Math.atan(veh.grade),
         longitudinalAcceleration: veh.a,
         frontVertical: irr.verticalAt(front),
         rearVertical: irr.verticalAt(rear),

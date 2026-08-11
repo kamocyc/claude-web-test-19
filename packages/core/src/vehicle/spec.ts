@@ -145,6 +145,25 @@ export const DEFAULT_SUSPENSION: SuspensionSpec = {
   yawDamping: 0.3,
 };
 
+/**
+ * 乗客の振られ方（車内に吊るした減衰振り子）の仕様。
+ *
+ * 吊り革は天井の握り棒からリングまで 0.5〜0.7m 程度、固有周期は
+ * `T = 2π√(L/g)` で 1.4〜1.7 秒。立っている乗客も重心高さがおよそ 1m なので
+ * 同じ帯域になる。減衰比は「すぐには収まらないが振動し続けもしない」値にする。
+ */
+export interface PassengerSpec {
+  /** 振り子の長さ [m] */
+  readonly pendulumLength: Meters;
+  /** 減衰比（0 = 減衰なし、1 = 臨界減衰） */
+  readonly dampingRatio: number;
+}
+
+export const DEFAULT_PASSENGER: PassengerSpec = {
+  pendulumLength: 0.6,
+  dampingRatio: 0.45,
+};
+
 /** 連結器（緩衝器を含む）の仕様 */
 export interface CouplerSpec {
   /** 遊間の全幅 [m]。この範囲では力を伝えない。 */
@@ -197,6 +216,8 @@ export interface VehicleSpec {
   readonly traction: VehicleTractionSpec | null;
   /** 車体を支えるばねの動揺特性 */
   readonly suspension: SuspensionSpec;
+  /** 乗客（吊り革）の振られ方 */
+  readonly passenger: PassengerSpec;
 }
 
 /** 力行制御（編成としての取り扱い） */

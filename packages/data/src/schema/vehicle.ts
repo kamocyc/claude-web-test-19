@@ -91,6 +91,14 @@ export const suspensionSchema = z.object({
   yawDamping: z.number().positive().default(0.3),
 });
 
+/** 乗客（吊り革）の振られ方 */
+export const passengerSchema = z.object({
+  /** 振り子の長さ [m]。固有周期 T = 2π√(L/g) が 1.4〜1.7 秒になる 0.5〜0.7m 程度。 */
+  pendulumLength: z.number().positive().default(0.6),
+  /** 減衰比（0 = 減衰なし、1 = 臨界減衰） */
+  dampingRatio: z.number().positive().default(0.45),
+});
+
 export const carSchema = z.object({
   id: z.string(),
   /** 車種（表示用）。Mc/Tc は先頭車。 */
@@ -123,6 +131,8 @@ export const carSchema = z.object({
   traction: vvvfSchema.nullable().default(null),
   /** 車体を支えるばねの動揺特性 */
   suspension: suspensionSchema.default({}),
+  /** 乗客（吊り革）の振られ方 */
+  passenger: passengerSchema.default({}),
 });
 
 export const couplerSchema = z.object({

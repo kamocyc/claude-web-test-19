@@ -4,6 +4,7 @@ import {
   type AdhesionSpec,
   type Alignment,
   type BrakeControlSpec,
+  DEFAULT_PASSENGER,
   DEFAULT_SUSPENSION,
   type ConsistSpec,
   type CouplerSpec,
@@ -116,6 +117,7 @@ export function testVehicle(options: TestVehicleOptions = {}): VehicleSpec {
     brake: TEST_VEHICLE_BRAKE,
     traction: options.traction === undefined ? TEST_TRACTION : options.traction,
     suspension: DEFAULT_SUSPENSION,
+    passenger: DEFAULT_PASSENGER,
   };
 }
 

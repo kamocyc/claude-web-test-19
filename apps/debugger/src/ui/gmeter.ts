@@ -1,10 +1,16 @@
-import { GRAVITY, type Simulation } from '@railsim/core';
+import { GRAVITY, swayToAcceleration, type Simulation } from '@railsim/core';
 
 const WIDTH = 340;
 const HEIGHT = 214;
-/** G サークルの外周が表す加速度 [m/s^2] */
+/** 振れ盤の外周が表す加速度 [m/s^2]（角度に直すと atan(1.6/g) = 9.3 度） */
 const FULL_SCALE = 1.6;
-const TRAIL_LENGTH = 90;
+const TRAIL_LENGTH = 120;
+/**
+ * 前面図・側面図で角度にかける強調倍率。
+ * 実際の振れ角やカント角は 5 度前後で、数十ピクセルの絵ではほとんど動いて見えない。
+ * 姿勢計と同じく倍率をかけて読めるようにする（振れ盤のほうは等倍で定量表示）。
+ */
+const ATTITUDE_GAIN = 3;
 
 interface TrailPoint {
   readonly lateral: number;
@@ -12,19 +18,26 @@ interface TrailPoint {
 }
 
 /**
- * 加速度を直感的に示すメータ。
+ * 加速度を「乗客がどう振られるか」で示すメータ。
  *
- * 数値だけでは体感が伝わらないので、次の 3 つを並べて表示する:
+ * 加速度の数値を角度へ直接変換すると、加速度が変わった瞬間に角度が飛んでしまい、
+ * 加加速度（ジャーク）が見えない。ここでは物理コアが解いている**減衰振り子**
+ * （車内に吊るした吊り革と同じ、固有周期 1.5 秒程度）の振れ角をそのまま描く。
+ * 振り子は加速度に遅れて追従するので:
  *
- *  1. **G サークル** — 前後 G と左右 G を 1 点で表し、軌跡を残す。
- *     力行・制動は縦に、曲線通過は横に振れる。円は 0.5 / 1.0 / 1.5 m/s²。
- *  2. **前面図** — 車体をロール角ぶん傾けて描き、その中に吊り革を吊るす。
- *     吊り革は「車体座標系での重力 + 慣性力」の向きに垂れるので、
- *     乗客が実際にどちらへ振られるかがそのまま見える。
- *  3. **側面図** — ピッチングと、前後方向に振られる吊り革。
+ *  - ノッチを一気に動かす → 大きく振られて行き過ぎ、揺り戻しが出る
+ *  - 一段ずつ刻む         → 同じ加速度でも静かに傾くだけ
  *
- * 車体がロールすると重力の横成分が加わるため、吊り革の傾きは
- * 軌道面の非平衡横加速度から計算した角度より大きくなる。
+ * という運転の質の差が、そのまま絵になる。
+ *
+ * 表示は 3 つ:
+ *
+ *  1. **振れ盤** — 振り子の先端を真上から見た位置と、その軌跡。
+ *     瞬時の平衡点（＝加速度そのものの向き）を薄い十字で重ねてあり、
+ *     両者の隔たりが「まだ振れ切っていない量」になる。
+ *  2. **前面図** — カントで傾いた軌道面、その上でロールした車体、
+ *     さらにその中で振られる吊り革と立っている乗客。
+ *  3. **側面図** — 勾配で傾いた床、車体のピッチング、前後に振られる吊り革。
  */
 export class GMeter {
   readonly canvas: HTMLCanvasElement;
@@ -55,12 +68,9 @@ export class GMeter {
     ctx.clearRect(0, 0, WIDTH, HEIGHT);
 
     const body = sim.dynamics.vehicles[0]!.body;
-    // 乗客が感じる比力（正: 右へ押される / 後ろへ押される）
-    const lateral = body.feltLateral;
-    const longitudinal = body.feltLongitudinal;
-    const vertical = body.feltVertical;
+    const sway = body.sway;
 
-    this.trail.push({ lateral, longitudinal });
+    this.trail.push({ lateral: sway.lateral, longitudinal: sway.longitudinal });
     if (this.trail.length > TRAIL_LENGTH) this.trail.shift();
 
     ctx.fillStyle = 'rgba(13, 17, 23, 0.78)';
@@ -69,34 +79,51 @@ export class GMeter {
     ctx.strokeStyle = '#2a3440';
     ctx.stroke();
 
-    this.drawCircle(ctx, 8, 8, 138, lateral, longitudinal);
-    // 前面図は水平面に対する姿勢で描く。車体は「カントで傾いた軌道面」の上で
-    // さらにロールするので、その 2 段構えがそのまま見えるようにする。
-    this.drawFrontView(ctx, 158, 10, 172, 92, body.absoluteRoll, body.trackRoll, lateral, vertical);
-    this.drawSideView(ctx, 158, 106, 172, 66, body.pitch, longitudinal, vertical);
-    this.drawReadout(ctx, 8, 154, lateral, longitudinal, body.absoluteRoll);
+    this.drawSwayPlate(ctx, 8, 8, 138, sway);
+    this.drawFrontView(ctx, 158, 10, 172, 92, body.absoluteRoll, body.trackRoll, sway.lateral);
+    this.drawSideView(
+      ctx,
+      158,
+      106,
+      172,
+      66,
+      body.absolutePitch,
+      body.trackPitch,
+      sway.longitudinal,
+    );
+    this.drawReadout(ctx, 8, 154, body, sway);
   }
 
-  /** 前後 G・左右 G の 2 次元表示 */
-  private drawCircle(
+  /**
+   * 振れ盤: 振り子の先端を真上から見た図。
+   * 制動なら前（上）へ、力行なら後ろ（下）へ、曲線なら外側へ振れる。
+   */
+  private drawSwayPlate(
     ctx: CanvasRenderingContext2D,
     x: number,
     y: number,
     size: number,
-    lateral: number,
-    longitudinal: number,
+    sway: {
+      lateral: number;
+      longitudinal: number;
+      equilibriumLateral: number;
+      equilibriumLongitudinal: number;
+    },
   ): void {
     const cx = x + size / 2;
     const cy = y + size / 2;
     const r = size / 2 - 6;
-    const toPx = (v: number) => (v / FULL_SCALE) * r;
+    // 角度 → 画面上の距離。目盛りは平衡角 tan θ = a/g で加速度に読み替える。
+    const fullAngle = Math.atan2(FULL_SCALE, GRAVITY);
+    const toPx = (angle: number) => (angle / fullAngle) * r;
+    const ringAngle = (a: number) => Math.atan2(a, GRAVITY);
 
     ctx.save();
     ctx.strokeStyle = '#243040';
     ctx.lineWidth = 1;
     for (const level of [0.5, 1.0, 1.5]) {
       ctx.beginPath();
-      ctx.arc(cx, cy, toPx(level), 0, Math.PI * 2);
+      ctx.arc(cx, cy, toPx(ringAngle(level)), 0, Math.PI * 2);
       ctx.stroke();
     }
     ctx.beginPath();
@@ -109,20 +136,31 @@ export class GMeter {
     ctx.fillStyle = '#5c6b7d';
     ctx.font = '9px system-ui, sans-serif';
     ctx.textAlign = 'center';
-    // 点は「乗客が押される向き」に動く。制動なら前（上）、力行なら後ろ（下）。
-    ctx.fillText('前（制動）', cx, cy - toPx(1.0) - 3);
-    ctx.fillText('後（力行）', cx, cy + toPx(1.0) + 10);
+    ctx.fillText('前（制動）', cx, cy - toPx(ringAngle(1.0)) - 3);
+    ctx.fillText('後（力行）', cx, cy + toPx(ringAngle(1.0)) + 10);
     ctx.textAlign = 'left';
-    ctx.fillText('右', cx + toPx(1.0) + 3, cy + 3);
+    ctx.fillText('右', cx + toPx(ringAngle(1.0)) + 3, cy + 3);
     ctx.textAlign = 'right';
-    ctx.fillText('左', cx - toPx(1.0) - 3, cy + 3);
+    ctx.fillText('左', cx - toPx(ringAngle(1.0)) - 3, cy + 3);
 
-    // 軌跡（古いほど薄い）
+    // 瞬時の平衡点（加速度そのものの向き）。振り子はここへ向かって遅れて動く。
+    const ex = cx + toPx(sway.equilibriumLateral);
+    const ey = cy - toPx(sway.equilibriumLongitudinal);
+    ctx.strokeStyle = 'rgba(255, 210, 63, 0.55)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(ex - 4, ey);
+    ctx.lineTo(ex + 4, ey);
+    ctx.moveTo(ex, ey - 4);
+    ctx.lineTo(ex, ey + 4);
+    ctx.stroke();
+
+    // 振り子の先端の軌跡（古いほど薄い）
     ctx.lineWidth = 1.5;
     for (let i = 1; i < this.trail.length; i++) {
       const a = this.trail[i - 1]!;
       const b = this.trail[i]!;
-      const alpha = (i / this.trail.length) * 0.55;
+      const alpha = (i / this.trail.length) * 0.6;
       ctx.strokeStyle = `rgba(78, 163, 255, ${alpha.toFixed(3)})`;
       ctx.beginPath();
       ctx.moveTo(cx + toPx(a.lateral), cy - toPx(a.longitudinal));
@@ -130,17 +168,27 @@ export class GMeter {
       ctx.stroke();
     }
 
-    const px = cx + toPx(lateral);
-    const py = cy - toPx(longitudinal);
-    const magnitude = Math.hypot(lateral, longitudinal);
-    ctx.fillStyle = magnitude > 1.2 ? '#ff6b6b' : magnitude > 0.7 ? '#ffb454' : '#7ddc8a';
+    // 平衡点から現在位置へ引いた線が「遅れ」そのもの
+    const px = cx + toPx(sway.lateral);
+    const py = cy - toPx(sway.longitudinal);
+    ctx.strokeStyle = 'rgba(255, 210, 63, 0.3)';
+    ctx.beginPath();
+    ctx.moveTo(ex, ey);
+    ctx.lineTo(px, py);
+    ctx.stroke();
+
+    const felt = Math.hypot(
+      swayToAcceleration(sway.lateral),
+      swayToAcceleration(sway.longitudinal),
+    );
+    ctx.fillStyle = felt > 1.2 ? '#ff6b6b' : felt > 0.7 ? '#ffb454' : '#7ddc8a';
     ctx.beginPath();
     ctx.arc(px, py, 5, 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();
   }
 
-  /** 前面図: 車体のロールと、左右へ振られる吊り革 */
+  /** 前面図: 軌道面のカント → 車体のロール → 吊り革と乗客の振れ */
   private drawFrontView(
     ctx: CanvasRenderingContext2D,
     x: number,
@@ -149,97 +197,29 @@ export class GMeter {
     h: number,
     roll: number,
     trackRoll: number,
-    lateral: number,
-    vertical: number,
+    swing: number,
   ): void {
     const cx = x + w / 2;
     const cy = y + h / 2 + 6;
 
-    // 水平線（重力の向きの基準）。これが無いとカントで車体が傾いていることが分からない。
-    ctx.save();
-    ctx.translate(cx, cy);
-    ctx.strokeStyle = '#3d4a58';
-    ctx.lineWidth = 1;
-    ctx.setLineDash([3, 3]);
-    ctx.beginPath();
-    ctx.moveTo(-w / 2 + 4, 0);
-    ctx.lineTo(w / 2 - 4, 0);
-    ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.restore();
-
-    // 軌道面（カントで傾いたレール）。車体の傾きの原因を目で追えるようにする。
-    ctx.save();
-    ctx.translate(cx, cy);
-    ctx.rotate(trackRoll);
-    ctx.strokeStyle = '#7d6a4a';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(-30, 30);
-    ctx.lineTo(30, 30);
-    ctx.stroke();
-    for (const rx of [-22, 22]) {
-      ctx.beginPath();
-      ctx.moveTo(rx, 30);
-      ctx.lineTo(rx, 25);
-      ctx.stroke();
-    }
-    ctx.restore();
+    drawHorizon(ctx, cx, cy, w);
+    drawTrack(ctx, cx, cy, trackRoll * ATTITUDE_GAIN, [-22, 22]);
 
     ctx.save();
     ctx.translate(cx, cy);
     // 画面の y は下向きなので、右下がりのロールは時計回り＝正の回転になる
-    ctx.rotate(roll);
-
-    const bw = 66;
-    const bh = 46;
-    ctx.strokeStyle = '#6f7d8c';
-    ctx.fillStyle = 'rgba(60, 72, 86, 0.5)';
-    ctx.lineWidth = 1.6;
-    roundRect(ctx, -bw / 2, -bh / 2, bw, bh, 6);
-    ctx.fill();
-    ctx.stroke();
-
-    // 吊り革は「重力 + 慣性力」の向きに垂れる
-    // canvas は y が下向きなので、右へ振れる（正の lateral）には負の回転を与える
-    const swingAngle = -Math.atan2(lateral, Math.max(vertical, 1));
-    ctx.save();
-    ctx.translate(0, -bh / 2 + 6);
-    ctx.rotate(swingAngle);
-    ctx.strokeStyle = '#d0b070';
-    ctx.lineWidth = 1.6;
-    ctx.beginPath();
-    ctx.moveTo(0, 0);
-    ctx.lineTo(0, 20);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.arc(0, 24, 4, 0, Math.PI * 2);
-    ctx.stroke();
+    ctx.rotate(roll * ATTITUDE_GAIN);
+    drawCarBox(ctx, 66, 46);
+    // 振れ角は車体に対する相対角なので、車体を回したあとの座標系で描く。
+    // canvas の y は下向き → 右へ振れる（正）には負の回転を与える。
+    drawStrap(ctx, 0, -46 / 2 + 6, -swing * ATTITUDE_GAIN, 20);
+    drawStanding(ctx, -20, 46 / 2 - 4, swing * ATTITUDE_GAIN);
     ctx.restore();
 
-    // 立っている乗客（同じ角度で傾く）
-    ctx.save();
-    ctx.translate(-20, bh / 2 - 4);
-    ctx.rotate(swingAngle);
-    ctx.strokeStyle = '#9fd3ff';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(0, 0);
-    ctx.lineTo(0, -18);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.arc(0, -22, 3.6, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.restore();
-    ctx.restore();
-
-    ctx.fillStyle = '#8a99ab';
-    ctx.font = '9px system-ui, sans-serif';
-    ctx.textAlign = 'left';
-    ctx.fillText('前方を見た図（ロールと左右の振られ）', x + 4, y + 10);
+    label(ctx, x, y + 10, `前方（カント → ロール → 振られ・角度 ${ATTITUDE_GAIN}倍）`);
   }
 
-  /** 側面図: ピッチングと、前後へ振られる吊り革 */
+  /** 側面図: 勾配 → 車体のピッチング → 前後に振られる吊り革 */
   private drawSideView(
     ctx: CanvasRenderingContext2D,
     x: number,
@@ -247,84 +227,72 @@ export class GMeter {
     w: number,
     h: number,
     pitch: number,
-    longitudinal: number,
-    vertical: number,
+    trackPitch: number,
+    swing: number,
   ): void {
     const cx = x + w / 2;
     const cy = y + h / 2 + 4;
+
+    drawHorizon(ctx, cx, cy, w);
+    // 勾配。進行方向を右に描くので、前下がり（正）は反時計回りになる。
+    drawTrack(ctx, cx, cy, -trackPitch * ATTITUDE_GAIN, [-40, 40]);
+
     ctx.save();
     ctx.translate(cx, cy);
-    // 前下がりのピッチは、進行方向を右に描くと時計回りになる
-    ctx.rotate(pitch);
-
-    const bw = 116;
-    const bh = 30;
-    ctx.strokeStyle = '#6f7d8c';
-    ctx.fillStyle = 'rgba(60, 72, 86, 0.5)';
-    ctx.lineWidth = 1.6;
-    roundRect(ctx, -bw / 2, -bh / 2, bw, bh, 5);
-    ctx.fill();
-    ctx.stroke();
+    ctx.rotate(-pitch * ATTITUDE_GAIN);
+    drawCarBox(ctx, 116, 30);
     // 進行方向を示す矢印
     ctx.strokeStyle = '#4ea3ff';
     ctx.beginPath();
-    ctx.moveTo(bw / 2 - 14, 0);
-    ctx.lineTo(bw / 2 - 4, 0);
-    ctx.lineTo(bw / 2 - 8, -3);
-    ctx.moveTo(bw / 2 - 4, 0);
-    ctx.lineTo(bw / 2 - 8, 3);
+    ctx.moveTo(44, 0);
+    ctx.lineTo(54, 0);
+    ctx.lineTo(50, -3);
+    ctx.moveTo(54, 0);
+    ctx.lineTo(50, 3);
     ctx.stroke();
-
-    // 前後方向の吊り革。加速中は後ろ（画面左）へ振られる
-    const swing = Math.atan2(longitudinal, Math.max(vertical, 1));
-    ctx.save();
-    ctx.translate(10, -bh / 2 + 4);
-    ctx.rotate(-swing);
-    ctx.strokeStyle = '#d0b070';
-    ctx.beginPath();
-    ctx.moveTo(0, 0);
-    ctx.lineTo(0, 15);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.arc(0, 19, 3.4, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.restore();
+    // 前（画面右）へ振れるのは反時計回り
+    drawStrap(ctx, 10, -30 / 2 + 4, -swing * ATTITUDE_GAIN, 15);
+    drawStanding(ctx, -34, 30 / 2 - 3, swing * ATTITUDE_GAIN, 14);
     ctx.restore();
 
-    ctx.fillStyle = '#8a99ab';
-    ctx.font = '9px system-ui, sans-serif';
-    ctx.textAlign = 'left';
-    ctx.fillText('側面（ピッチと前後の振られ）', x + 4, y + 8);
+    label(ctx, x, y + 8, `側面（勾配 → ピッチ → 振られ・${ATTITUDE_GAIN}倍）`);
   }
 
   private drawReadout(
     ctx: CanvasRenderingContext2D,
     x: number,
     y: number,
-    lateral: number,
-    longitudinal: number,
-    roll: number,
+    body: { feltLateral: number; feltLongitudinal: number; absoluteRoll: number },
+    sway: { lateral: number; longitudinal: number; equilibriumLateral: number },
   ): void {
     ctx.font = '10px system-ui, sans-serif';
     ctx.textAlign = 'left';
+    // 振れ角を加速度へ読み替えた値（＝乗客が「今」感じている量）
+    const swungLong = swayToAcceleration(sway.longitudinal);
+    const swungLat = swayToAcceleration(sway.lateral);
+    const lag = ((sway.equilibriumLateral - sway.lateral) * 180) / Math.PI;
     const rows: Array<[string, string, string]> = [
       [
         '前後',
-        `${longitudinal >= 0 ? '+' : ''}${longitudinal.toFixed(2)} m/s²`,
-        longitudinal > 0.05 ? '前へ（制動）' : longitudinal < -0.05 ? '後ろへ（力行）' : '—',
+        `${swungLong >= 0 ? '+' : ''}${swungLong.toFixed(2)} m/s²`,
+        swungLong > 0.05 ? '前へ（制動）' : swungLong < -0.05 ? '後ろへ（力行）' : '—',
       ],
       [
         '左右',
-        `${lateral >= 0 ? '+' : ''}${lateral.toFixed(2)} m/s²`,
-        lateral > 0.05 ? '右へ' : lateral < -0.05 ? '左へ' : '—',
+        `${swungLat >= 0 ? '+' : ''}${swungLat.toFixed(2)} m/s²`,
+        swungLat > 0.05 ? '右へ' : swungLat < -0.05 ? '左へ' : '—',
       ],
-      ['ロール', `${((roll * 180) / Math.PI).toFixed(2)}°`, ''],
-      ['合成', `${(Math.hypot(lateral, longitudinal) / GRAVITY).toFixed(3)} G`, ''],
+      [
+        '振れ角',
+        `${((Math.hypot(sway.lateral, sway.longitudinal) * 180) / Math.PI).toFixed(1)}°`,
+        `遅れ ${lag >= 0 ? '+' : ''}${lag.toFixed(1)}°`,
+      ],
+      ['合成', `${(Math.hypot(swungLat, swungLong) / GRAVITY).toFixed(3)} G`, ''],
     ];
     let yy = y + 10;
-    for (const [label, value, note] of rows) {
+    for (const [label_, value, note] of rows) {
       ctx.fillStyle = '#8a99ab';
-      ctx.fillText(label, x, yy);
+      ctx.fillText(label_, x, yy);
       ctx.fillStyle = '#d7e0ea';
       ctx.fillText(value, x + 44, yy);
       if (note) {
@@ -334,6 +302,117 @@ export class GMeter {
       yy += 14;
     }
   }
+}
+
+/** 重力の向きの基準となる水平線 */
+function drawHorizon(ctx: CanvasRenderingContext2D, cx: number, cy: number, w: number): void {
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.strokeStyle = '#3d4a58';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([3, 3]);
+  ctx.beginPath();
+  ctx.moveTo(-w / 2 + 4, 0);
+  ctx.lineTo(w / 2 - 4, 0);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.restore();
+}
+
+/** 傾いた軌道面（カントまたは勾配）。車体の傾きの原因を目で追えるようにする。 */
+function drawTrack(
+  ctx: CanvasRenderingContext2D,
+  cx: number,
+  cy: number,
+  angle: number,
+  ties: readonly number[],
+): void {
+  const half = Math.max(...ties.map(Math.abs)) + 8;
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(angle);
+  ctx.strokeStyle = '#7d6a4a';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(-half, 30);
+  ctx.lineTo(half, 30);
+  ctx.stroke();
+  for (const rx of ties) {
+    ctx.beginPath();
+    ctx.moveTo(rx, 30);
+    ctx.lineTo(rx, 25);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawCarBox(ctx: CanvasRenderingContext2D, w: number, h: number): void {
+  ctx.strokeStyle = '#6f7d8c';
+  ctx.fillStyle = 'rgba(60, 72, 86, 0.5)';
+  ctx.lineWidth = 1.6;
+  roundRect(ctx, -w / 2, -h / 2, w, h, 5);
+  ctx.fill();
+  ctx.stroke();
+}
+
+/** 吊り革（下向きの振り子） */
+function drawStrap(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  angle: number,
+  length: number,
+): void {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(angle);
+  ctx.strokeStyle = '#d0b070';
+  ctx.lineWidth = 1.6;
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.lineTo(0, length);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(0, length + 4, 3.6, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
+}
+
+/**
+ * 立っている乗客（支点が足元にある倒立振子）。
+ *
+ * 曲線では吊り革のリングも乗客の頭も同じ外側へ動く。ところが支点の位置が
+ * 上下で逆なので、**同じ向きへ質量を動かすには回転の符号を逆にする**必要がある
+ * （原点から下へ伸ばした線と上へ伸ばした線は、同じ角度で回すと先端が逆へ動く）。
+ * `angle` には吊り革と符号を反転した値を渡すこと。
+ */
+function drawStanding(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  angle: number,
+  height = 18,
+): void {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(angle);
+  ctx.strokeStyle = '#9fd3ff';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.lineTo(0, -height);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(0, -height - 4, 3.6, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function label(ctx: CanvasRenderingContext2D, x: number, y: number, text: string): void {
+  ctx.fillStyle = '#8a99ab';
+  ctx.font = '9px system-ui, sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText(text, x + 4, y);
 }
 
 function roundRect(

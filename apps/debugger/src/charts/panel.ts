@@ -94,6 +94,19 @@ export class ChartPanel {
         zeroLine: true,
       }),
     );
+    // 乗客の振れは比力に遅れて追従する。平衡角との差がそのままジャークの効き具合。
+    this.sway = add(
+      new StripChart({
+        title: '乗客の振れ [deg]（実線 = 振り子 / 破線 = 瞬時の平衡角）',
+        series: [
+          { key: 'swayLong', label: '前後', color: '#4ea3ff' },
+          { key: 'eqLong', label: '前後 平衡', color: '#2c5e8f' },
+          { key: 'swayLat', label: '左右', color: '#ffd23f' },
+          { key: 'eqLat', label: '左右 平衡', color: '#8a7526' },
+        ],
+        zeroLine: true,
+      }),
+    );
     this.coupler = add(
       new StripChart({
         title: '連結器力 [kN] と車体の揺れ [mm]',
@@ -114,6 +127,7 @@ export class ChartPanel {
   private readonly pressure: StripChart;
   private readonly adhesion: StripChart;
   private readonly ride: StripChart;
+  private readonly sway: StripChart;
   private readonly coupler: StripChart;
 
   sample(sim: Simulation): void {
@@ -161,6 +175,13 @@ export class ChartPanel {
       roll: (snap.body.roll * 180) / Math.PI,
       // 他の系列と桁を揃えるため cm 表示（60mm = 6）
       cantDef: snap.cantDeficiency * 100,
+    });
+    const deg = (rad: number) => (rad * 180) / Math.PI;
+    this.sway.push(t, {
+      swayLong: deg(snap.body.sway.longitudinal),
+      eqLong: deg(snap.body.sway.equilibriumLongitudinal),
+      swayLat: deg(snap.body.sway.lateral),
+      eqLat: deg(snap.body.sway.equilibriumLateral),
     });
     this.coupler.push(t, {
       coupler: snap.maxCouplerForce / 1000,

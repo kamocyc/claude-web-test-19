@@ -1,5 +1,10 @@
 import { GRAVITY, type Meters, type Radians } from '../units.ts';
-import type { SuspensionSpec } from '../vehicle/spec.ts';
+import type { PassengerSpec, SuspensionSpec } from '../vehicle/spec.ts';
+import {
+  PassengerPendulum,
+  createPassengerSwayState,
+  type PassengerSwayState,
+} from './passenger.ts';
 
 /**
  * 2 次系（ばね・質量・ダンパ）の 1 自由度。
@@ -45,8 +50,15 @@ export interface BodyMotionState {
   trackRoll: Radians;
   /** 水平面に対する車体の総ロール角 [rad] = `trackRoll + roll` */
   absoluteRoll: Radians;
-  /** ピッチ角 [rad]（正 = 前下がり＝ノーズダイブ） */
+  /** 軌道面に対するピッチ角 [rad]（正 = 前下がり＝ノーズダイブ） */
   pitch: Radians;
+  /**
+   * 勾配による床自体の傾き [rad]（正 = 前下がり＝下り勾配）。
+   * 勾配角は上りが正なので、その符号を反転した値になる。
+   */
+  trackPitch: Radians;
+  /** 水平面に対する車体の総ピッチ角 [rad] = `trackPitch + pitch` */
+  absolutePitch: Radians;
   /** ヨー角 [rad]（正 = 左向き） */
   yaw: Radians;
   /** 左右変位 [m]（正 = 右） */
@@ -55,15 +67,24 @@ export interface BodyMotionState {
   vertical: Meters;
   /** ロール角速度 [rad/s] */
   rollRate: number;
+  /** ロールの角加速度 [rad/s^2]（吊り革の支点が振られる量） */
+  rollAcceleration: number;
+  /** ピッチの角加速度 [rad/s^2] */
+  pitchAcceleration: number;
   /**
    * 乗客が感じる左右方向の比力 [m/s^2]（正 = 右へ押される）。
    * 水平面での比力を、カントと車体ロールで傾いた床の座標系へ射影したもの。
    */
   feltLateral: number;
-  /** 乗客が感じる前後方向の比力 [m/s^2]（正 = 後ろへ押される＝加速中） */
+  /**
+   * 乗客が感じる前後方向の比力 [m/s^2]（正 = 前へ押される＝制動中）。
+   * 加速度だけでなく、勾配で傾いた床に沿う重力成分も含む。
+   */
   feltLongitudinal: number;
   /** 乗客が感じる上下方向の比力 [m/s^2]（正 = 上向き。1G = 通常） */
   feltVertical: number;
+  /** 乗客（吊り革）の振れ。比力に遅れて追従するので加加速度が見える。 */
+  sway: PassengerSwayState;
 }
 
 export function createBodyMotionState(): BodyMotionState {
@@ -72,13 +93,18 @@ export function createBodyMotionState(): BodyMotionState {
     trackRoll: 0,
     absoluteRoll: 0,
     pitch: 0,
+    trackPitch: 0,
+    absolutePitch: 0,
     yaw: 0,
     lateral: 0,
     vertical: 0,
     rollRate: 0,
+    rollAcceleration: 0,
+    pitchAcceleration: 0,
     feltLateral: 0,
     feltLongitudinal: 0,
     feltVertical: GRAVITY,
+    sway: createPassengerSwayState(),
   };
 }
 
@@ -93,6 +119,11 @@ export interface BodyMotionInput {
   readonly cantAngle: Radians;
   /** 車体の前後加速度 [m/s^2]（正 = 加速） */
   readonly longitudinalAcceleration: number;
+  /**
+   * 勾配角 [rad]（正 = 上り）。床が傾くぶんの重力成分が前後の比力に入る。
+   * これが無いと、下り勾配を惰行しているだけで「後ろへ押される」と出てしまう。
+   */
+  readonly gradeAngle: Radians;
   /** 前台車位置の高低狂い [m] */
   readonly frontVertical: Meters;
   /** 後台車位置の高低狂い [m] */
@@ -134,8 +165,14 @@ export class CarBodyMotion {
   private readonly yawOsc = new Oscillator();
   private readonly swayOsc = new Oscillator();
   private readonly bounceOsc = new Oscillator();
+  private readonly pendulum: PassengerPendulum;
 
-  constructor(private readonly spec: SuspensionSpec) {}
+  constructor(
+    private readonly spec: SuspensionSpec,
+    passenger: PassengerSpec,
+  ) {
+    this.pendulum = new PassengerPendulum(passenger);
+  }
 
   step(dt: number, input: BodyMotionInput): BodyMotionState {
     const s = this.spec;
@@ -186,23 +223,53 @@ export class CarBodyMotion {
     const cos = Math.cos(absoluteRoll);
     const sin = Math.sin(absoluteRoll);
     const feltLateral = ah * cos + GRAVITY * sin;
-    // 加速すると乗客は後ろへ押される
-    const feltLongitudinal = -input.longitudinalAcceleration;
-    // 車体が上向きに加速している瞬間は、乗客は座席へ押し付けられる（見かけの重力が増す）
-    const feltVertical = GRAVITY * cos - ah * sin + this.bounceOsc.acceleration;
+
+    // 前後方向も同じ考え方で、勾配とピッチで傾いた床へ重力を射影する。
+    //
+    //   前後 = g*sin(p) - a          p = 総ピッチ角（正 = 前下がり）
+    //
+    // 制動（a<0）では前へ押され、上り勾配で停車すると後ろへ押される。下り勾配を
+    // 惰行しているときは重力の斜面成分と加速度がほぼ打ち消し合って無感になる
+    // （回転部慣性のぶんだけわずかに残るのが正しい）。加速度だけを見て -a と
+    // していたころは、下り惰行しているだけで「後ろへ押される」と出ていた。
+    const trackPitch = -input.gradeAngle;
+    const absolutePitch = trackPitch + pitch;
+    const cosPitch = Math.cos(absolutePitch);
+    const feltLongitudinal =
+      GRAVITY * Math.sin(absolutePitch) - input.longitudinalAcceleration * cosPitch;
+    // 床に垂直な成分。前後加速度は床に沿う向きなので、ここには寄与しない
+    // （斜面を滑る物体の垂直抗力が m g cos θ になるのと同じ）。
+    // 車体が上向きに加速している瞬間は、乗客は座席へ押し付けられる。
+    const feltVertical = (GRAVITY * cos - ah * sin) * cosPitch + this.bounceOsc.acceleration;
+
+    // --- 乗客（吊り革）の振れ ---
+    // 比力をそのまま角度にせず、減衰振り子として遅れて追従させる。
+    const sway = this.pendulum.step(
+      dt,
+      feltLateral,
+      feltLongitudinal,
+      feltVertical,
+      this.rollOsc.acceleration,
+      this.pitchOsc.acceleration,
+    );
 
     const st = this.state;
     st.roll = roll;
     st.trackRoll = trackRoll;
     st.absoluteRoll = absoluteRoll;
     st.pitch = pitch;
+    st.trackPitch = trackPitch;
+    st.absolutePitch = absolutePitch;
     st.yaw = yaw;
     st.lateral = lateral;
     st.vertical = vertical;
     st.rollRate = this.rollOsc.rate;
+    st.rollAcceleration = this.rollOsc.acceleration;
+    st.pitchAcceleration = this.pitchOsc.acceleration;
     st.feltLateral = feltLateral;
     st.feltLongitudinal = feltLongitudinal;
     st.feltVertical = feltVertical;
+    st.sway = sway;
     return st;
   }
 
@@ -212,6 +279,7 @@ export class CarBodyMotion {
     this.yawOsc.reset();
     this.swayOsc.reset();
     this.bounceOsc.reset();
+    this.pendulum.reset();
   }
 }
 
