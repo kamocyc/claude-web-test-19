@@ -1,6 +1,7 @@
 import type { PointTable, SpanTable, StepTable } from '../math/table.ts';
 import type { TrackIrregularity } from '../physics/irregularity.ts';
 import type { Alignment } from '../track/alignment.ts';
+import type { TurnoutTrack } from '../track/turnout.ts';
 import type { Meters, MetersPerSecond, Seconds } from '../units.ts';
 
 /** 信号現示。数値が大きいほど高速で進行できる。 */
@@ -128,6 +129,13 @@ export interface CompiledRoute {
   readonly safetySections: SpanTable<SafetySystemKind>;
   /** 軌道狂い（距離程の関数。線路そのものの性質なので路線データが持つ） */
   readonly irregularity: TrackIrregularity;
+  /**
+   * 分岐器。
+   *
+   * 開通方向（`route`）まで含めて路線データが持つ。分岐側へ開通している分岐器の
+   * 先は別の線形になるため、進路が違えば**別の路線データ**になるという扱いである。
+   */
+  readonly turnouts: TurnoutTrack;
   /**
    * 距離程 -> レールの継目間隔 [m]（0 = ロングレール）。
    * 定尺レール区間では軸が継目を踏むたびに衝撃音が出る。

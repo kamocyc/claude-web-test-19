@@ -70,6 +70,35 @@ export const signalSchema = z.object({
   maxAspect: aspectSchema.default('G'),
 });
 
+/**
+ * 分岐器（ポイント）。
+ *
+ * 分岐側へ開通していれば、その先の線形は**この路線データの `horizontal` が続けて
+ * 書いているもの**になる。すなわち「直進する進路」と「分岐する進路」は別々の路線
+ * データであり、この項目はその路線が分岐器のどちら側を通るのかを宣言する。
+ * 分岐器そのもの（トングレール・クロッシング）は開通方向によらず同じ場所にあり、
+ * どちらを通っても揺れと音が出る。
+ */
+export const turnoutSchema = z.object({
+  id: z.string(),
+  /** 列車が進入する側の端（分岐器の始端）の距離程 [m] */
+  at: z.number(),
+  /** 番数 N（クロッシング角 α は tan α = 1/N）。8・12・16 などを入れる。 */
+  number: z.number().positive().default(12),
+  /** 分岐側が出る向き（進行方向から見て） */
+  side: z.enum(['left', 'right']).default('right'),
+  /** 対向（トングレール側から進入）／背向（クロッシング側から進入＝合流） */
+  orientation: z.enum(['facing', 'trailing']).default('facing'),
+  /** この路線が通る側 */
+  route: z.enum(['through', 'diverging']).default('through'),
+  /** 可動ノーズクロッシング（欠線が無いので衝撃が小さい） */
+  swingNose: z.boolean().default(false),
+  /** リード曲線半径 [m]（省略すると番数から標準値を求める） */
+  radius: z.number().positive().optional(),
+  /** 分岐側の制限速度 [km/h]（省略するとリード半径と許容カント不足から求める） */
+  divergingSpeed: z.number().positive().optional(),
+});
+
 export const tunnelSchema = z.object({
   id: z.string().optional(),
   start: z.number(),
@@ -122,6 +151,7 @@ export const routeSchema = z.object({
   stations: z.array(stationSchema).default([]),
   signals: z.array(signalSchema).default([]),
   tunnels: z.array(tunnelSchema).default([]),
+  turnouts: z.array(turnoutSchema).default([]),
   safetySections: z.array(safetySectionSchema).default([]),
   beacons: z.array(beaconSchema).default([]),
 
@@ -211,6 +241,23 @@ export const routeSchema = z.object({
           }),
         )
         .default([]),
+    })
+    .default({}),
+
+  /**
+   * 分岐側を通るときの制限速度を自動生成する。
+   *
+   * 分岐器のリード曲線には**緩和曲線もカントも無い**ため、同じ半径の本線曲線より
+   * 許容できるカント不足は小さい。50mm を既定にすると、#8/R145 → 25km/h、
+   * #10/R245 → 35km/h、#12/R350 → 45km/h と実際の分岐制限に一致する。
+   */
+  autoTurnoutLimits: z
+    .object({
+      enabled: z.boolean().default(true),
+      /** 許容するカント不足 [mm] */
+      maxCantDeficiency: z.number().default(50),
+      /** 制限速度を 5km/h 単位に切り下げる */
+      roundDown: z.number().default(5),
     })
     .default({}),
 

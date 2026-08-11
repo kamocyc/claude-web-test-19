@@ -1,4 +1,10 @@
-import { GRAVITY, swayToAcceleration, type Simulation } from '@railsim/core';
+import {
+  GRAVITY,
+  swayToAcceleration,
+  type BalanceAxisState,
+  type Simulation,
+  type StanceState,
+} from '@railsim/core';
 
 const WIDTH = 340;
 const HEIGHT = 214;
@@ -18,26 +24,26 @@ interface TrailPoint {
 }
 
 /**
- * 加速度を「乗客がどう振られるか」で示すメータ。
+ * 加速度を「車内の人と物がどう動くか」で示すメータ。
  *
  * 加速度の数値を角度へ直接変換すると、加速度が変わった瞬間に角度が飛んでしまい、
- * 加加速度（ジャーク）が見えない。ここでは物理コアが解いている**減衰振り子**
- * （車内に吊るした吊り革と同じ、固有周期 1.5 秒程度）の振れ角をそのまま描く。
- * 振り子は加速度に遅れて追従するので:
+ * 加加速度（ジャーク）が見えない。ここでは物理コアが解いている 2 つの模型を描く。
  *
- *  - ノッチを一気に動かす → 大きく振られて行き過ぎ、揺り戻しが出る
- *  - 一段ずつ刻む         → 同じ加速度でも静かに傾くだけ
+ *  - **吊り革** — 減衰振り子（固有周期 1.5 秒）。比力に遅れて追従する物。
+ *  - **立っている乗客** — 足首を支点とした倒立振子に、0.14 秒のむだ時間を持つ
+ *    姿勢制御を載せた人。加速度が緩やかに変われば押される向きへ**よりかかる**
+ *    だけで済み、急に変われば取り残されて倒れ、足が出る。
  *
- * という運転の質の差が、そのまま絵になる。
+ * 同じ加減速でも**変え方**で絵が変わる、というのがこのメータの目的である。
  *
  * 表示は 3 つ:
  *
- *  1. **振れ盤** — 振り子の先端を真上から見た位置と、その軌跡。
+ *  1. **振れ盤** — 吊り革の先端を真上から見た位置と、その軌跡。
  *     瞬時の平衡点（＝加速度そのものの向き）を薄い十字で重ねてあり、
- *     両者の隔たりが「まだ振れ切っていない量」になる。
+ *     両者の隔たりが「まだ振れ切っていない量」になる。乗客の足圧中心も重ねる。
  *  2. **前面図** — カントで傾いた軌道面、その上でロールした車体、
- *     さらにその中で振られる吊り革と立っている乗客。
- *  3. **側面図** — 勾配で傾いた床、車体のピッチング、前後に振られる吊り革。
+ *     さらにその中で振られる吊り革と、踏ん張っている乗客。
+ *  3. **側面図** — 勾配で傾いた床、車体のピッチング、前後の吊り革と乗客。
  */
 export class GMeter {
   readonly canvas: HTMLCanvasElement;
@@ -68,7 +74,8 @@ export class GMeter {
     ctx.clearRect(0, 0, WIDTH, HEIGHT);
 
     const body = sim.dynamics.vehicles[0]!.body;
-    const sway = body.sway;
+    const sway = body.passenger.strap;
+    const stance = body.passenger.stance;
 
     this.trail.push({ lateral: sway.lateral, longitudinal: sway.longitudinal });
     if (this.trail.length > TRAIL_LENGTH) this.trail.shift();
@@ -79,8 +86,18 @@ export class GMeter {
     ctx.strokeStyle = '#2a3440';
     ctx.stroke();
 
-    this.drawSwayPlate(ctx, 8, 8, 138, sway);
-    this.drawFrontView(ctx, 158, 10, 172, 92, body.absoluteRoll, body.trackRoll, sway.lateral);
+    this.drawSwayPlate(ctx, 8, 8, 138, sway, stance);
+    this.drawFrontView(
+      ctx,
+      158,
+      10,
+      172,
+      92,
+      body.absoluteRoll,
+      body.trackRoll,
+      sway.lateral,
+      stance.lateral,
+    );
     this.drawSideView(
       ctx,
       158,
@@ -90,13 +107,19 @@ export class GMeter {
       body.absolutePitch,
       body.trackPitch,
       sway.longitudinal,
+      stance.longitudinal,
     );
-    this.drawReadout(ctx, 8, 154, body, sway);
+    this.drawReadout(ctx, 8, 154, stance);
   }
 
   /**
-   * 振れ盤: 振り子の先端を真上から見た図。
+   * 振れ盤: 吊り革の先端を真上から見た図。
    * 制動なら前（上）へ、力行なら後ろ（下）へ、曲線なら外側へ振れる。
+   *
+   * 立っている乗客の**支持余裕**（外挿重心が支持基底面のどこにあるか）も、
+   * 同じ真上から見た図として重ねる。外周の円が「これ以上は足を出すしかない」縁で、
+   * 縁に触れた瞬間に足が出る。吊り革が外側へ振れる向きと、乗客が踏ん張る向きが
+   * 逆であることが一目で分かる。
    */
   private drawSwayPlate(
     ctx: CanvasRenderingContext2D,
@@ -109,6 +132,7 @@ export class GMeter {
       equilibriumLateral: number;
       equilibriumLongitudinal: number;
     },
+    stance: StanceState,
   ): void {
     const cx = x + size / 2;
     const cy = y + size / 2;
@@ -185,10 +209,29 @@ export class GMeter {
     ctx.beginPath();
     ctx.arc(px, py, 5, 0, Math.PI * 2);
     ctx.fill();
+
+    // --- 立っている乗客の支持余裕 ---
+    // 外挿重心を支持基底面の縁で正規化した量なので、半径 1 の円が「縁」になる。
+    // 盤の半径をそのまま 1 として重ねる。
+    const balanceR = r * 0.72;
+    ctx.setLineDash([2, 2]);
+    ctx.strokeStyle = 'rgba(125, 220, 138, 0.45)';
+    ctx.beginPath();
+    ctx.arc(cx, cy, balanceR, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    // 前後は爪先側が広く踵側が狭い。倒れる向きと支える向きが逆なので符号を反転する。
+    const bx = cx + clampUnit(stance.lateral.margin * signOf(stance.lateral.error)) * balanceR;
+    const by =
+      cy - clampUnit(stance.longitudinal.margin * signOf(stance.longitudinal.error)) * balanceR;
+    ctx.fillStyle = stance.stagger > 1 ? '#ff6b6b' : stance.stagger > 0.6 ? '#ffb454' : '#7ddc8a';
+    ctx.beginPath();
+    ctx.arc(bx, by, 3, 0, Math.PI * 2);
+    ctx.fill();
     ctx.restore();
   }
 
-  /** 前面図: 軌道面のカント → 車体のロール → 吊り革と乗客の振れ */
+  /** 前面図: 軌道面のカント → 車体のロール → 吊り革の振れと乗客の踏ん張り */
   private drawFrontView(
     ctx: CanvasRenderingContext2D,
     x: number,
@@ -198,6 +241,7 @@ export class GMeter {
     roll: number,
     trackRoll: number,
     swing: number,
+    stance: BalanceAxisState,
   ): void {
     const cx = x + w / 2;
     const cy = y + h / 2 + 6;
@@ -213,13 +257,13 @@ export class GMeter {
     // 振れ角は車体に対する相対角なので、車体を回したあとの座標系で描く。
     // canvas の y は下向き → 右へ振れる（正）には負の回転を与える。
     drawStrap(ctx, 0, -46 / 2 + 6, -swing * ATTITUDE_GAIN, 20);
-    drawStanding(ctx, -20, 46 / 2 - 4, swing * ATTITUDE_GAIN);
+    drawStanding(ctx, -20, 46 / 2 - 4, stance);
     ctx.restore();
 
     label(ctx, x, y + 10, `前方（カント → ロール → 振られ・角度 ${ATTITUDE_GAIN}倍）`);
   }
 
-  /** 側面図: 勾配 → 車体のピッチング → 前後に振られる吊り革 */
+  /** 側面図: 勾配 → 車体のピッチング → 前後の吊り革と乗客 */
   private drawSideView(
     ctx: CanvasRenderingContext2D,
     x: number,
@@ -229,6 +273,7 @@ export class GMeter {
     pitch: number,
     trackPitch: number,
     swing: number,
+    stance: BalanceAxisState,
   ): void {
     const cx = x + w / 2;
     const cy = y + h / 2 + 4;
@@ -252,48 +297,63 @@ export class GMeter {
     ctx.stroke();
     // 前（画面右）へ振れるのは反時計回り
     drawStrap(ctx, 10, -30 / 2 + 4, -swing * ATTITUDE_GAIN, 15);
-    drawStanding(ctx, -34, 30 / 2 - 3, swing * ATTITUDE_GAIN, 14);
+    drawStanding(ctx, -34, 30 / 2 - 3, stance, 14);
     ctx.restore();
 
     label(ctx, x, y + 8, `側面（勾配 → ピッチ → 振られ・${ATTITUDE_GAIN}倍）`);
   }
 
+  /**
+   * 数値の読み出し。
+   *
+   * 「いま何 m/s² か」ではなく「乗客がどれだけ持ちこたえているか」を主役にする。
+   * 傾きは押される向きへ**よりかかっている**量で、目標との差（追従の遅れ）が
+   * そのままよろけの原因になる。
+   */
   private drawReadout(
     ctx: CanvasRenderingContext2D,
     x: number,
     y: number,
-    body: { feltLateral: number; feltLongitudinal: number; absoluteRoll: number },
-    sway: { lateral: number; longitudinal: number; equilibriumLateral: number },
+    stance: StanceState,
   ): void {
     ctx.font = '10px system-ui, sans-serif';
     ctx.textAlign = 'left';
-    // 振れ角を加速度へ読み替えた値（＝乗客が「今」感じている量）
-    const swungLong = swayToAcceleration(sway.longitudinal);
-    const swungLat = swayToAcceleration(sway.lateral);
-    const lag = ((sway.equilibriumLateral - sway.lateral) * 180) / Math.PI;
+    const lat = stance.lateral;
+    const lon = stance.longitudinal;
+    // 目標の傾きを加速度に読み替える（tan θ* = a / g）
+    const aLong = -swayToAcceleration(lon.target);
+    const aLat = -swayToAcceleration(lat.target);
+    const effort = Math.max(lat.effort, lon.effort);
     const rows: Array<[string, string, string]> = [
+      // 傾きは「正 = 前／右へ倒れている」。押される向きと逆へよりかかるので、
+      // 比力と符号が逆になる。ずれ（= 傾き − 目標）が追従の遅れそのもの。
       [
         '前後',
-        `${swungLong >= 0 ? '+' : ''}${swungLong.toFixed(2)} m/s²`,
-        swungLong > 0.05 ? '前へ（制動）' : swungLong < -0.05 ? '後ろへ（力行）' : '—',
+        `${aLong >= 0 ? '+' : ''}${aLong.toFixed(2)} m/s²`,
+        `よりかかり ${deg1(lon.target)}° / ずれ ${deg1(lon.error)}°`,
       ],
       [
         '左右',
-        `${swungLat >= 0 ? '+' : ''}${swungLat.toFixed(2)} m/s²`,
-        swungLat > 0.05 ? '右へ' : swungLat < -0.05 ? '左へ' : '—',
+        `${aLat >= 0 ? '+' : ''}${aLat.toFixed(2)} m/s²`,
+        `よりかかり ${deg1(lat.target)}° / ずれ ${deg1(lat.error)}°`,
       ],
       [
-        '振れ角',
-        `${((Math.hypot(sway.lateral, sway.longitudinal) * 180) / Math.PI).toFixed(1)}°`,
-        `遅れ ${lag >= 0 ? '+' : ''}${lag.toFixed(1)}°`,
+        'よろけ',
+        `${(stance.stagger * 100).toFixed(0)} %`,
+        `踏ん張り ${(effort * 100).toFixed(0)}%` +
+          (lat.stepping || lon.stepping ? ' 踏み出し中' : ''),
       ],
-      ['合成', `${(Math.hypot(swungLat, swungLong) / GRAVITY).toFixed(3)} G`, ''],
+      [
+        '合成',
+        `${(Math.hypot(aLat, aLong) / GRAVITY).toFixed(3)} G`,
+        stance.steps > 0 ? `足が出た ${stance.steps} 回` : '',
+      ],
     ];
     let yy = y + 10;
     for (const [label_, value, note] of rows) {
       ctx.fillStyle = '#8a99ab';
       ctx.fillText(label_, x, yy);
-      ctx.fillStyle = '#d7e0ea';
+      ctx.fillStyle = label_ === 'よろけ' && stance.stagger > 1 ? '#ff6b6b' : '#d7e0ea';
       ctx.fillText(value, x + 44, yy);
       if (note) {
         ctx.fillStyle = '#8a99ab';
@@ -303,6 +363,16 @@ export class GMeter {
     }
   }
 }
+
+/** ラジアンを 1 桁の度の文字列に（符号つき） */
+const deg1 = (rad: number): string => {
+  const d = (rad * 180) / Math.PI;
+  return `${d >= 0 ? '+' : ''}${d.toFixed(1)}`;
+};
+
+const clampUnit = (x: number): number => (x < -1.15 ? -1.15 : x > 1.15 ? 1.15 : x);
+
+const signOf = (x: number): number => (x >= 0 ? 1 : -1);
 
 /** 重力の向きの基準となる水平線 */
 function drawHorizon(ctx: CanvasRenderingContext2D, cx: number, cy: number, w: number): void {
@@ -379,24 +449,50 @@ function drawStrap(
 }
 
 /**
- * 立っている乗客（支点が足元にある倒立振子）。
+ * 立っている乗客（足首を支点とした倒立振子）。
  *
- * 曲線では吊り革のリングも乗客の頭も同じ外側へ動く。ところが支点の位置が
- * 上下で逆なので、**同じ向きへ質量を動かすには回転の符号を逆にする**必要がある
- * （原点から下へ伸ばした線と上へ伸ばした線は、同じ角度で回すと先端が逆へ動く）。
- * `angle` には吊り革と符号を反転した値を渡すこと。
+ * 吊り革と違い、**押される向きへよりかかる**ので上体は加速度と逆へ傾く。
+ * 描き分けるのは 3 つ。
+ *
+ *  - 上体の傾き（`lean`。正 = その向きへ倒れる。canvas の y は下向きなので、
+ *    原点から上へ伸ばした線を正の角度で回すと先端は +x へ動く）
+ *  - 足圧中心（足元の短い横線）。踏ん張るほど支持基底面の縁へ寄る
+ *  - 踏み出し中は赤くして、出した足を描く
  */
 function drawStanding(
   ctx: CanvasRenderingContext2D,
   x: number,
   y: number,
-  angle: number,
+  stance: BalanceAxisState,
   height = 18,
 ): void {
   ctx.save();
   ctx.translate(x, y);
-  ctx.rotate(angle);
-  ctx.strokeStyle = '#9fd3ff';
+  // 支持基底面と足圧中心（1m = 40px 相当。足元の数 cm を読めるようにする）
+  const scale = 40;
+  ctx.strokeStyle = '#4b5b6b';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(-stance.copLimit * scale, 1.5);
+  ctx.lineTo(stance.copLimit * scale, 1.5);
+  ctx.stroke();
+  ctx.strokeStyle = stance.effort > 0.95 ? '#ff6b6b' : '#ffd23f';
+  ctx.beginPath();
+  ctx.moveTo(stance.cop * scale, -1);
+  ctx.lineTo(stance.cop * scale, 3.5);
+  ctx.stroke();
+
+  // 踏み出した足（着地するまでのあいだ、倒れる向きへ伸びている）
+  if (stance.stepping) {
+    ctx.strokeStyle = '#ff6b6b';
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(stance.stepDirection * scale * 0.18, 2);
+    ctx.stroke();
+  }
+
+  ctx.rotate(stance.lean * ATTITUDE_GAIN);
+  ctx.strokeStyle = stance.stepping ? '#ff8a8a' : '#9fd3ff';
   ctx.lineWidth = 2;
   ctx.beginPath();
   ctx.moveTo(0, 0);

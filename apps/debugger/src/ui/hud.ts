@@ -137,15 +137,50 @@ export class Hud {
         `${deg(snap.body.trackPitch)}° + ${deg(snap.body.pitch)}° = ${deg(snap.body.absolutePitch)}°`,
       ),
     );
-    // 乗客の振れは比力に遅れて追従するので、瞬時の平衡角との差がジャークの効き具合になる
-    const sway = snap.body.sway;
+    // 吊り革は比力に遅れて追従するので、瞬時の平衡角との差がジャークの効き具合になる
+    const sway = snap.body.passenger.strap;
     rows.push(
       row(
-        '乗客の振れ 前後 / 左右',
+        '吊り革の振れ 前後 / 左右',
         `${deg(sway.longitudinal)}° / ${deg(sway.lateral)}°` +
           `（遅れ ${deg(sway.equilibriumLongitudinal - sway.longitudinal)}° / ${deg(sway.equilibriumLateral - sway.lateral)}°）`,
       ),
     );
+    // 立っている乗客は押される向きと逆へよりかかる（正 = 前／右へ傾く）。
+    // 目標の姿勢に追いつけないぶん（ずれ）がよろけになる。
+    const stance = snap.body.passenger.stance;
+    rows.push(
+      row(
+        '乗客の姿勢 前後 / 左右',
+        `${deg(stance.longitudinal.target)}° / ${deg(stance.lateral.target)}° へよりかかり` +
+          `（ずれ ${deg(stance.longitudinal.error)}° / ${deg(stance.lateral.error)}°）`,
+      ),
+    );
+    rows.push(
+      row(
+        'よろけ / 踏み出し',
+        `${(stance.stagger * 100).toFixed(0)} % / ${stance.steps} 回` +
+          (stance.stagger > 1 ? ' <span class="danger">よろけ</span>' : ''),
+      ),
+    );
+
+    // 分岐器。開通方向と、分岐側なら制限速度を手前から出す。
+    const turnout = snap.nextTurnout;
+    if (turnout && turnout.distance < 1500) {
+      const t = turnout.turnout;
+      const diverging = t.route === 'diverging';
+      const where = turnout.distance > 0 ? `${turnout.distance.toFixed(0)} m` : '通過中';
+      rows.push(
+        row(
+          '次の分岐器',
+          `#${t.number} ${t.side === 'right' ? '右' : '左'}分岐 ` +
+            (diverging
+              ? `<span class="warn">分岐側 ${mpsToKmh(t.divergingSpeed).toFixed(0)} km/h</span>`
+              : '<span class="ok">直進</span>') +
+            ` ${where}`,
+        ),
+      );
+    }
 
     if (snap.nextSignal) {
       const aspect = snap.nextSignal.state.aspect;

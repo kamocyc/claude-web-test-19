@@ -4,6 +4,7 @@ import {
   type JointImpact,
   type NoiseMix,
   type TrainNoiseParams,
+  type TurnoutImpact,
 } from '@railsim/audio';
 import { axleOffsets, jointCrossings, type BodyMotionState, type Simulation } from '@railsim/core';
 import workletUrl from './trainNoise.worklet.ts?worker&url';
@@ -12,6 +13,14 @@ const PROCESSOR = 'train-noise';
 
 /** 継目音の基準速度 [m/s]。この速度で衝撃の強さが 1 になる。 */
 const JOINT_REFERENCE_SPEED = 25;
+
+/**
+ * 分岐器の衝撃音の基準速度 [m/s]。
+ *
+ * 継目より低いのは、欠線を渡るときの落ち込みが継目の段差より大きく、同じ速度でも
+ * 明確に強く鳴るためである（分岐器を渡る音が離れていても聞こえるのはこのため）。
+ */
+const TURNOUT_REFERENCE_SPEED = 18;
 
 /**
  * 運転台から音源までの距離による減衰の効き方 [m]。
@@ -57,10 +66,11 @@ export class TrainAudio {
   /** ワークレットから返ってくる音源ごとの実効値 */
   readonly levels = new Float32Array(VOICE_COUNT);
 
-  /** 各車両の前フレームでの距離程（継目の跨ぎ判定に使う） */
+  /** 各車両の前フレームでの距離程（継目・分岐器の跨ぎ判定に使う） */
   private previousPositions: number[] = [];
   private readonly offsetScratch: number[] = [];
   private readonly joints: JointImpact[] = [];
+  private readonly turnouts: TurnoutImpact[] = [];
 
   get available(): boolean {
     return !this.failed;
@@ -164,8 +174,13 @@ export class TrainAudio {
     const running = advance > 0;
 
     const params = this.buildParams(sim, snap, running);
-    const joints = running ? this.collectJoints(sim, wall) : this.clearJoints(sim);
-    worklet.port.postMessage(joints.length > 0 ? { params, joints } : { params });
+    if (running) this.collectImpacts(sim, wall);
+    else this.clearImpacts(sim);
+    worklet.port.postMessage({
+      params,
+      ...(this.joints.length > 0 ? { joints: this.joints } : {}),
+      ...(this.turnouts.length > 0 ? { turnouts: this.turnouts } : {}),
+    });
     this.updateTunnel(sim);
   }
 
@@ -297,30 +312,32 @@ export class TrainAudio {
   }
 
   /**
-   * この描画フレームのあいだに各軸が踏んだ継目を集める。
+   * この描画フレームのあいだに各軸が踏んだ継目と分岐器を集める。
    *
-   * 軸ごと・継目ごとに、フレーム内のどの位置で踏んだかを小数で求め、
+   * 軸ごと・要素ごとに、フレーム内のどの位置で踏んだかを小数で求め、
    * サンプル数に直して予約する。60fps に丸めると 16ms もばらつき、
    * 「ガタン ゴトン」の間隔が台車の寸法を映さなくなる。
+   *
+   * 分岐器も同じ扱いで、1 つの分岐器につき軸ごとに 2 回（トングレール先端と
+   * クロッシング）鳴る。2 つの間隔はリード長を速度で割った時間そのものなので、
+   * 番数の大きい分岐器ほど離れて聞こえる。
    */
-  private collectJoints(sim: Simulation, wall: number): readonly JointImpact[] {
+  private collectImpacts(sim: Simulation, wall: number): void {
     this.joints.length = 0;
+    this.turnouts.length = 0;
     const context = this.context;
-    if (!context || wall <= 0) return this.joints;
+    if (!context || wall <= 0) return;
 
     const route = sim.scenario.route;
     const speed = Math.abs(sim.speed);
-    if (speed < 0.3) {
-      this.syncPositions(sim);
-      return this.joints;
-    }
-    const strength = Math.min(1.2, Math.pow(speed / JOINT_REFERENCE_SPEED, 1.5));
-    const frameSamples = wall * context.sampleRate;
     const vehicles = sim.dynamics.vehicles;
-    if (this.previousPositions.length !== vehicles.length) {
+    if (speed < 0.3 || this.previousPositions.length !== vehicles.length) {
       this.syncPositions(sim);
-      return this.joints;
+      return;
     }
+    const jointStrength = Math.min(1.2, Math.pow(speed / JOINT_REFERENCE_SPEED, 1.5));
+    const turnoutStrength = Math.min(1.4, Math.pow(speed / TURNOUT_REFERENCE_SPEED, 1.5));
+    const frameSamples = wall * context.sampleRate;
 
     const crossings: number[] = [];
     for (let i = 0; i < vehicles.length; i++) {
@@ -328,6 +345,8 @@ export class TrainAudio {
       const offsets = axleOffsets(veh.spec, this.offsetScratch);
       const dCentre = veh.s - this.previousPositions[i]!;
       this.previousPositions[i] = veh.s;
+      // 後方の車ほど遠いので弱く聞こえる
+      const distance = i === 0 ? 1 : 0.75 / (1 + i * 0.35);
       for (const offset of offsets) {
         const now = veh.s + offset;
         const prev = now - dCentre;
@@ -336,19 +355,26 @@ export class TrainAudio {
         for (const u of crossings) {
           this.joints.push({
             delay: Math.round(u * frameSamples),
-            // 後方の車ほど遠いので弱く聞こえる
-            strength: strength * (i === 0 ? 1 : 0.75 / (1 + i * 0.35)),
+            strength: jointStrength * distance,
+          });
+        }
+        if (route.turnouts.length === 0 || dCentre === 0) continue;
+        for (const entry of route.turnouts.crossing(prev, now)) {
+          const u = (entry.s - prev) / dCentre;
+          this.turnouts.push({
+            delay: Math.round(u * frameSamples),
+            strength: turnoutStrength * distance * entry.value.strength,
+            crossing: entry.value.kind === 'crossing',
           });
         }
       }
     }
-    return this.joints;
   }
 
-  private clearJoints(sim: Simulation): readonly JointImpact[] {
+  private clearImpacts(sim: Simulation): void {
     this.syncPositions(sim);
     this.joints.length = 0;
-    return this.joints;
+    this.turnouts.length = 0;
   }
 
   private syncPositions(sim: Simulation): void {

@@ -13,6 +13,7 @@ import type { SafetyContext, SafetyOutput, SafetySystem } from '../safety/types.
 import { noOutput } from '../safety/types.ts';
 import { VigilanceSystem } from '../safety/vigilance.ts';
 import { SignallingSystem } from '../signalling/system.ts';
+import type { Turnout } from '../track/turnout.ts';
 import type { BodyMotionState } from '../train/bodyMotion.ts';
 import { TrainDynamics, type DynamicsEnvironment } from '../train/dynamics.ts';
 import { createInverterState, type InverterState } from '../traction/modulation.ts';
@@ -114,6 +115,7 @@ export class Simulation {
       initialFrontPosition: scenario.startPosition,
       initialSpeed: scenario.startSpeed,
       irregularity: scenario.route.irregularity,
+      turnouts: scenario.route.turnouts,
       ...(scenario.rigidConsist === undefined ? {} : { rigidConsist: scenario.rigidConsist }),
     });
     this.traction = new VvvfTractionSystem(scenario.consist);
@@ -320,6 +322,7 @@ export class Simulation {
         brakePower += Math.abs(ax.brakeTorque * ax.omega);
       }
     }
+    const stance = dyn.vehicles[0]!.body.passenger.stance;
     this.metrics.sample({
       dt,
       acceleration: dyn.acceleration,
@@ -328,6 +331,8 @@ export class Simulation {
       electricPower: this.traction.state.power,
       resistancePower,
       brakePower,
+      stagger: stance.stagger,
+      passengerSteps: stance.steps,
     });
   }
 
@@ -439,6 +444,7 @@ export class Simulation {
     const dyn = this.dynamics;
     const alignment = this.scenario.route.alignment;
     const nextStation = this.nextStation;
+    const turnout = this.scenario.route.turnouts.next(dyn.frontPosition);
     return {
       time: this.time,
       elapsed: this.elapsed,
@@ -476,6 +482,7 @@ export class Simulation {
       nextSignal: this.signalling.signalAhead(dyn.frontPosition) ?? null,
       nextStationName: nextStation?.station.name ?? null,
       distanceToStop: nextStation ? nextStation.station.stopPosition - dyn.frontPosition : null,
+      nextTurnout: turnout ? { turnout, distance: turnout.position - dyn.frontPosition } : null,
     };
   }
 }
@@ -520,6 +527,11 @@ export interface SimSnapshot {
   nextSignal: { state: { aspect: string; speed: number }; distance: number } | null;
   nextStationName: string | null;
   distanceToStop: number | null;
+  /**
+   * 次の分岐器（通過中ならその分岐器。距離は負になる）。
+   * 開通方向と分岐側の制限速度が入っているので、手前で速度を落とす判断に使える。
+   */
+  nextTurnout: { turnout: Turnout; distance: Meters } | null;
 }
 
 /** シナリオの指定に従って保安装置を組み立てる */
