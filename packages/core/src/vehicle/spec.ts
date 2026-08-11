@@ -243,7 +243,15 @@ export const DEFAULT_SUSPENSION: SuspensionSpec = {
  *
  * 吊り革は天井の握り棒からリングまで 0.5〜0.7m 程度、固有周期は
  * `T = 2π√(L/g)` で 1.4〜1.7 秒。立っている乗客も重心高さがおよそ 1m なので
- * 同じ帯域になる。減衰比は「すぐには収まらないが振動し続けもしない」値にする。
+ * 同じ帯域になる。
+ *
+ * 減衰は吊り革の支点の摩擦と乗客自身の姿勢制御だけなので弱い。減衰比 ζ の
+ * ステップ応答の行き過ぎ量は `exp(-πζ/√(1-ζ²))` で、
+ *
+ *   ζ = 0.45 → 20%   ζ = 0.2 → 53%   ζ = 0.1 → 73%
+ *
+ * 実車で急停車したときの吊り革は、前へ振られたぶんの半分ほど後ろへ戻ってから
+ * 数回揺れて収まる。ζ = 0.2 がその挙動になる。
  */
 export interface PassengerSpec {
   /** 振り子の長さ [m] */
@@ -254,7 +262,7 @@ export interface PassengerSpec {
 
 export const DEFAULT_PASSENGER: PassengerSpec = {
   pendulumLength: 0.6,
-  dampingRatio: 0.45,
+  dampingRatio: 0.2,
 };
 
 /** 連結器（緩衝器を含む）の仕様 */

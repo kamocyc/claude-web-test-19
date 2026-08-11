@@ -106,6 +106,83 @@ describe('勾配', () => {
   });
 });
 
+describe('停止保持（静止摩擦）', () => {
+  /** 全ての基礎ブレーキ軸に同じブレーキトルクを与える */
+  const setBrakeTorque = (dyn: TrainDynamics, torque: number): void => {
+    for (const veh of dyn.vehicles) {
+      for (const ax of veh.axles) ax.brakeTorque = ax.braked ? torque : 0;
+    }
+  };
+
+  const onGrade = (permil: number, speed = 0) =>
+    new TrainDynamics(testConsist({ cars: 4 }), gradeTrack(permil), {
+      initialSpeed: speed,
+      initialFrontPosition: 1000,
+    });
+
+  it('ブレーキを掛けていれば勾配上で停車を保持する', () => {
+    for (const permil of [-10, -25, -35]) {
+      const dyn = onGrade(permil);
+      // 非常ブレーキ相当（1 軸あたり 5kN·m ≒ 粘着限界の 1/3）
+      setBrakeTorque(dyn, 5000);
+      const start = dyn.frontPosition;
+      run(dyn, 120);
+      expect(dyn.speed).toBe(0);
+      expect(dyn.frontPosition - start).toBe(0);
+    }
+  });
+
+  it('ブレーキを緩解すれば勾配を転動し始める', () => {
+    const dyn = onGrade(-25);
+    setBrakeTorque(dyn, 5000);
+    run(dyn, 5);
+    expect(dyn.speed).toBe(0);
+    setBrakeTorque(dyn, 0);
+    run(dyn, 5);
+    // 車輪が転がるので保持できず、下り勾配を加速していく
+    expect(dyn.speed).toBeGreaterThan(0.5);
+  });
+
+  it('ブレーキ力が足りなければ保持できずに動き出す', () => {
+    const dyn = onGrade(-35);
+    // 35‰ を保持するには 1 軸あたり 3.6kN·m 要る
+    setBrakeTorque(dyn, 500);
+    run(dyn, 5);
+    expect(dyn.speed).toBeGreaterThan(0.5);
+  });
+
+  it('粘着が足りなければブレーキが強くても滑り出す', () => {
+    const slippery = testConsist({ cars: 4, adhesion: { mu0: 0.02 } });
+    const dyn = new TrainDynamics(slippery, gradeTrack(-35), {
+      initialSpeed: 0,
+      initialFrontPosition: 1000,
+    });
+    setBrakeTorque(dyn, 20_000);
+    run(dyn, 10);
+    expect(dyn.speed).toBeGreaterThan(0.5);
+  });
+
+  it('上り勾配で停車中に力行すれば発進できる', () => {
+    const dyn = onGrade(25);
+    setDriveTorque(dyn, 6000);
+    run(dyn, 5);
+    expect(dyn.speed).toBeGreaterThan(0.5);
+  });
+
+  it('剛体モードでも勾配上で停車を保持する', () => {
+    const dyn = new TrainDynamics(testConsist({ cars: 4 }), gradeTrack(-25), {
+      initialSpeed: 0,
+      initialFrontPosition: 1000,
+      rigidConsist: true,
+    });
+    setBrakeTorque(dyn, 5000);
+    const start = dyn.frontPosition;
+    run(dyn, 60);
+    expect(dyn.speed).toBe(0);
+    expect(dyn.frontPosition - start).toBe(0);
+  });
+});
+
 describe('走行抵抗', () => {
   it('惰行減速が抵抗式から予測される値と一致する', () => {
     const coef = davisFromKgfPerTon({ a: 1.65, b: 0.0247, c: 0.00078 });

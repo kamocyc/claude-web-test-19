@@ -341,6 +341,28 @@ describe('乗客の振られ方（減衰振り子）', () => {
     expect(shortP.body.state.sway.lateral).toBeGreaterThan(longP.body.state.sway.lateral);
   });
 
+  it('制動が急に切れると後ろへ大きく揺り戻す', () => {
+    const body = new CarBodyMotion(
+      { ...DEFAULT_SUSPENSION, rollFlexibility: 0 },
+      DEFAULT_PASSENGER,
+    );
+    // 制動が定常になるまで前へ振られる
+    for (let i = 0; i < 20_000; i++) body.step(DT, baseInput({ longitudinalAcceleration: -1.2 }));
+    const leaned = body.state.sway.longitudinal;
+    expect(leaned).toBeGreaterThan(0);
+
+    // 停車した瞬間に減速度が消える
+    let back = 0;
+    for (let i = 0; i < 4000; i++) {
+      body.step(DT, baseInput({}));
+      back = Math.min(back, body.state.sway.longitudinal);
+    }
+    // 行き過ぎ量 exp(-πζ/√(1-ζ²)) は ζ = 0.2 で約 53%。
+    // 減衰が強すぎると揺り戻しが見えなくなる（ζ = 0.45 なら 20%）。
+    expect(-back / leaned).toBeGreaterThan(0.4);
+    expect(-back / leaned).toBeLessThan(0.7);
+  });
+
   it('制動では前へ、力行では後ろへ振れる', () => {
     const braking = run(20_000, { longitudinalAcceleration: -1.0 });
     const powering = run(20_000, { longitudinalAcceleration: 1.0 });
