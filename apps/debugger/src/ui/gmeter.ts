@@ -70,9 +70,11 @@ export class GMeter {
     ctx.stroke();
 
     this.drawCircle(ctx, 8, 8, 138, lateral, longitudinal);
-    this.drawFrontView(ctx, 158, 10, 172, 92, body.roll, lateral, vertical);
+    // 前面図は水平面に対する姿勢で描く。車体は「カントで傾いた軌道面」の上で
+    // さらにロールするので、その 2 段構えがそのまま見えるようにする。
+    this.drawFrontView(ctx, 158, 10, 172, 92, body.absoluteRoll, body.trackRoll, lateral, vertical);
     this.drawSideView(ctx, 158, 106, 172, 66, body.pitch, longitudinal, vertical);
-    this.drawReadout(ctx, 8, 154, lateral, longitudinal, body.roll);
+    this.drawReadout(ctx, 8, 154, lateral, longitudinal, body.absoluteRoll);
   }
 
   /** 前後 G・左右 G の 2 次元表示 */
@@ -146,11 +148,44 @@ export class GMeter {
     w: number,
     h: number,
     roll: number,
+    trackRoll: number,
     lateral: number,
     vertical: number,
   ): void {
     const cx = x + w / 2;
     const cy = y + h / 2 + 6;
+
+    // 水平線（重力の向きの基準）。これが無いとカントで車体が傾いていることが分からない。
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.strokeStyle = '#3d4a58';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.moveTo(-w / 2 + 4, 0);
+    ctx.lineTo(w / 2 - 4, 0);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+
+    // 軌道面（カントで傾いたレール）。車体の傾きの原因を目で追えるようにする。
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(trackRoll);
+    ctx.strokeStyle = '#7d6a4a';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(-30, 30);
+    ctx.lineTo(30, 30);
+    ctx.stroke();
+    for (const rx of [-22, 22]) {
+      ctx.beginPath();
+      ctx.moveTo(rx, 30);
+      ctx.lineTo(rx, 25);
+      ctx.stroke();
+    }
+    ctx.restore();
+
     ctx.save();
     ctx.translate(cx, cy);
     // 画面の y は下向きなので、右下がりのロールは時計回り＝正の回転になる

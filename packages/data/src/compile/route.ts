@@ -329,6 +329,7 @@ export function compileRoute(definition: RouteDefinition): CompiledRoute {
     beacons: new PointTable(beacons),
     safetySections,
     irregularity,
+    maxCantDeficiency: mmToM(def.autoCurveLimits.maxCantDeficiency),
     aspectSpeeds,
   };
 }

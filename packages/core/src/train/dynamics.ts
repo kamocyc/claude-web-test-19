@@ -402,6 +402,7 @@ export class TrainDynamics {
       const irr = this.irregularity;
       this.bodyMotions[i]!.step(dt, {
         unbalancedLateral: this.alignment.lateralAcceleration(veh.s, veh.v),
+        cantAngle: this.alignment.cantAngleAt(veh.s),
         longitudinalAcceleration: veh.a,
         frontVertical: irr.verticalAt(front),
         rearVertical: irr.verticalAt(rear),

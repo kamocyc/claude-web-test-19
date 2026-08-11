@@ -128,6 +128,8 @@ export interface CompiledRoute {
   readonly safetySections: SpanTable<SafetySystemKind>;
   /** 軌道狂い（距離程の関数。線路そのものの性質なので路線データが持つ） */
   readonly irregularity: TrackIrregularity;
+  /** 許容カント不足 [m]。曲線の制限速度はこれを基準に決まる。 */
+  readonly maxCantDeficiency: Meters;
   /** 現示ごとの既定許容速度 */
   readonly aspectSpeeds: AspectSpeeds;
 }

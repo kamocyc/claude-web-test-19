@@ -83,11 +83,13 @@ export class ChartPanel {
     );
     this.ride = add(
       new StripChart({
-        title: '体感加速度 [m/s²] と車体ロール [deg]',
+        title: '体感加速度 [m/s²]・ロール [deg]・カント不足 [cm]',
         series: [
           { key: 'feltLong', label: '前後', color: '#4ea3ff' },
           { key: 'feltLat', label: '左右', color: '#ffd23f' },
-          { key: 'roll', label: 'ロール', color: '#c792ea' },
+          { key: 'trackRoll', label: '軌道ロール', color: '#7ddc8a' },
+          { key: 'roll', label: '車体ロール', color: '#c792ea' },
+          { key: 'cantDef', label: 'カント不足', color: '#ff9e64' },
         ],
         zeroLine: true,
       }),
@@ -155,7 +157,10 @@ export class ChartPanel {
     this.ride.push(t, {
       feltLong: snap.body.feltLongitudinal,
       feltLat: snap.body.feltLateral,
+      trackRoll: (snap.body.trackRoll * 180) / Math.PI,
       roll: (snap.body.roll * 180) / Math.PI,
+      // 他の系列と桁を揃えるため cm 表示（60mm = 6）
+      cantDef: snap.cantDeficiency * 100,
     });
     this.coupler.push(t, {
       coupler: snap.maxCouplerForce / 1000,

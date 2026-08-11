@@ -36,8 +36,15 @@ export class Oscillator {
 
 /** 車体の動揺の状態 */
 export interface BodyMotionState {
-  /** ロール角 [rad]（正 = 進行方向に対して右下がり） */
+  /** 軌道面に対するロール角 [rad]（正 = 進行方向に対して右下がり） */
   roll: Radians;
+  /**
+   * カントによる軌道面自体の傾き [rad]（正 = 右下がり）。
+   * `Alignment.cantAngleAt()` は外軌が高いほど正なので、その符号を反転した値になる。
+   */
+  trackRoll: Radians;
+  /** 水平面に対する車体の総ロール角 [rad] = `trackRoll + roll` */
+  absoluteRoll: Radians;
   /** ピッチ角 [rad]（正 = 前下がり＝ノーズダイブ） */
   pitch: Radians;
   /** ヨー角 [rad]（正 = 左向き） */
@@ -50,7 +57,7 @@ export interface BodyMotionState {
   rollRate: number;
   /**
    * 乗客が感じる左右方向の比力 [m/s^2]（正 = 右へ押される）。
-   * 軌道面の非平衡横加速度に、車体ロールによる重力成分を加えたもの。
+   * 水平面での比力を、カントと車体ロールで傾いた床の座標系へ射影したもの。
    */
   feltLateral: number;
   /** 乗客が感じる前後方向の比力 [m/s^2]（正 = 後ろへ押される＝加速中） */
@@ -62,6 +69,8 @@ export interface BodyMotionState {
 export function createBodyMotionState(): BodyMotionState {
   return {
     roll: 0,
+    trackRoll: 0,
+    absoluteRoll: 0,
     pitch: 0,
     yaw: 0,
     lateral: 0,
@@ -76,6 +85,12 @@ export function createBodyMotionState(): BodyMotionState {
 export interface BodyMotionInput {
   /** 軌道面の非平衡横加速度 [m/s^2]（正 = 曲線外側へ押される向き） */
   readonly unbalancedLateral: number;
+  /**
+   * カント角 [rad]（外軌が高いほど正）。軌道面自体の傾きになる。
+   * 水平面内の求心加速度は `unbalancedLateral` とこの角から復元するので、
+   * 両者に食い違う値を渡してしまう余地はない。
+   */
+  readonly cantAngle: Radians;
   /** 車体の前後加速度 [m/s^2]（正 = 加速） */
   readonly longitudinalAcceleration: number;
   /** 前台車位置の高低狂い [m] */
@@ -155,16 +170,31 @@ export class CarBodyMotion {
     const vertical = this.bounceOsc.step(dt, bounceTarget, s.bounceFrequency, s.bounceDamping);
 
     // --- 乗客が感じる比力 ---
-    // 車体が角 roll だけ傾くと、重力の車体左右方向成分が g*sin(roll) だけ加わる。
-    // 傾く向きは横 G と同じ向きなので、感じる横 G は軌道面の値より大きくなる。
-    const feltLateral = trackPlaneLateral * Math.cos(roll) + GRAVITY * Math.sin(roll);
+    // 水平面での比力（右向き a_h、上向き g）を、水平面に対して phi だけ傾いた
+    // 車体の床の座標系へ射影する。phi は軌道のカントと車体自身のロールの和。
+    //
+    //   横   = a_h*cos(phi) + g*sin(phi)
+    //   上下 = g*cos(phi) - a_h*sin(phi)
+    //
+    // 正しくカントの効いた曲線（横が 0 になる釣り合い状態）では上下が g より
+    // 大きくなる。これは実際に曲線通過中に体が重く感じられる現象に対応する。
+    const trackRoll = -input.cantAngle;
+    const absoluteRoll = trackRoll + roll;
+    // 軌道面の非平衡横加速度 a = a_h*cos(φ) - g*sin(φ) を a_h について解く
+    const ah =
+      (trackPlaneLateral + GRAVITY * Math.sin(input.cantAngle)) / Math.cos(input.cantAngle);
+    const cos = Math.cos(absoluteRoll);
+    const sin = Math.sin(absoluteRoll);
+    const feltLateral = ah * cos + GRAVITY * sin;
     // 加速すると乗客は後ろへ押される
     const feltLongitudinal = -input.longitudinalAcceleration;
     // 車体が上向きに加速している瞬間は、乗客は座席へ押し付けられる（見かけの重力が増す）
-    const feltVertical = GRAVITY * Math.cos(roll) + this.bounceOsc.acceleration;
+    const feltVertical = GRAVITY * cos - ah * sin + this.bounceOsc.acceleration;
 
     const st = this.state;
     st.roll = roll;
+    st.trackRoll = trackRoll;
+    st.absoluteRoll = absoluteRoll;
     st.pitch = pitch;
     st.yaw = yaw;
     st.lateral = lateral;

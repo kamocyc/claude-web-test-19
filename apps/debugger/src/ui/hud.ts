@@ -84,18 +84,33 @@ export class Hud {
     rows.push(
       row('勾配 / 曲率', `${(snap.grade * 1000).toFixed(1)} ‰ / ${radius(snap.curvature)}`),
     );
+    // カントは曲線の要。実カントと、その速度で不足しているか超過しているかを併記する。
+    const cantMm = snap.cant * 1000;
+    const cdMm = snap.cantDeficiency * 1000;
+    rows.push(
+      row(
+        'カント / 過不足',
+        Math.abs(cantMm) < 0.5
+          ? '—'
+          : `${Math.abs(cantMm).toFixed(0)} mm ${cantMm > 0 ? '右上がり' : '左上がり'}` +
+              ` / ${Math.abs(cdMm).toFixed(0)} mm ${cdMm >= 0 ? '不足' : '超過'}`,
+      ),
+    );
     rows.push(
       row(
         '体感 前後 / 左右',
         `${snap.body.feltLongitudinal.toFixed(2)} / ${snap.body.feltLateral.toFixed(2)} m/s²`,
       ),
     );
+    // ロールは「軌道の傾き（カント）」と「車体がその上でさらに傾くぶん」に分けて出す。
+    // 合算値だけだとカントが効いているのか車体が揺れているのか区別できない。
     rows.push(
       row(
-        '車体 ロール / ピッチ',
-        `${((snap.body.roll * 180) / Math.PI).toFixed(2)}° / ${((snap.body.pitch * 180) / Math.PI).toFixed(2)}°`,
+        'ロール 軌道 + 車体',
+        `${deg(snap.body.trackRoll)}° + ${deg(snap.body.roll)}° = ${deg(snap.body.absoluteRoll)}°`,
       ),
     );
+    rows.push(row('車体 ピッチ / ヨー', `${deg(snap.body.pitch)}° / ${deg(snap.body.yaw)}°`));
 
     if (snap.nextSignal) {
       const aspect = snap.nextSignal.state.aspect;
@@ -123,6 +138,10 @@ export class Hud {
       flags.push('<span class="warn">パターン接近</span>');
     if (snap.safety.emergencyBrake) flags.push('<span class="danger">保安非常</span>');
     if (snap.safety.serviceBrakeNotch !== null) flags.push('<span class="warn">保安常用</span>');
+    // 許容カント不足を超えると乗り心地が悪化し、転覆・脱線に対する余裕も減る
+    if (snap.cantDeficiency > sim.scenario.route.maxCantDeficiency) {
+      flags.push('<span class="warn">カント不足超過</span>');
+    }
     if (snap.regenerationLost) flags.push('<span class="warn">回生失効</span>');
     if (snap.antiSkidActive) flags.push('<span class="warn">滑走防止</span>');
     if (snap.reAdhesionFactor < 0.999) flags.push('<span class="warn">空転</span>');
@@ -152,6 +171,9 @@ export class Hud {
     this.element.innerHTML = rows.join('');
   }
 }
+
+/** ラジアンを度の文字列に（符号を保つ） */
+const deg = (rad: number): string => ((rad * 180) / Math.PI).toFixed(2);
 
 const row = (label: string, value: string): string =>
   `<div class="row"><span class="label">${label}</span><span>${value}</span></div>`;

@@ -18,6 +18,7 @@ const DT = 0.001;
 
 const baseInput = (over: Partial<BodyMotionInput> = {}): BodyMotionInput => ({
   unbalancedLateral: 0,
+  cantAngle: 0,
   longitudinalAcceleration: 0,
   frontVertical: 0,
   rearVertical: 0,
@@ -131,6 +132,44 @@ describe('車体の動揺', () => {
     const a = 0.8;
     for (let i = 0; i < 20_000; i++) body.step(DT, baseInput({ unbalancedLateral: a }));
     expect(body.state.feltLateral).toBeCloseTo(a, 5);
+  });
+
+  it('カントは軌道面自体の傾きとして車体を曲線内側へ傾ける', () => {
+    const body = new CarBodyMotion(DEFAULT_SUSPENSION);
+    // 左曲線のカント（外軌 = 右レールが高い）→ カント角は正
+    const cantAngle = Math.asin(mmToM(90) / 1.067);
+    for (let i = 0; i < 20_000; i++) body.step(DT, baseInput({ cantAngle }));
+    // 右レールが高い = 車体は左（内側）へ倒れる = ロールの符号は負
+    expect(body.state.trackRoll).toBeCloseTo(-cantAngle, 12);
+    expect(body.state.absoluteRoll).toBeLessThan(0);
+    expect((Math.abs(body.state.trackRoll) * 180) / Math.PI).toBeCloseTo(4.84, 2);
+  });
+
+  it('停車中の曲線ではカント超過で内側へ引かれる', () => {
+    const body = new CarBodyMotion(DEFAULT_SUSPENSION);
+    const cantAngle = Math.asin(mmToM(90) / 1.067);
+    // 速度 0 なら軌道面の非平衡横加速度は -g*sin(カント角)
+    const unbalancedLateral = -GRAVITY * Math.sin(cantAngle);
+    for (let i = 0; i < 20_000; i++) {
+      body.step(DT, baseInput({ cantAngle, unbalancedLateral }));
+    }
+    // 乗客は曲線内側（左）へ引かれる
+    expect(body.state.feltLateral).toBeLessThan(0);
+    expect(body.state.feltLateral).toBeCloseTo(GRAVITY * Math.sin(body.state.absoluteRoll), 6);
+  });
+
+  it('均衡カントで通過すると体感横 G が消え、体感上下 G が 1G を超える', () => {
+    const body = new CarBodyMotion(DEFAULT_SUSPENSION);
+    const cantAngle = Math.asin(mmToM(90) / 1.067);
+    // 均衡状態では軌道面の非平衡横加速度が 0 になる（このとき a_h = g*tan(φ)）
+    for (let i = 0; i < 20_000; i++) {
+      body.step(DT, baseInput({ cantAngle, unbalancedLateral: 0 }));
+    }
+    expect(body.state.roll).toBeCloseTo(0, 6);
+    expect(body.state.feltLateral).toBeCloseTo(0, 6);
+    // 重力と遠心力の合力は軌道面に垂直で、大きさは g/cos(φ)
+    expect(body.state.feltVertical).toBeGreaterThan(GRAVITY);
+    expect(body.state.feltVertical).toBeCloseTo(GRAVITY / Math.cos(cantAngle), 6);
   });
 
   it('加速すると乗客は後ろへ押され、車体は前上がりにピッチングする', () => {

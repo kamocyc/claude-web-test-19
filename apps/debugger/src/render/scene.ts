@@ -127,23 +127,14 @@ export class TrackScene {
     for (let i = 0; i <= n; i++) {
       const s = Math.min(i * step, this.route.length);
       const f = this.frameAt(s);
-      // カントは外軌側が高くなるように左右のレール高さへ振り分ける
-      const cant = this.route.alignment.cantAt(s);
-      leftPoints.push(
-        f.position
-          .clone()
-          .addScaledVector(f.right, -half)
-          .add(new THREE.Vector3(0, -cant / 2, 0)),
-      );
-      rightPoints.push(
-        f.position
-          .clone()
-          .addScaledVector(f.right, half)
-          .add(new THREE.Vector3(0, cant / 2, 0)),
-      );
-      const bl = f.position.clone().addScaledVector(f.right, -3.6);
-      const br = f.position.clone().addScaledVector(f.right, 3.6);
-      ballastPositions.push(bl.x, bl.y - 0.4, bl.z, br.x, br.y - 0.4, br.z);
+      // レールも道床もカントで傾いた軌道面（f.cantRight / f.up）の上に載せる。
+      // 高さを個別に足し込むのではなく共通の基準座標系から作ることで、
+      // 車体・まくらぎとレールが逆向きに傾くような食い違いが起きない。
+      leftPoints.push(f.position.clone().addScaledVector(f.cantRight, -half));
+      rightPoints.push(f.position.clone().addScaledVector(f.cantRight, half));
+      const bl = f.position.clone().addScaledVector(f.cantRight, -3.6).addScaledVector(f.up, -0.4);
+      const br = f.position.clone().addScaledVector(f.cantRight, 3.6).addScaledVector(f.up, -0.4);
+      ballastPositions.push(bl.x, bl.y, bl.z, br.x, br.y, br.z);
     }
 
     const railMaterial = new THREE.LineBasicMaterial({ color: RAIL_COLOR });
@@ -181,18 +172,8 @@ export class TrackScene {
     const q = new THREE.Quaternion();
     for (let i = 0; i < count; i++) {
       const f = this.frameAt(i * sleeperStep);
-      q.setFromRotationMatrix(
-        new THREE.Matrix4().makeBasis(
-          f.forward,
-          new THREE.Vector3(0, 1, 0).applyAxisAngle(f.forward, f.cantAngle),
-          f.right,
-        ),
-      );
-      m.compose(
-        f.position.clone().add(new THREE.Vector3(0, -0.1, 0)),
-        q,
-        new THREE.Vector3(1, 1, 1),
-      );
+      q.setFromRotationMatrix(new THREE.Matrix4().makeBasis(f.forward, f.up, f.cantRight));
+      m.compose(f.position.clone().addScaledVector(f.up, -0.1), q, new THREE.Vector3(1, 1, 1));
       sleeper.setMatrixAt(i, m);
     }
     sleeper.instanceMatrix.needsUpdate = true;
@@ -358,8 +339,8 @@ export class TrackScene {
       const f = this.frameAt(veh.s);
       const body = veh.body;
 
-      const up = new THREE.Vector3(0, 1, 0).applyAxisAngle(f.forward, f.cantAngle);
-      const right = f.right.clone().applyAxisAngle(f.forward, f.cantAngle);
+      const up = f.up;
+      const right = f.cantRight;
       mesh.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(f.forward, up, right));
       // 局所軸: X = 前、Y = 上、Z = 右
       mesh.quaternion.multiply(scratch.setFromAxisAngle(new THREE.Vector3(1, 0, 0), body.roll));

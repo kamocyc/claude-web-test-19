@@ -232,7 +232,22 @@ describe('Alignment - 縦断線形', () => {
 });
 
 describe('Alignment - カント', () => {
-  it('均衡カントが慣用式 C = G V^2 / (127 R) と一致する', () => {
+  it('均衡カントが釣り合い条件 tan(φ) = v^2κ/g を満たす', () => {
+    const R = 400;
+    const gauge = 1.067;
+    const a = buildAlignment({
+      gauge,
+      horizontal: [{ length: 500, radius: R }],
+      vertical: [{ length: 500, gradePermil: 0 }],
+    });
+    const v = kmhToMps(70);
+    const got = a.equilibriumCant(250, v);
+    // C = G*sin(φ) なので φ を復元して tan(φ) を確かめる
+    const phi = Math.asin(got / gauge);
+    expect(Math.tan(phi)).toBeCloseTo((v * v) / (GRAVITY * R), 9);
+  });
+
+  it('均衡カントが慣用式 C = G V^2 / (127 R) と 1% 以内で一致する', () => {
     const R = 400;
     const a = buildAlignment({
       gauge: 1.067,
@@ -240,25 +255,30 @@ describe('Alignment - カント', () => {
       vertical: [{ length: 500, gradePermil: 0 }],
     });
     const V = 70; // km/h
-    // 慣用式の分母 127 は 3.6^2 * g = 127.09 を丸めた定数なので、実装（厳密な g）とは 0.1% 程度ずれる
-    const expectedMm = (1067 * V * V) / (127 * R);
-    const got = a.equilibriumCant(250, kmhToMps(V));
-    expect(got * 1000).toBeCloseTo(expectedMm, 0);
-    expect(Math.abs(got * 1000 - expectedMm) / expectedMm).toBeLessThan(1e-3);
+    // 慣用式は G*tan(φ) に相当する小角度近似（分母 127 も 3.6^2*g = 127.09 の丸め）なので、
+    // 厳密な G*sin(φ) より数 0.1% 大きい
+    const conventionalMm = (1067 * V * V) / (127 * R);
+    const got = a.equilibriumCant(250, kmhToMps(V)) * 1000;
+    expect(got).toBeLessThan(conventionalMm);
+    expect(Math.abs(got - conventionalMm) / conventionalMm).toBeLessThan(1e-2);
   });
 
   it('均衡カントちょうどのとき非平衡横加速度が 0 になる', () => {
     const R = 400;
     const v = kmhToMps(70);
     const gauge = 1.067;
-    const cant = (gauge * v * v) / (GRAVITY * R);
-    const a = buildAlignment({
+    const probe = buildAlignment({
       gauge,
-      horizontal: [{ length: 500, radius: R, cant }],
+      horizontal: [{ length: 500, radius: R }],
       vertical: [{ length: 500, gradePermil: 0 }],
     });
-    expect(a.lateralAcceleration(250, v)).toBeCloseTo(0, 6);
-    expect(a.cantDeficiency(250, v)).toBeCloseTo(0, 9);
+    const a = buildAlignment({
+      gauge,
+      horizontal: [{ length: 500, radius: R, cant: probe.equilibriumCant(250, v) }],
+      vertical: [{ length: 500, gradePermil: 0 }],
+    });
+    expect(a.lateralAcceleration(250, v)).toBeCloseTo(0, 12);
+    expect(a.cantDeficiency(250, v)).toBeCloseTo(0, 12);
   });
 
   it('カント不足があると外向きの非平衡加速度が生じる', () => {

@@ -137,17 +137,35 @@ export class Alignment {
     return this.cantProfile.valueAt(s);
   }
 
-  /** カント角 [rad] */
+  /**
+   * カント角 [rad]。**外軌（曲線外側のレール）が高いほど正**で、
+   * 曲率が正（左曲線）ならカント角も正になる。
+   *
+   * 車体のロール角は「右側が下がるほど正」という逆の約束なので、
+   * カントが車体に与えるロールは `-cantAngleAt(s)` になる。描画・体感加速度とも
+   * この符号を取り違えると軌道と車体が逆向きに傾く。
+   */
   cantAngleAt(s: Meters): Radians {
     return Math.asin(Math.max(-1, Math.min(1, this.cantAt(s) / this.gauge)));
   }
 
   /**
-   * 均衡カント [m]。速度 v で走行したとき遠心力と重力が釣り合うカント量。
-   * C_eq = G * v^2 * κ / g （慣用式 C = G V^2 / (127 R) と等価）
+   * 均衡カント [m]。速度 v で走行したとき、重力と遠心力の合力が軌道面に垂直になる
+   * （＝非平衡横加速度が 0 になる）カント量。
+   *
+   * 釣り合いの条件は tan(φ) = v^2*κ/g。カントは軌間に対するレール頭頂面の高低差なので
+   * C = G*sin(φ) であり、t = v^2*κ/g とおくと
+   *
+   *   C_eq = G * t / sqrt(1 + t^2)
+   *
+   * 慣用式 C = G V^2 / (127 R) は G*tan(φ) に相当する小角度近似で、
+   * 実用範囲（カント不足を含めて 10 度程度まで）では 0.5% ほど大きい値になる。
+   * 設計上の制限速度の算出には慣用式を使う（`packages/data` 側）が、
+   * ここでは `lateralAcceleration()` と厳密に整合する定義を採る。
    */
   equilibriumCant(s: Meters, v: number): Meters {
-    return (this.gauge * v * v * this.curvatureAt(s)) / GRAVITY;
+    const t = (v * v * this.curvatureAt(s)) / GRAVITY;
+    return (this.gauge * t) / Math.sqrt(1 + t * t);
   }
 
   /**
@@ -162,14 +180,20 @@ export class Alignment {
   /**
    * 軌道面内の非平衡（未補償）左右加速度 [m/s^2]。
    *
-   * 必要な求心加速度 v^2*κ（正 = 左向き）から、カントによって重力が肩代わりする分
-   * g*sin(カント角) を差し引いたもの。正なら左向きの求心力が不足しており、
-   * 乗客は曲線外側（右）へ押される。乗り心地評価と転覆・脱線余裕の判定に使う。
+   * 水平面内の求心加速度 v^2*κ（正 = 左向き）を軌道面へ射影した成分から、
+   * カントによって重力が肩代わりする分 g*sin(カント角) を差し引いたもの。
+   * 正なら左向きの求心力が不足しており、乗客は曲線外側（右）へ押される。
+   * 乗り心地評価と転覆・脱線余裕の判定に使う。
+   *
+   *   a = v^2*κ*cos(φ) - g*sin(φ)
+   *
+   * cos(φ) は 1 に近いが、カント 90mm・軌間 1067mm では φ = 4.84 度あり、
+   * 省略すると 0.4% の誤差になる。
    */
   lateralAcceleration(s: Meters, v: number): number {
     const k = this.curvatureAt(s);
     const phi = this.cantAngleAt(s);
-    return v * v * k - GRAVITY * Math.sin(phi);
+    return v * v * k * Math.cos(phi) - GRAVITY * Math.sin(phi);
   }
 
   /** 平面位置 (x, z) */
