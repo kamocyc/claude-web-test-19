@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { InputRecorder, Simulation, replay, type Recording, type Scenario } from '@railsim/core';
 import { createDefaultLibrary } from '@railsim/data';
+import { TrainAudio } from './audio/engine.ts';
 import { ChartPanel } from './charts/panel.ts';
 import { DriverDesk } from './input/keyboard.ts';
 import { createCabInterior } from './render/cab.ts';
@@ -25,6 +26,8 @@ const rateLabel = document.querySelector<HTMLElement>('#rate')!;
 const saveButton = document.querySelector<HTMLButtonElement>('#save')!;
 const loadInput = document.querySelector<HTMLInputElement>('#load')!;
 const gmeterElement = document.querySelector<HTMLElement>('#gmeter')!;
+const muteButton = document.querySelector<HTMLButtonElement>('#mute')!;
+const volumeInput = document.querySelector<HTMLInputElement>('#volume')!;
 
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -33,6 +36,7 @@ const cameraRig = new CameraRig(canvas);
 const hud = new Hud(hudElement);
 const charts = new ChartPanel(chartsElement);
 const gmeter = new GMeter(gmeterElement);
+const audio = new TrainAudio();
 
 // 運転席の内装はカメラの子として取り付ける。こうすると車体動揺でカメラが揺れても
 // 内装は動かず、窓の外の景色だけが揺れる（実際の運転席の見え方と同じ）。
@@ -69,6 +73,8 @@ const desk = new DriverDesk({
     rateIndex = Math.max(0, Math.min(RATES.length - 1, rateIndex + delta));
     updateRateLabel();
   },
+  onMuteToggle: () => setMuted(!audio.isMuted),
+  onUserGesture: () => startAudio(),
 });
 
 function applyCameraMode(mode: CameraMode): void {
@@ -80,6 +86,26 @@ function applyCameraMode(mode: CameraMode): void {
 function setPaused(value: boolean): void {
   paused = value;
   pauseButton.textContent = paused ? '再開' : '一時停止';
+  audio.setPaused(paused);
+}
+
+function setMuted(value: boolean): void {
+  audio.setMuted(value);
+  refreshAudioButton();
+}
+
+/** 音が出せない環境（AudioWorklet 非対応など）ではボタンでそれが分かるようにする */
+function refreshAudioButton(): void {
+  if (!audio.available) {
+    muteButton.textContent = '音: 使用不可';
+    muteButton.disabled = true;
+    return;
+  }
+  muteButton.textContent = audio.isMuted ? '音を出す' : '消音';
+}
+
+function startAudio(): void {
+  void audio.start().then(refreshAudioButton);
 }
 
 function updateRateLabel(): void {
@@ -99,6 +125,7 @@ function restart(id = scenarioId): void {
   desk.reset();
   charts.clear();
   gmeter.clear();
+  audio.reset();
   applyCameraMode(cameraRig.mode);
   setPaused(false);
 }
@@ -112,6 +139,19 @@ function releaseFocus(element: HTMLElement): void {
   element.blur();
   canvas.focus();
 }
+
+// AudioContext はユーザ操作の中でしか開始できない。画面のどこを触っても解錠する。
+canvas.addEventListener('pointerdown', () => startAudio());
+muteButton.addEventListener('click', () => {
+  releaseFocus(muteButton);
+  startAudio();
+  setMuted(!audio.isMuted);
+});
+volumeInput.addEventListener('input', () => {
+  startAudio();
+  audio.setVolume(Number(volumeInput.value) / 100);
+});
+volumeInput.addEventListener('change', () => releaseFocus(volumeInput));
 
 scenarioSelect.addEventListener('change', () => {
   releaseFocus(scenarioSelect);
@@ -175,11 +215,12 @@ function frame(now: number): void {
   previous = now;
   resize();
 
+  let advance = 0;
   if (replaying === null) {
     // 一時停止中でもハンドル位置は反映する（再開した瞬間に効くのではなく、
     // 手元の操作がその場で計器と HUD に出るほうが運転台として自然）。
     sim.input = desk.input;
-    const advance = paused ? (singleStep ? 1 / 60 : 0) : wall * RATES[rateIndex]!;
+    advance = paused ? (singleStep ? 1 / 60 : 0) : wall * RATES[rateIndex]!;
     singleStep = false;
     if (advance > 0) {
       recorder.record(sim.elapsed, sim.input);
@@ -192,6 +233,9 @@ function frame(now: number): void {
     }
   }
 
+  // 音は「シミュレーション時間が進んだか」で判断する。一時停止中は advance が 0 に
+  // なるので、止まった絵に音だけが鳴り続けることはない。
+  audio.update(sim, advance);
   scene.update(sim);
   if (cameraRig.mode === 'cab') cabInterior.update(sim, desk.handles);
   cameraRig.update({
@@ -208,6 +252,8 @@ function frame(now: number): void {
 
 scene.scene.add(cameraRig.camera);
 applyCameraMode('cab');
+audio.setVolume(Number(volumeInput.value) / 100);
+setMuted(false);
 updateRateLabel();
 resize();
 requestAnimationFrame(frame);

@@ -10,6 +10,9 @@ export interface DriverDeskOptions {
   onPauseToggle?(): void;
   onSingleStep?(): void;
   onRateChange?(delta: number): void;
+  onMuteToggle?(): void;
+  /** どのキーでもよいので「ユーザ操作があった」ことを伝える（自動再生規制の解除用） */
+  onUserGesture?(): void;
 }
 
 /** 「押している間だけ有効」なキー（離すまで状態が続く操作） */
@@ -54,6 +57,8 @@ export class DriverDesk {
   private onKeyDown = (e: KeyboardEvent): void => {
     if (isTextEntry(e.target)) return;
     if (e.ctrlKey || e.metaKey || e.altKey) return;
+    // AudioContext はユーザ操作の中でしか開始できない（自動再生規制）
+    this.options.onUserGesture?.();
     const key = e.key.toLowerCase();
     let handled = true;
     if (!e.repeat) {
@@ -100,6 +105,9 @@ export class DriverDesk {
           break;
         case 'f':
           this.options.onSingleStep?.();
+          break;
+        case 'm':
+          this.options.onMuteToggle?.();
           break;
         case '[':
           this.options.onRateChange?.(-1);

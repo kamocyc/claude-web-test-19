@@ -25,6 +25,7 @@
           <div>S: 砂撒き / H: 警笛 / D: 戸閉め</div>
           <div>1-5: カメラ（運転席/追跡/側面/俯瞰/自由）</div>
           <div>P: 一時停止 / F: 1 ステップ / [ ]: 速度倍率</div>
+          <div>M: 消音</div>
           <div class="note">
             手元のノッチが効かないときは HUD の「実効」行を確認（保安装置や戸開でカットされる）
           </div>
@@ -41,6 +42,8 @@
             記録を読込
             <input id="load" type="file" accept="application/json" />
           </label>
+          <button id="mute" type="button">音を出す</button>
+          <input id="volume" type="range" min="0" max="100" value="70" title="音量" />
         </div>
         <div id="charts"></div>
       </aside>
