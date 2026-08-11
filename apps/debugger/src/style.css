@@ -160,6 +160,91 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+.mixer {
+  border-bottom: 1px solid var(--line);
+  padding: 6px 10px;
+}
+
+.mixer summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 0;
+}
+
+.mixer summary:hover {
+  color: var(--text);
+}
+
+.mixer-heading {
+  color: var(--muted);
+  font-size: 11px;
+  margin: 6px 0 2px;
+  padding-top: 5px;
+  border-top: 1px solid var(--line);
+}
+
+.mixer-row {
+  display: grid;
+  grid-template-columns: 11em 1fr 2em 5.5em;
+  gap: 6px;
+  align-items: center;
+  padding: 1px 0;
+}
+
+.mixer-label {
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mixer-row input[type='range'] {
+  width: 100%;
+  margin: 0;
+}
+
+.mixer-value {
+  font-size: 11px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+/* 音源ごとの実効値。つまみのすぐ横に置いて、上げ下げの効きが見えるようにする。 */
+.mixer-meter {
+  height: 7px;
+  background: #0d1117;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.mixer-meter > span {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+}
+
+.mixer-reset {
+  margin-top: 6px;
+  background: #202836;
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 3px 8px;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.mixer-reset:hover {
+  border-color: var(--accent);
+}
+
 #charts {
   flex: 1;
   overflow-y: auto;

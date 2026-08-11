@@ -1,3 +1,4 @@
+export * from './mix.ts';
 export * from './dsp/biquad.ts';
 export * from './dsp/noise.ts';
 export * from './dsp/inverterVoice.ts';

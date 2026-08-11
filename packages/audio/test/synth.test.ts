@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { TrainNoiseSynth, type TrainNoiseParams } from '@railsim/audio';
+import { TrainNoiseSynth, VOICE, VOICE_COUNT, type TrainNoiseParams } from '@railsim/audio';
 import { bandPower, peakProminence, rms } from './spectrum.ts';
 
 const SAMPLE_RATE = 48_000;
 
 const silence = (): TrainNoiseParams => ({
   inverter: {
+    gate: false,
     fundamental: 0,
     carrier: 0,
     modulation: 0,
@@ -35,15 +36,88 @@ function render(p: TrainNoiseParams, seconds = 1): Float32Array {
   return out;
 }
 
+/** 80km/h で惰行しているときの走行装置の音（バランスの基準になる） */
+const COASTING_80 = (): TrainNoiseParams =>
+  merge({
+    runningGear: {
+      speed: 80 / 3.6,
+      // 車輪径 0.86m・歯車比 7.07・小歯車 17 枚
+      gearMeshFrequency: 989,
+      shaftFrequency: 58.2,
+      gearLoad: 0.4,
+      level: 0.69,
+    },
+  });
+
 describe('走行音の合成全体', () => {
   it('すべての音源が無音なら完全な無音になる', () => {
     expect(rms(render(silence()))).toBeLessThan(1e-5);
+  });
+
+  /**
+   * 音源ごとの音量の関係は「耳で決めた」では検証できないので、走行音を基準に
+   * 測って決めてある。ここはその関係が崩れていないことを見る回帰テスト。
+   */
+  describe('音源どうしの音量バランス', () => {
+    it('空気圧縮機は 80km/h の走行音より 6dB 以上小さい', () => {
+      // 車内でいちばん存在感のある補機だが、走っているあいだは走行音に
+      // 埋もれるのが正しい。停車中に耳で合わせると必ず過大になる。
+      const running = rms(render(COASTING_80()));
+      const compressor = rms(render(merge({ auxiliary: { compressor: 1, level: 1 } })));
+      expect(compressor).toBeLessThan(running * 0.5);
+      // かといって聞こえないほど小さくもない（停車中は編成でいちばん大きい）
+      expect(compressor).toBeGreaterThan(running * 0.15);
+    });
+
+    it('停車中は空気圧縮機だけが鳴る', () => {
+      const x = render(merge({ auxiliary: { compressor: 1, level: 1 } }));
+      expect(rms(x)).toBeGreaterThan(1e-3);
+    });
+  });
+
+  describe('音源ごとの実効値メータ', () => {
+    const levelsOf = (p: TrainNoiseParams): Float32Array => {
+      const synth = new TrainNoiseSynth(SAMPLE_RATE);
+      synth.setParams(p);
+      synth.render(new Float32Array(SAMPLE_RATE / 2));
+      const levels = new Float32Array(VOICE_COUNT);
+      synth.readLevels(levels);
+      return levels;
+    };
+
+    it('鳴っている音源だけが値を持つ', () => {
+      const levels = levelsOf(merge({ auxiliary: { compressor: 1, level: 1 } }));
+      expect(levels[VOICE.auxiliary]!).toBeGreaterThan(1e-3);
+      for (const voice of [VOICE.inverter, VOICE.runningGear, VOICE.brake, VOICE.railJoint]) {
+        expect(levels[voice]!).toBeLessThan(1e-6);
+      }
+    });
+
+    it('混ざる前の値なので、支配している音源が分かる', () => {
+      const levels = levelsOf(merge({ ...COASTING_80(), auxiliary: { compressor: 1, level: 1 } }));
+      expect(levels[VOICE.runningGear]!).toBeGreaterThan(levels[VOICE.auxiliary]! * 2);
+    });
+
+    it('読み出すたびに直近のぶんだけを返す（積算が残らない）', () => {
+      const synth = new TrainNoiseSynth(SAMPLE_RATE);
+      synth.setParams(merge({ auxiliary: { compressor: 1, level: 1 } }));
+      synth.render(new Float32Array(SAMPLE_RATE / 2));
+      const first = new Float32Array(VOICE_COUNT);
+      synth.readLevels(first);
+      expect(first[VOICE.auxiliary]!).toBeGreaterThan(1e-3);
+
+      // レンダせずにもう一度読めば、積算が空なので 0 が返る
+      const again = new Float32Array(VOICE_COUNT).fill(1);
+      synth.readLevels(again);
+      expect(Array.from(again)).toEqual([0, 0, 0, 0, 0]);
+    });
   });
 
   it('混ざっても出力が [-1, 1] に収まる', () => {
     const x = render(
       merge({
         inverter: {
+          gate: true,
           fundamental: 40,
           carrier: 360,
           modulation: 0.8,

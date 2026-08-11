@@ -1,3 +1,4 @@
+import { VOICE, VOICE_COUNT } from '../mix.ts';
 import { AuxiliaryVoice, type AuxiliaryParams } from './auxiliary.ts';
 import { BrakeVoice, type BrakeParams } from './brake.ts';
 import { InverterVoice, type InverterVoiceParams } from './inverterVoice.ts';
@@ -31,6 +32,11 @@ export class TrainNoiseSynth {
   readonly auxiliary: AuxiliaryVoice;
   readonly railJoint: RailJointVoice;
 
+  /** 音源ごとの 2 乗和（`readLevels` で実効値に直して読み出す） */
+  private readonly squareSum = new Float64Array(VOICE_COUNT);
+  private measured = 0;
+  private scratch = new Float32Array(0);
+
   constructor(readonly sampleRate: number) {
     this.inverter = new InverterVoice(sampleRate);
     this.runningGear = new RunningGearVoice(sampleRate);
@@ -52,16 +58,47 @@ export class TrainNoiseSynth {
   }
 
   render(out: Float32Array): void {
-    // インバータ音だけは上書き、以降は加算していく
-    this.inverter.render(out);
-    this.runningGear.render(out);
-    this.brake.render(out);
-    this.auxiliary.render(out);
-    this.railJoint.render(out);
+    // 音源をいったん別のバッファへ出してから足す。混ざったあとでは各音源が
+    // どれだけ鳴っているか分からないので、バランスを調整する UI のために
+    // ここで 1 つずつ実効値を測っておく。
+    if (this.scratch.length !== out.length) this.scratch = new Float32Array(out.length);
+    out.fill(0);
+    this.mix(out, VOICE.inverter, (b) => this.inverter.render(b));
+    this.mix(out, VOICE.runningGear, (b) => this.runningGear.render(b));
+    this.mix(out, VOICE.brake, (b) => this.brake.render(b));
+    this.mix(out, VOICE.auxiliary, (b) => this.auxiliary.render(b));
+    this.mix(out, VOICE.railJoint, (b) => this.railJoint.render(b));
+    this.measured += out.length;
 
     // 飽和は最後に 1 回だけ掛ける。音源ごとに掛けると、混ざったときに
     // それぞれが先に潰れて音量の関係が崩れる。
     for (let i = 0; i < out.length; i++) out[i] = Math.tanh(out[i]!);
+  }
+
+  private mix(out: Float32Array, voice: number, render: (buffer: Float32Array) => void): void {
+    const scratch = this.scratch;
+    scratch.fill(0);
+    render(scratch);
+    let sum = 0;
+    for (let i = 0; i < scratch.length; i++) {
+      const x = scratch[i]!;
+      out[i] = out[i]! + x;
+      sum += x * x;
+    }
+    this.squareSum[voice] = this.squareSum[voice]! + sum;
+  }
+
+  /**
+   * 前回の呼び出しからの音源ごとの実効値を `out` へ書き、積算をリセットする。
+   * 混ざる前の値なので、どの音源がいま支配しているかがそのまま分かる。
+   */
+  readLevels(out: Float32Array): void {
+    const n = this.measured;
+    for (let i = 0; i < VOICE_COUNT; i++) {
+      out[i] = n > 0 ? Math.sqrt(this.squareSum[i]! / n) : 0;
+      this.squareSum[i] = 0;
+    }
+    this.measured = 0;
   }
 
   reset(): void {
@@ -70,5 +107,7 @@ export class TrainNoiseSynth {
     this.brake.reset();
     this.auxiliary.reset();
     this.railJoint.reset();
+    this.squareSum.fill(0);
+    this.measured = 0;
   }
 }

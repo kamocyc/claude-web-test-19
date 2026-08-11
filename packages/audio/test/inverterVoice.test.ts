@@ -7,6 +7,7 @@ const SAMPLE_RATE = 48_000;
 const LENGTH = SAMPLE_RATE;
 
 const params = (over: Partial<InverterVoiceParams> = {}): InverterVoiceParams => ({
+  gate: true,
   fundamental: 30,
   carrier: 450,
   modulation: 0.6,
@@ -18,7 +19,9 @@ const params = (over: Partial<InverterVoiceParams> = {}): InverterVoiceParams =>
 
 /**
  * 定常状態を 1 秒ぶんレンダする。
- * 平滑化と共振の立ち上がりを含まないよう、最初の 0.2 秒は捨てる。
+ * 平滑化（磁束確立の 60ms を含む）と共振の立ち上がりを含まないよう、
+ * 最初の 0.5 秒は捨てる。振幅が動いているあいだにスペクトルを取ると、
+ * その包絡が変調として効いて谷が埋まってしまう。
  */
 function render(
   p: InverterVoiceParams,
@@ -27,7 +30,7 @@ function render(
 ): Float32Array {
   const voice = new InverterVoice(SAMPLE_RATE, options);
   voice.setParams(p);
-  const warmup = new Float32Array(Math.floor(SAMPLE_RATE * 0.2));
+  const warmup = new Float32Array(Math.floor(SAMPLE_RATE * 0.5));
   voice.render(warmup);
   const out = new Float32Array(length);
   voice.render(out);
@@ -208,5 +211,88 @@ describe('PWM 波形から合成するインバータ音', () => {
     let jump = 0;
     for (let i = 0; i < 64; i++) jump = Math.max(jump, Math.abs(after[i]!));
     expect(jump).toBeLessThan(priorPeak * 2 + 0.05);
+  });
+
+  /**
+   * ノッチの入切は、実車では「電圧が掛かるか掛からないか」でしかない。合成でも
+   * 音量ではなくゲートで表しているので、切れば磁束が電動機自身の時定数で
+   * 減衰し、入れれば立ち上がる。以下はどちらの過渡でも**定常より大きな音が
+   * 出ない**ことを見る。
+   *
+   * 出力周波数を 0 へ落とす実装だと、磁束が積分（利得 ∝ 1/f）であるために
+   * 消えぎわで利得が跳ね上がり、80km/h では定常の 14 倍もの掃引音が出る。
+   * 実際にそれが「ピッ」という異音として聞こえていた。
+   */
+  describe('ノッチの入切', () => {
+    /** 定常のピークと、遷移させてからのピークを返す */
+    const transition = (
+      before: InverterVoiceParams,
+      after: InverterVoiceParams,
+    ): { steady: number; peak: number } => {
+      const voice = new InverterVoice(SAMPLE_RATE);
+      voice.setParams(before);
+      const warm = new Float32Array(SAMPLE_RATE * 0.5);
+      voice.render(warm);
+      let steady = 0;
+      for (const v of warm.subarray(warm.length - 4096)) steady = Math.max(steady, Math.abs(v));
+
+      voice.setParams(after);
+      const out = new Float32Array(SAMPLE_RATE * 0.15);
+      voice.render(out);
+      let peak = 0;
+      for (const v of out) peak = Math.max(peak, Math.abs(v));
+      return { steady, peak };
+    };
+
+    const RUNNING = params({ fundamental: 116, carrier: 0, pulses: 1, modulation: 1 });
+    const COASTING = params({
+      gate: false,
+      fundamental: 116,
+      carrier: 0,
+      pulses: 0,
+      modulation: 0,
+    });
+    const SYNC9 = params({ fundamental: 33, carrier: 297, pulses: 9, modulation: 0.62 });
+    const SYNC9_OFF = params({
+      gate: false,
+      fundamental: 33,
+      carrier: 0,
+      pulses: 0,
+      modulation: 0,
+    });
+
+    it('ゲートを切ると定常より大きくならずに減衰する', () => {
+      for (const [on, off] of [
+        [RUNNING, COASTING],
+        [SYNC9, SYNC9_OFF],
+      ] as const) {
+        const { steady, peak } = transition(on, off);
+        expect(peak).toBeLessThan(steady);
+      }
+    });
+
+    it('ゲートを切れば 0.15 秒後には無音になっている', () => {
+      const voice = new InverterVoice(SAMPLE_RATE);
+      voice.setParams(RUNNING);
+      voice.render(new Float32Array(SAMPLE_RATE * 0.5));
+      voice.setParams(COASTING);
+      voice.render(new Float32Array(SAMPLE_RATE * 0.15));
+      const tail = new Float32Array(4096);
+      voice.render(tail);
+      expect(rms(tail)).toBeLessThan(1e-6);
+    });
+
+    it('ゲートを入れても突入の突出が定常を超えない', () => {
+      // 磁束の無い電動機へ電圧をいきなり掛けると励磁突入（磁束の直流分）が
+      // 起きる。変調率を鈍らせて電圧を絞って入ることで抑えている。
+      for (const [off, on] of [
+        [COASTING, RUNNING],
+        [SYNC9_OFF, SYNC9],
+      ] as const) {
+        const steady = transition(on, on).steady;
+        const { peak } = transition(off, on);
+        expect(peak).toBeLessThan(steady);
+      }
+    });
   });
 });

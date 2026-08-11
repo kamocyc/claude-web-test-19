@@ -11,7 +11,10 @@ export interface RunningGearParams {
   readonly gearMeshFrequency: number;
   /** 電動機の回転周波数 [Hz]（歯形誤差による 1 回転ごとのうなりに使う） */
   readonly shaftFrequency: number;
-  /** 歯車に掛かっているトルクの大きさ 0..1（惰行なら 0） */
+  /**
+   * 歯車が受け持っている負荷 0..1（1 = 全負荷）。
+   * 惰行でも回転部の慣性トルクが歯面に掛かるので 0 にはならない。
+   */
   readonly gearLoad: number;
   /** 全体の音量 0..1 */
   readonly level: number;

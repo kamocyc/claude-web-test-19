@@ -4,7 +4,23 @@ const TWO_PI = Math.PI * 2;
 
 /** インバータの変調から音を作るのに必要な量（`InverterState` から素直に写せる） */
 export interface InverterVoiceParams {
-  /** インバータ出力（固定子）周波数 [Hz] */
+  /**
+   * ゲートが開いているか（主回路がスイッチングしているか）。
+   *
+   * `false` のあいだは**素子が全部オフ**なので、相電圧は 0 になる。音量を 0 に
+   * するのではなく電圧を 0 にするのが要点で、こうすると磁束は還流ダイオードを
+   * 通って電動機自身の時定数で減衰する。ノッチを切ったときの音の消え方は
+   * この減衰そのものであり、包絡線を別に用意する必要はない。
+   */
+  readonly gate: boolean;
+  /**
+   * インバータ出力（固定子）周波数 [Hz]。
+   *
+   * ゲートが閉じているあいだも**回転子周波数を渡し続けること**。0 へ落とすと、
+   * 磁束が積分（利得 ∝ 1/f）であるために消えぎわで利得が跳ね上がり、
+   * 短い掃引音（「ピッ」）が出る。実機の再投入も、空転して回っている回転子の
+   * 速度に合った周波数から入る（合わせないと大電流が流れる）。
+   */
   readonly fundamental: number;
   /** キャリア（スイッチング）周波数 [Hz]。0 = 搬送波なし */
   readonly carrier: number;
@@ -79,6 +95,10 @@ const FLUX_REFERENCE = 50;
  * 同期の定義であり、非同期のときのようなうなりが出ないのはこのためである。
  * パルス数が切り替わる瞬間は位相のオフセットを付け替えて連続にする（実機の
  * モード切替も電圧に段差を作らないように再同期する）。
+ *
+ * ノッチの入切も、音量ではなく**ゲート（相電圧）**で表す。切れば電圧が 0 に
+ * なって磁束が電動機自身の時定数で減衰し、入れれば磁束が立ち上がる。音の
+ * 消え方も始まり方も、そうして初めて過渡そのものになる。
  */
 export class InverterVoice {
   private readonly oversample: number;
@@ -102,6 +122,7 @@ export class InverterVoice {
   private readonly fluxLeak: number;
 
   private params: InverterVoiceParams = {
+    gate: false,
     fundamental: 0,
     carrier: 0,
     modulation: 0,
@@ -131,7 +152,16 @@ export class InverterVoice {
     }
     this.dcBlock = new DcBlocker(this.innerRate, 25);
     this.levelSmooth = new Smoothed(sampleRate, 0.02);
-    this.modulationSmooth = new Smoothed(sampleRate, 0.01);
+    /*
+     * 変調率の鈍り ＝ 磁束を確立するのに掛ける時間。
+     *
+     * 磁束の無い電動機へ電圧をいきなり全開で掛けると、掛け始めた位相に応じて
+     * 磁束に直流分が乗る（変圧器の励磁突入と同じ現象で、最悪 2 倍まで振れる）。
+     * 力は磁束の 2 乗なので、これがノッチ投入の瞬間の突出として聞こえる。
+     * 実機のインバータも突入を避けるために電圧を絞って入るので、その立ち上がりを
+     * ここで表す。60ms は出力周波数の 1 周期より十分に長い。
+     */
+    this.modulationSmooth = new Smoothed(sampleRate, 0.06);
     this.frequencySmooth = new Smoothed(sampleRate, 0.005);
     // 磁束の漏れ積分。8Hz 以上ではほぼ真の積分として働き、直流の暴走だけを防ぐ。
     this.fluxLeak = Math.exp(-TWO_PI * 8 * this.innerDt);
@@ -186,11 +216,22 @@ export class InverterVoice {
     let va: number;
     let vb: number;
     let vc: number;
-    if (pulses === 1 || p.carrier <= 0) {
-      // 一パルス: 搬送波が無く、変調波の符号がそのまま相電圧になる（矩形波）
-      va = ma >= 0 ? 1 : -1;
-      vb = mb >= 0 ? 1 : -1;
-      vc = mc >= 0 ? 1 : -1;
+    if (!p.gate) {
+      // ゲート遮断: 素子が全部オフなので電圧が掛からない。以降、磁束は漏れ
+      // 積分の時定数（≒20ms）で減衰し、力はその 2 乗なので倍の速さで消える。
+      va = 0;
+      vb = 0;
+      vc = 0;
+    } else if (pulses === 1 || p.carrier <= 0) {
+      // 一パルス: 搬送波が無く、変調波の符号がそのまま相電圧になる（矩形波）。
+      //
+      // 振幅に変調率を掛けてあるのは、磁束を確立している最中を表すため。
+      // 一パルスは定義上、変調率が飽和した状態（＝1）なので定常では何も変わらない。
+      // 実機も遮断状態からいきなり一パルスへ入ることはなく、PWM で電圧を入れて
+      // 磁束を立ててから移る。それをこの 1 つの係数で代表させている。
+      va = (ma >= 0 ? 1 : -1) * modulation;
+      vb = (mb >= 0 ? 1 : -1) * modulation;
+      vc = (mc >= 0 ? 1 : -1) * modulation;
     } else {
       const carrier = triangle(this.thetaCarrier);
       va = ma > carrier ? 1 : -1;

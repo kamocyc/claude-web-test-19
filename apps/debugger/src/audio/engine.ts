@@ -1,4 +1,10 @@
-import type { JointImpact, TrainNoiseParams } from '@railsim/audio';
+import {
+  DEFAULT_NOISE_MIX,
+  VOICE_COUNT,
+  type JointImpact,
+  type NoiseMix,
+  type TrainNoiseParams,
+} from '@railsim/audio';
 import { axleOffsets, jointCrossings, type Simulation } from '@railsim/core';
 import workletUrl from './trainNoise.worklet.ts?worker&url';
 
@@ -37,9 +43,12 @@ export class TrainAudio {
   private tunnelSend: GainNode | null = null;
   private starting: Promise<void> | null = null;
   private failed = false;
-  private volume = 0.7;
   private muted = false;
   private paused = false;
+  private mixValues: NoiseMix = DEFAULT_NOISE_MIX;
+
+  /** ワークレットから返ってくる音源ごとの実効値 */
+  readonly levels = new Float32Array(VOICE_COUNT);
 
   /** 各車両の前フレームでの距離程（継目の跨ぎ判定に使う） */
   private previousPositions: number[] = [];
@@ -73,6 +82,10 @@ export class TrainAudio {
         numberOfOutputs: 1,
         outputChannelCount: [2],
       });
+      worklet.port.onmessage = (event: MessageEvent<{ levels?: number[] }>) => {
+        const levels = event.data.levels;
+        if (levels) this.levels.set(levels);
+      };
       const master = context.createGain();
       master.gain.value = 0;
       master.connect(context.destination);
@@ -98,8 +111,13 @@ export class TrainAudio {
     }
   }
 
-  setVolume(volume: number): void {
-    this.volume = Math.max(0, Math.min(1, volume));
+  get mix(): NoiseMix {
+    return this.mixValues;
+  }
+
+  /** 音量バランスを変える（変えた項目だけ渡せばよい） */
+  setMix(patch: Partial<NoiseMix>): void {
+    this.mixValues = { ...this.mixValues, ...patch };
     this.applyGain();
   }
 
@@ -121,7 +139,7 @@ export class TrainAudio {
     const context = this.context;
     const master = this.master;
     if (!context || !master) return;
-    const target = this.muted || this.paused ? 0 : this.volume;
+    const target = this.muted || this.paused ? 0 : this.mixValues.master;
     // 急に切ると耳障りなクリックが出るので短くランプする
     master.gain.setTargetAtTime(target, context.currentTime, 0.02);
   }
@@ -164,13 +182,17 @@ export class TrainAudio {
     running: boolean,
   ): TrainNoiseParams {
     const inv = snap.inverter;
+    const mix = this.mixValues;
     const speed = running ? Math.abs(snap.speed) : 0;
     const spec = sim.scenario.consist.vehicles.find((v) => v.traction)?.traction ?? null;
 
-    // 主回路が切れていれば（惰行・ノッチ切）インバータは黙る。磁束は V/f 一定で
-    // 保たれるため、音量はトルクよりも「switching しているかどうか」で決まる。
-    const active = inv.mode !== 'off' && running;
+    // 主回路が切れていれば（惰行・ノッチ切）ゲートが閉じる。音量を 0 にするのでは
+    // なく合成器へゲートの状態を渡し、相電圧を 0 にして磁束を自然に減衰させる。
+    const gate = inv.mode !== 'off' && running;
     const load = Math.min(1, Math.abs(inv.torqueRatio));
+    // V/f 一定で磁束が保たれるので、実機の磁気音は負荷でそれほど変わらない。
+    // どれだけ追従させるかは耳で決められるようミキサのつまみにしてある。
+    const inverterLoad = 1 - mix.inverterLoadTracking + mix.inverterLoadTracking * load;
     // 電動機は M 車の床下にある。この編成は Tc 先頭なので、運転士には
     // 数十メートル後方から聞こえることになる。
     const motorGain = this.motorDistanceGain(sim);
@@ -183,30 +205,33 @@ export class TrainAudio {
 
     return {
       inverter: {
-        fundamental: inv.fundamentalFrequency,
+        gate,
+        // ゲートが閉じているあいだも回転子の周波数を渡し続ける。0 へ落とすと、
+        // 磁束が積分であるために消えぎわで利得が跳ね上がって掃引音が出る。
+        fundamental: gate ? inv.fundamentalFrequency : inv.rotorFrequency,
         carrier: inv.carrierFrequency,
         modulation: inv.modulationIndex,
         pulses: inv.pulses,
         slotFrequency: inv.slotFrequency,
-        level: active ? (0.35 + 0.65 * load) * motorGain : 0,
+        level: inverterLoad * motorGain * mix.inverter,
       },
       runningGear: {
         speed,
         gearMeshFrequency: running ? inv.gearMeshFrequency : 0,
         shaftFrequency: running ? inv.motorRpm / 60 : 0,
-        gearLoad: load,
+        gearLoad: 1 - mix.gearLoadTracking + mix.gearLoadTracking * load,
         // 歯車は M 車、転動音は全車の足元から来るので、減衰は控えめにする
-        level: 0.5 + 0.5 * motorGain,
+        level: (0.5 + 0.5 * motorGain) * mix.runningGear,
       },
       brake: {
         speed,
         cylinderPressure: cylinder,
         pressureRate: running ? pressureRate : 0,
-        level: 1,
+        level: mix.brake,
       },
       auxiliary: {
         compressor: running ? snap.compressor.output : 0,
-        level: 0.8,
+        level: mix.auxiliary,
       },
     };
   }

@@ -9,6 +9,7 @@ import { CAMERA_LABEL, CameraRig, type CameraMode } from './render/cameras.ts';
 import { TrackScene } from './render/scene.ts';
 import { GMeter } from './ui/gmeter.ts';
 import { Hud } from './ui/hud.ts';
+import { Mixer } from './ui/mixer.ts';
 
 const RATES = [0.1, 0.25, 0.5, 1, 2, 4, 8];
 /** グラフのサンプリング周期 [s]（描画フレームごとだと細かすぎる） */
@@ -27,7 +28,7 @@ const saveButton = document.querySelector<HTMLButtonElement>('#save')!;
 const loadInput = document.querySelector<HTMLInputElement>('#load')!;
 const gmeterElement = document.querySelector<HTMLElement>('#gmeter')!;
 const muteButton = document.querySelector<HTMLButtonElement>('#mute')!;
-const volumeInput = document.querySelector<HTMLInputElement>('#volume')!;
+const mixerElement = document.querySelector<HTMLElement>('#mixer')!;
 
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -37,6 +38,12 @@ const hud = new Hud(hudElement);
 const charts = new ChartPanel(chartsElement);
 const gmeter = new GMeter(gmeterElement);
 const audio = new TrainAudio();
+const mixer = new Mixer(mixerElement, {
+  onChange: (patch) => {
+    startAudio();
+    audio.setMix(patch);
+  },
+});
 
 // 運転席の内装はカメラの子として取り付ける。こうすると車体動揺でカメラが揺れても
 // 内装は動かず、窓の外の景色だけが揺れる（実際の運転席の見え方と同じ）。
@@ -147,12 +154,6 @@ muteButton.addEventListener('click', () => {
   startAudio();
   setMuted(!audio.isMuted);
 });
-volumeInput.addEventListener('input', () => {
-  startAudio();
-  audio.setVolume(Number(volumeInput.value) / 100);
-});
-volumeInput.addEventListener('change', () => releaseFocus(volumeInput));
-
 scenarioSelect.addEventListener('change', () => {
   releaseFocus(scenarioSelect);
   restart(scenarioSelect.value);
@@ -236,6 +237,7 @@ function frame(now: number): void {
   // 音は「シミュレーション時間が進んだか」で判断する。一時停止中は advance が 0 に
   // なるので、止まった絵に音だけが鳴り続けることはない。
   audio.update(sim, advance, wall);
+  mixer.update(audio.levels);
   scene.update(sim);
   if (cameraRig.mode === 'cab') cabInterior.update(sim, desk.handles);
   cameraRig.update({
@@ -252,7 +254,6 @@ function frame(now: number): void {
 
 scene.scene.add(cameraRig.camera);
 applyCameraMode('cab');
-audio.setVolume(Number(volumeInput.value) / 100);
 setMuted(false);
 updateRateLabel();
 resize();

@@ -1,4 +1,9 @@
-import { TrainNoiseSynth, type JointImpact, type TrainNoiseParams } from '@railsim/audio';
+import {
+  TrainNoiseSynth,
+  VOICE_COUNT,
+  type JointImpact,
+  type TrainNoiseParams,
+} from '@railsim/audio';
 
 /**
  * AudioWorklet 側の殻。
@@ -32,9 +37,14 @@ declare const AudioWorkletProcessor: {
   new (options?: AudioWorkletNodeOptions): AudioWorkletProcessorLike & { port: MessagePort };
 };
 
+/** レベルメータを送る周期 [サンプル]（約 60ms。表示の更新に十分で、通信は軽い） */
+const LEVEL_PERIOD = 2880;
+
 class TrainNoiseProcessor extends AudioWorkletProcessor {
   private readonly synth = new TrainNoiseSynth(sampleRate);
   private scratch = new Float32Array(128);
+  private readonly levels = new Float32Array(VOICE_COUNT);
+  private sinceLevels = 0;
 
   constructor(options?: AudioWorkletNodeOptions) {
     super(options);
@@ -61,6 +71,14 @@ class TrainNoiseProcessor extends AudioWorkletProcessor {
     this.synth.render(this.scratch);
     for (let channel = 0; channel < output.length; channel++) {
       output[channel]!.set(this.scratch);
+    }
+
+    // 音源ごとの実効値をメインスレッドへ返す（ミキサのメータになる）
+    this.sinceLevels += length;
+    if (this.sinceLevels >= LEVEL_PERIOD) {
+      this.sinceLevels = 0;
+      this.synth.readLevels(this.levels);
+      this.port.postMessage({ levels: Array.from(this.levels) });
     }
     return true;
   }

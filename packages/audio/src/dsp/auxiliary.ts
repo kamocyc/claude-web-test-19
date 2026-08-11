@@ -15,6 +15,18 @@ export interface AuxiliaryParams {
 const CRANK_FREQUENCY = 16.5;
 
 /**
+ * 全開時の音量。
+ *
+ * **80km/h で惰行しているときの走行音より 10dB 下**になるよう実測して決めてある
+ * （走行音 rms 0.067 に対して 0.021）。耳で決めると、ほかに何も鳴っていない
+ * 停車中に合わせてしまって走行中に過大になる — 実際そうなっていた。
+ *
+ * この値でも停車中は編成でいちばん大きい音になる。実車で「止まると急に
+ * うるさくなる」のは補機が大きいからではなく、走行音が消えるからである。
+ */
+const FULL_LEVEL = 0.11;
+
+/**
  * 補機の音。いまは空気圧縮機だけを持つ。
  *
  * 往復式の圧縮機は「1 回転に何回か、ピストンが空気を押し出す」ため、
@@ -47,7 +59,7 @@ export class AuxiliaryVoice {
   }
 
   setParams(p: AuxiliaryParams): void {
-    this.target = p.level * 0.5 * Math.max(0, Math.min(1, p.compressor));
+    this.target = p.level * FULL_LEVEL * Math.max(0, Math.min(1, p.compressor));
   }
 
   /** バッファへ**加算**する */
