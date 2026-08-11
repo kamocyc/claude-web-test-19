@@ -128,6 +128,11 @@ export interface CompiledRoute {
   readonly safetySections: SpanTable<SafetySystemKind>;
   /** 軌道狂い（距離程の関数。線路そのものの性質なので路線データが持つ） */
   readonly irregularity: TrackIrregularity;
+  /**
+   * 距離程 -> レールの継目間隔 [m]（0 = ロングレール）。
+   * 定尺レール区間では軸が継目を踏むたびに衝撃音が出る。
+   */
+  readonly railJointSpacing: StepTable<number>;
   /** 許容カント不足 [m]。曲線の制限速度はこれを基準に決まる。 */
   readonly maxCantDeficiency: Meters;
   /** 現示ごとの既定許容速度 */

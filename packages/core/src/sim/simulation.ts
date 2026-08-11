@@ -1,3 +1,4 @@
+import { AirCompressor, type CompressorState } from '../brake/compressor.ts';
 import { ElectroPneumaticBrakeSystem } from '../brake/electroPneumatic.ts';
 import type { BrakeCommand } from '../brake/types.ts';
 import { Rng } from '../math/rng.ts';
@@ -67,6 +68,7 @@ export class Simulation {
   readonly dynamics: TrainDynamics;
   readonly traction: VvvfTractionSystem;
   readonly brake: ElectroPneumaticBrakeSystem;
+  readonly compressor = new AirCompressor();
   readonly signalling: SignallingSystem;
   readonly safety: SafetySystem;
   readonly metrics = new MetricsRecorder();
@@ -92,6 +94,7 @@ export class Simulation {
   private safetyOutput: SafetyOutput = noOutput();
   private previousAcknowledge = false;
   private previousInput: ControlInput = NEUTRAL_INPUT;
+  private lastCylinderPressure = 0;
   private readonly env: DynamicsEnvironment;
 
   readonly stations: StationProgress[];
@@ -270,6 +273,13 @@ export class Simulation {
       regenerationReceptivity: this.scenario.regenerationReceptivity,
       lineVoltage: 1500,
     });
+
+    // 6. 補機（空気圧縮機）。ブレーキの物理には影響しないが、BC へ込めたぶん
+    //    元空気溜めが減るので、ブレーキを使うほど早く回り出す。
+    const cylinderPressure = this.brake.averageCylinderPressure();
+    const fillRate = dt > 0 ? Math.max(0, cylinderPressure - this.lastCylinderPressure) / dt : 0;
+    this.lastCylinderPressure = cylinderPressure;
+    this.compressor.step(dt, fillRate * this.scenario.consist.vehicles.length);
 
     this.updateSafetyMetrics();
     this.previousInput = this.input;
@@ -456,6 +466,7 @@ export class Simulation {
       antiSkidActive: this.brake.state.antiSkidActive,
       reAdhesionFactor: this.traction.state.reAdhesionFactor,
       inverter: this.traction.modulation?.state ?? NO_INVERTER,
+      compressor: this.compressor.state,
       maxSlip: dyn.vehicles.reduce(
         (m, v) => v.axles.reduce((mm, a) => (Math.abs(a.slip) > Math.abs(mm) ? a.slip : mm), m),
         0,
@@ -501,6 +512,8 @@ export interface SimSnapshot {
   reAdhesionFactor: number;
   /** インバータの変調状態（出力周波数・パルスモード・キャリア周波数） */
   inverter: InverterState;
+  /** 元空気溜めと空気圧縮機 */
+  compressor: CompressorState;
   maxSlip: number;
   maxCouplerForce: number;
   safety: SafetyOutput;

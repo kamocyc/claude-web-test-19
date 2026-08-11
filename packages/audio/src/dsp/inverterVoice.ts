@@ -155,7 +155,7 @@ export class InverterVoice {
       for (let k = 0; k < os; k++) {
         sample = this.renderInner(f1, modulation, p);
       }
-      out[i] = softClip(sample * level);
+      out[i] = sample * level;
     }
   }
 
@@ -245,9 +245,4 @@ function wrap(theta: number): number {
 function triangle(theta: number): number {
   const p = theta / TWO_PI;
   return p < 0.5 ? -1 + 4 * p : 3 - 4 * p;
-}
-
-/** 過大入力を穏やかに丸める（歪ませるより飽和させたほうが実機に近い） */
-function softClip(x: number): number {
-  return Math.tanh(x);
 }

@@ -235,7 +235,7 @@ function frame(now: number): void {
 
   // 音は「シミュレーション時間が進んだか」で判断する。一時停止中は advance が 0 に
   // なるので、止まった絵に音だけが鳴り続けることはない。
-  audio.update(sim, advance);
+  audio.update(sim, advance, wall);
   scene.update(sim);
   if (cameraRig.mode === 'cab') cabInterior.update(sim, desk.handles);
   cameraRig.update({

@@ -85,6 +85,19 @@ export const testLineRoute: RouteDefinition = {
 
   aspectSpeeds: { R: 0, YY: 25, Y: 45, YG: 75, G: 110 },
 
+  /**
+   * レールは定尺 25m を基本とし、トンネル区間の前後（4500〜6200m）だけを
+   * ロングレールにしてある。同じ速度でも継目音の有無で走行音がはっきり変わるので、
+   * 「ガタン ゴトン」が編成の寸法から出ていることを聞いて確かめられる。
+   */
+  rail: {
+    spacing: 25,
+    sections: [
+      { start: 4500, spacing: 0 },
+      { start: 6200, spacing: 25 },
+    ],
+  },
+
   autoCurveLimits: { enabled: true, maxCantDeficiency: 60, roundDown: 5 },
   autoAtsP: { enabled: true },
   autoAtsSn: { enabled: true },

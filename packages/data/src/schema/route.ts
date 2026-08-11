@@ -184,6 +184,32 @@ export const routeSchema = z.object({
     })
     .default({}),
 
+  /**
+   * レールの継目。
+   *
+   * 定尺レール（25m）の区間では、軸が継目を踏むたびに「ガタン ゴトン」が鳴る。
+   * ロングレール区間（`spacing: 0`）ではこれが無くなり、走行音が転動音だけになる。
+   * 継目を踏む時刻は軸の位置から厳密に決まるので、間隔はそのまま固定軸距・
+   * 台車中心間距離・編成長を映す。
+   */
+  rail: z
+    .object({
+      /** 継目の間隔 [m]。0 ならロングレール。 */
+      spacing: z.number().nonnegative().default(25),
+      /** 区間ごとの上書き */
+      sections: z
+        .array(
+          z.object({
+            /** 区間の始まり [m] */
+            start: z.number(),
+            /** 継目の間隔 [m]（0 = ロングレール） */
+            spacing: z.number().nonnegative(),
+          }),
+        )
+        .default([]),
+    })
+    .default({}),
+
   /** ATS-SN 地上子（ロング・直下）を自動配置する */
   autoAtsSn: z
     .object({

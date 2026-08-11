@@ -31,16 +31,14 @@ export const inverterSchema = z.object({
   /** 基底周波数 [Hz]。ここで変調率が 1 に飽和し、以降は弱め界磁になる。 */
   baseFrequency: z.number().positive().default(53),
   /** 非同期モードのキャリア [出力周波数 Hz, キャリア Hz] の折れ線 */
-  asyncCarrier: z
-    .array(z.tuple([z.number(), z.number()]))
-    .default([
-      [0, 250],
-      [6, 250],
-      [7, 350],
-      [12, 350],
-      [13, 480],
-      [18, 480],
-    ]),
+  asyncCarrier: z.array(z.tuple([z.number(), z.number()])).default([
+    [0, 250],
+    [6, 250],
+    [7, 350],
+    [12, 350],
+    [13, 480],
+    [18, 480],
+  ]),
   /** パルスモードの梯子（出力周波数の昇順。pulses = 0 が非同期、1 が一パルス） */
   pulseModes: z
     .array(z.object({ minFrequency: z.number().nonnegative(), pulses: z.number().int().min(0) }))

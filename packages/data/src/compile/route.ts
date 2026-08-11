@@ -329,6 +329,10 @@ export function compileRoute(definition: RouteDefinition): CompiledRoute {
     beacons: new PointTable(beacons),
     safetySections,
     irregularity,
+    railJointSpacing: new StepTable(
+      def.rail.sections.map((s) => ({ s: s.start, value: s.spacing })),
+      def.rail.spacing,
+    ),
     maxCantDeficiency: mmToM(def.autoCurveLimits.maxCantDeficiency),
     aspectSpeeds,
   };

@@ -150,22 +150,24 @@ describe('PWM 波形から合成するインバータ音', () => {
     expect(rms(x)).toBeLessThan(1e-4);
   });
 
-  it('変調率 0 でも発散せず、出力が有限に収まる', () => {
+  it('変調率 0 でも発散しない', () => {
     const x = render(params({ modulation: 0 }));
     for (let i = 0; i < x.length; i++) {
       expect(Number.isFinite(x[i]!)).toBe(true);
-      expect(Math.abs(x[i]!)).toBeLessThanOrEqual(1);
+      expect(Math.abs(x[i]!)).toBeLessThan(4);
     }
   });
 
-  it('全域で発散もクリップ破綻もしない', () => {
+  it('全域で発散せず、無音にもならない', () => {
+    // 飽和は合成全体（`TrainNoiseSynth`）で最後に 1 回だけ掛けるので、
+    // ここでは「暴れていないこと」だけを見る。
     for (const f1 of [2, 18, 53, 120, 200]) {
       const x = render(
         params({ fundamental: f1, carrier: f1 < 18 ? 480 : 0, pulses: f1 < 18 ? 0 : 1 }),
       );
       const peak = Math.max(...Array.from(x, Math.abs));
       expect(Number.isFinite(peak)).toBe(true);
-      expect(peak).toBeLessThanOrEqual(1);
+      expect(peak).toBeLessThan(4);
       expect(rms(x)).toBeGreaterThan(1e-5);
     }
   });
