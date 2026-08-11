@@ -277,8 +277,26 @@ describe('ATS-P', () => {
 
     const withAtsP = new Simulation(scenarioOf('test-line-following'));
     withAtsP.input = input({ powerNotch: 4 });
-    for (let i = 0; i < 4000 && withAtsP.position < 1300; i++) withAtsP.step(0.05);
+    // 停止現示が続いているあいだは信号機を越えられない。
+    // 現示がアップしたあとは進行してよいので、そこで観測を打ち切る。
+    for (let i = 0; i < 4000; i++) {
+      if (withAtsP.signalling.aspectOf('sig-2') !== 'R') break;
+      withAtsP.step(0.05);
+    }
     expect(withAtsP.position).toBeLessThan(1200);
+    expect(Math.abs(withAtsP.speed)).toBeLessThan(0.1);
+  });
+
+  it('停止現示の手前で止まっても、現示がアップすれば発進できる', () => {
+    // パターンの余裕距離の内側には次の地上子が無いため、停車したまま現示アップを
+    // 受け取れずに動けなくなる、ということがあってはならない。
+    const sim = new Simulation(scenarioOf('test-line-following'));
+    sim.input = input({ powerNotch: 4 });
+    runUntil(sim, (s) => s.signalling.aspectOf('sig-2') !== 'R', 300);
+    const stoppedAt = sim.position;
+    expect(stoppedAt).toBeLessThan(1200);
+    runUntil(sim, (s) => s.position > 1250, 120);
+    expect(sim.position).toBeGreaterThan(1250);
   });
 });
 

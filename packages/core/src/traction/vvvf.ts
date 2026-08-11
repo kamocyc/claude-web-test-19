@@ -55,6 +55,9 @@ export function regenerationFade(spec: VvvfTractionSpec, v: MetersPerSecond): nu
   return (av - lo) / (hi - lo);
 }
 
+/** 電気ブレーキトルクの符号を滑らかにする角速度スケール [rad/s] */
+const ELECTRIC_BRAKE_SIGN_SCALE = 1.0;
+
 export interface VvvfOptions {
   /** 空転検知のしきい値（ピークすべり率に対する倍率） */
   readonly slipThreshold?: number;
@@ -336,9 +339,14 @@ export class VvvfTractionSystem implements TractionSystem {
         motorTorqueAt(spec, v, spec.maxBrakingMotorTorque) * regenerationFade(spec, v) * ratio;
       const axleTorqueTotal = motorTorque * spec.motorCount * spec.gearRatio * spec.driveEfficiency;
       const perAxle = axleTorqueTotal / veh.spec.drivenAxleCount;
-      // 電気ブレーキは進行方向と逆向きのトルク
-      const dir = v >= 0 ? -1 : 1;
-      for (const ax of veh.axles) ax.driveTorque = ax.driven ? dir * perAxle : 0;
+      // 電気ブレーキは電動機の回転を妨げる向きにしか働かず、回転が止まれば消える。
+      // 向きを車速ではなく**車輪の実回転**から決めるのが要点で、車速で決めてしまうと、
+      // 滑走して回転が落ちた軸へ逆向きのトルクを与え続け、車輪を逆回転させてしまう。
+      // （そうなると軸は滑走摩擦のぶんだけ列車を引きずり、ノッチを緩めても減速度が
+      // 落ちないという実車ではありえない挙動になる。）
+      for (const ax of veh.axles) {
+        ax.driveTorque = ax.driven ? -Math.tanh(ax.omega / ELECTRIC_BRAKE_SIGN_SCALE) * perAxle : 0;
+      }
       total += rimForceFromMotorTorque(spec, veh.spec, motorTorque);
       // 変調から見ると回生はすべりが負の側なので、トルクは負として扱う
       this.lastMotorTorque = -motorTorque;

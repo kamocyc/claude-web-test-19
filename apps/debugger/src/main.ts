@@ -67,11 +67,14 @@ let rateIndex = RATES.indexOf(1);
 let singleStep = false;
 let sampleTimer = 0;
 let replaying: Recording | null = null;
+/** 自動運転の入切（シナリオを切り替えても保つ） */
+let autoDrive = false;
 
 const desk = new DriverDesk({
   powerNotchCount: () => scenario.consist.traction.notchCount,
   brakeNotchCount: () => scenario.consist.brake.notchCount,
   onCameraChange: (mode: CameraMode) => applyCameraMode(mode),
+  onAutoDriveToggle: () => setAutoDrive(!autoDrive),
   onPauseToggle: () => setPaused(!paused),
   onSingleStep: () => {
     singleStep = true;
@@ -88,6 +91,20 @@ function applyCameraMode(mode: CameraMode): void {
   cameraRig.setMode(mode);
   cabInterior.group.visible = mode === 'cab';
   scene.setLeadCarVisible(mode !== 'cab');
+}
+
+/**
+ * 自動運転の入切。
+ * 切るときは、装置が握っていたノッチをそのまま運転士のハンドル位置へ引き継ぐ
+ * （でないと、ブレーキ中に切り替えた瞬間に緩解して走り出してしまう）。
+ */
+function setAutoDrive(value: boolean): void {
+  if (!value && autoDrive) {
+    const held = sim.effectiveInput;
+    desk.takeOver(held.powerNotch, held.brakeNotch, held.doorsClosed);
+  }
+  autoDrive = value;
+  sim.setAutoDrive(value);
 }
 
 function setPaused(value: boolean): void {
@@ -133,6 +150,7 @@ function restart(id = scenarioId): void {
   charts.clear();
   gmeter.clear();
   audio.reset();
+  sim.setAutoDrive(autoDrive);
   applyCameraMode(cameraRig.mode);
   setPaused(false);
 }
@@ -234,12 +252,23 @@ function frame(now: number): void {
     }
   }
 
+  // 自動運転中は装置が動かしているノッチを「手元」として表示・描画する
+  const held = sim.effectiveInput;
+  const handles = autoDrive
+    ? {
+        power: held.powerNotch,
+        brake: held.brakeNotch,
+        emergency: held.emergency,
+        doorsClosed: held.doorsClosed,
+      }
+    : desk.handles;
+
   // 音は「シミュレーション時間が進んだか」で判断する。一時停止中は advance が 0 に
   // なるので、止まった絵に音だけが鳴り続けることはない。
   audio.update(sim, advance, wall);
   mixer.update(audio.levels);
   scene.update(sim);
-  if (cameraRig.mode === 'cab') cabInterior.update(sim, desk.handles);
+  if (cameraRig.mode === 'cab') cabInterior.update(sim, handles);
   cameraRig.update({
     frame: scene.frontFrame(sim),
     trainLength: trainLength(),
@@ -247,7 +276,7 @@ function frame(now: number): void {
     cabQuaternion: scene.cabQuaternion,
   });
   renderer.render(scene.scene, cameraRig.camera);
-  hud.update(sim, CAMERA_LABEL[cameraRig.mode], RATES[rateIndex]!, paused, desk.handles);
+  hud.update(sim, CAMERA_LABEL[cameraRig.mode], RATES[rateIndex]!, paused, handles);
   gmeter.draw(sim);
   charts.draw();
 }

@@ -3,6 +3,11 @@ import { ElectroPneumaticBrakeSystem } from '../brake/electroPneumatic.ts';
 import type { BrakeCommand } from '../brake/types.ts';
 import { Rng } from '../math/rng.ts';
 import { clamp } from '../math/scalar.ts';
+import {
+  AutoDriver,
+  type AutoDriveParameters,
+  type AutoDriveState,
+} from '../operation/autoDrive.ts';
 import { MetricsRecorder, type StopRecord } from '../operation/metrics.ts';
 import type { BeaconPayload, SafetySystemKind, Station } from '../route/types.ts';
 import { AtcSystem } from '../safety/atc.ts';
@@ -48,6 +53,8 @@ export interface StationProgress {
 export interface SimulationOptions {
   /** 保安装置を差し替える（テスト用） */
   readonly safetyFactory?: (scenario: Scenario) => SafetySystem;
+  /** 自動運転装置の調整値（`autoDrive` を有効にしたときに使われる） */
+  readonly autoDrive?: Partial<AutoDriveParameters>;
 }
 
 /**
@@ -77,6 +84,14 @@ export class Simulation {
   /** 運転士の操作入力（外部から書き換える） */
   input: ControlInput = NEUTRAL_INPUT;
 
+  /**
+   * 自動運転装置。`autoDrive` が true のあいだは、これが組み立てた指令が
+   * 運転士の操作の代わりに装置へ渡る。
+   */
+  readonly autoDriver: AutoDriver;
+  /** 自動運転の入切 */
+  autoDrive = false;
+
   /** シミュレーション内時刻 [s] */
   time: Seconds;
   /** 走行開始からの経過時間 [s] */
@@ -94,6 +109,8 @@ export class Simulation {
   private safetyOutput: SafetyOutput = noOutput();
   private previousAcknowledge = false;
   private previousInput: ControlInput = NEUTRAL_INPUT;
+  /** 実際に装置へ渡っている指令（自動運転中は装置が組み立てたもの） */
+  private activeInput: ControlInput = NEUTRAL_INPUT;
   private lastCylinderPressure = 0;
   private readonly env: DynamicsEnvironment;
 
@@ -124,6 +141,7 @@ export class Simulation {
     this.safety = options.safetyFactory
       ? options.safetyFactory(scenario)
       : buildSafetySystems(scenario);
+    this.autoDriver = new AutoDriver(options.autoDrive);
     this.previousFront = this.dynamics.frontPosition;
     this.lastControlFront = this.previousFront;
 
@@ -146,6 +164,25 @@ export class Simulation {
 
     this.signalling.update(this.occupancy(), this.time);
     this.runControl(CONTROL_DT);
+  }
+
+  /**
+   * 自動運転の入切。
+   * 入れ直したときに前回の走行の状態（制動のラッチ・停車の進行）が残らないよう、
+   * 装置を初期化してから引き継ぐ。
+   */
+  setAutoDrive(enabled: boolean): void {
+    if (enabled === this.autoDrive) return;
+    if (enabled) this.autoDriver.reset();
+    this.autoDrive = enabled;
+  }
+
+  /**
+   * 実際に装置へ渡っている指令。
+   * 自動運転中は `input`（運転士の操作）ではなく自動運転装置の出力になる。
+   */
+  get effectiveInput(): ControlInput {
+    return this.activeInput;
   }
 
   /** 列車の在線範囲 */
@@ -204,7 +241,7 @@ export class Simulation {
     this.previousFront = this.dynamics.frontPosition;
     this.env.adhesion = {
       rail: this.scenario.railCondition,
-      sanding: this.input.sanding,
+      sanding: this.activeInput.sanding,
     };
     this.dynamics.step(dt, this.env);
     this.time += dt;
@@ -230,14 +267,40 @@ export class Simulation {
 
     // 3. 保安装置
     this.safetyOutput = this.safety.update(dt, ctx);
-    if (this.input.safetyReset && Math.abs(this.dynamics.speed) < 0.05) {
+    this.lastControlFront = front;
+    // 保安装置の判定に使った指令を、次の周期の比較対象として控える。
+    // 自動運転装置はこのあとで今周期の指令を作るので、ここで控えておかないと
+    // 「前回の指令」と「今回の指令」が同じものになり、確認扱いの立ち上がりを
+    // 検出できなくなる。
+    this.previousInput = this.activeInput;
+    this.previousAcknowledge = this.activeInput.acknowledge;
+
+    // 4. 自動運転装置。運転士の操作の代わりに指令を組み立てる。
+    //    制御周期の中で回すので、描画のフレームレートに依らず結果は同じになる。
+    this.activeInput = this.autoDrive
+      ? this.autoDriver.update(dt, {
+          time: this.time,
+          position: front,
+          speed: this.dynamics.speed,
+          route: this.scenario.route,
+          consist: this.scenario.consist,
+          signalling: this.signalling,
+          dynamics: this.dynamics,
+          brake: this.brake,
+          nextStation: this.nextStation,
+          safetyEmergency: this.safetyOutput.emergencyBrake,
+          safetyWarning: this.safetyOutput.indication.bell,
+          patternSpeed: this.safetyOutput.indication.patternSpeed,
+        })
+      : this.input;
+
+    if (this.activeInput.safetyReset && Math.abs(this.dynamics.speed) < 0.05) {
       this.safety.reset();
     }
-    this.lastControlFront = front;
 
-    // 4. 運転士の指令と保安装置の出力を合成する
-    const emergency = this.input.emergency || this.safetyOutput.emergencyBrake;
-    let brakeNotch = this.input.brakeNotch;
+    // 5. 指令と保安装置の出力を合成する
+    const emergency = this.activeInput.emergency || this.safetyOutput.emergencyBrake;
+    let brakeNotch = this.activeInput.brakeNotch;
     if (this.safetyOutput.serviceBrakeNotch !== null) {
       brakeNotch = Math.max(
         brakeNotch,
@@ -246,16 +309,18 @@ export class Simulation {
     }
     const cutOff = this.safetyOutput.cutOffTraction || emergency || brakeNotch > 0;
     const powerNotch =
-      cutOff || this.input.reverser === 0 || !this.input.doorsClosed ? 0 : this.input.powerNotch;
+      cutOff || this.activeInput.reverser === 0 || !this.activeInput.doorsClosed
+        ? 0
+        : this.activeInput.powerNotch;
 
     const brakeCommand: BrakeCommand = {
       notch: clamp(brakeNotch, 0, this.scenario.consist.brake.notchCount),
       emergency,
-      holdingNotch: powerNotch > 0 ? 0 : this.input.holdingNotch,
-      backup: this.input.backupBrake,
+      holdingNotch: powerNotch > 0 ? 0 : this.activeInput.holdingNotch,
+      backup: this.activeInput.backupBrake,
     };
 
-    // 5. ブレーキ → 動力の順に更新する（電空協調で電気ブレーキ量が決まるため）
+    // 6. ブレーキ → 動力の順に更新する（電空協調で電気ブレーキ量が決まるため）
     const brakeCtx = {
       dynamics: this.dynamics,
       traction: this.traction,
@@ -274,7 +339,7 @@ export class Simulation {
       lineVoltage: 1500,
     });
 
-    // 6. 補機（空気圧縮機）。ブレーキの物理には影響しないが、BC へ込めたぶん
+    // 7. 補機（空気圧縮機）。ブレーキの物理には影響しないが、BC へ込めたぶん
     //    元空気溜めが減るので、ブレーキを使うほど早く回り出す。
     const cylinderPressure = this.brake.averageCylinderPressure();
     const fillRate = dt > 0 ? Math.max(0, cylinderPressure - this.lastCylinderPressure) / dt : 0;
@@ -282,17 +347,23 @@ export class Simulation {
     this.compressor.step(dt, fillRate * this.scenario.consist.vehicles.length);
 
     this.updateSafetyMetrics();
-    this.previousInput = this.input;
-    this.previousAcknowledge = this.input.acknowledge;
   }
 
+  /**
+   * 保安装置へ渡す文脈。
+   *
+   * 操作の有無（EB 装置の判定に使う）は、前の制御周期で実際に装置へ渡った指令から見る。
+   * 自動運転中は装置が連続して指令を出しているので、無操作の監視は成立しない。
+   */
   private safetyContext(front: Meters, previousFront: Meters): SafetyContext {
+    const current = this.autoDrive ? this.activeInput : this.input;
     const anyOperation =
-      this.input.powerNotch !== this.previousInput.powerNotch ||
-      this.input.brakeNotch !== this.previousInput.brakeNotch ||
-      this.input.horn ||
-      this.input.acknowledge ||
-      this.input.emergency !== this.previousInput.emergency;
+      this.autoDrive ||
+      current.powerNotch !== this.previousInput.powerNotch ||
+      current.brakeNotch !== this.previousInput.brakeNotch ||
+      current.horn ||
+      current.acknowledge ||
+      current.emergency !== this.previousInput.emergency;
     return {
       time: this.time,
       position: front,
@@ -300,7 +371,7 @@ export class Simulation {
       speed: this.dynamics.speed,
       signalling: this.signalling,
       driver: {
-        acknowledge: this.input.acknowledge && !this.previousAcknowledge,
+        acknowledge: current.acknowledge && !this.previousAcknowledge,
         anyOperation,
       },
       lineSpeedLimit: this.scenario.route.maxSpeed,
@@ -407,7 +478,7 @@ export class Simulation {
     }
 
     if (!progress.departed) {
-      progress.doorsOpen = !this.input.doorsClosed && stopped;
+      progress.doorsOpen = !this.activeInput.doorsClosed && stopped;
       if (progress.doorsOpen || progress.dwellElapsed > 0) {
         progress.dwellElapsed += dt;
       }
@@ -476,6 +547,7 @@ export class Simulation {
       nextSignal: this.signalling.signalAhead(dyn.frontPosition) ?? null,
       nextStationName: nextStation?.station.name ?? null,
       distanceToStop: nextStation ? nextStation.station.stopPosition - dyn.frontPosition : null,
+      autoDrive: this.autoDrive ? this.autoDriver.state : null,
     };
   }
 }
@@ -520,6 +592,8 @@ export interface SimSnapshot {
   nextSignal: { state: { aspect: string; speed: number }; distance: number } | null;
   nextStationName: string | null;
   distanceToStop: number | null;
+  /** 自動運転装置の状態（手動運転なら null） */
+  autoDrive: AutoDriveState | null;
 }
 
 /** シナリオの指定に従って保安装置を組み立てる */
