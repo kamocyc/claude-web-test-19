@@ -5,7 +5,7 @@ import {
   type NoiseMix,
   type TrainNoiseParams,
 } from '@railsim/audio';
-import { axleOffsets, jointCrossings, type Simulation } from '@railsim/core';
+import { axleOffsets, jointCrossings, type BodyMotionState, type Simulation } from '@railsim/core';
 import workletUrl from './trainNoise.worklet.ts?worker&url';
 
 const PROCESSOR = 'train-noise';
@@ -18,6 +18,13 @@ const JOINT_REFERENCE_SPEED = 25;
  * この距離だけ離れると音量が半分になる。
  */
 const DISTANCE_HALF = 25;
+
+/**
+ * 左右の空気ばねの間隔の半分 [m]。
+ * 台車の幾何で決まる値で、1067mm 軌間の台車なら空気ばねの中心間は 2m 前後。
+ * ロール角速度にこの腕の長さを掛けたぶんが、上下速度に加わる。
+ */
+const AIR_SPRING_HALF_SPACING = 1.0;
 
 /** トンネル内の残響時間 [s]（覆工が硬く、断面が狭いので長め） */
 const TUNNEL_REVERB_TIME = 1.1;
@@ -182,6 +189,7 @@ export class TrainAudio {
     running: boolean,
   ): TrainNoiseParams {
     const inv = snap.inverter;
+    const indication = snap.safety.indication;
     const mix = this.mixValues;
     const speed = running ? Math.abs(snap.speed) : 0;
     const spec = sim.scenario.consist.vehicles.find((v) => v.traction)?.traction ?? null;
@@ -224,7 +232,11 @@ export class TrainAudio {
       },
       // 転動音と風切り音は編成のどこからでも来る。運転台の真下にも軸があるし、
       // 前面は自分が風を切っている当人なので、距離減衰は掛からない。
-      rolling: { speed, level: mix.rolling },
+      rolling: {
+        speed,
+        corrugation: sim.scenario.route.railCorrugation.at(sim.dynamics.frontPosition),
+        level: mix.rolling,
+      },
       wind: { speed, level: mix.wind },
       brake: {
         speed,
@@ -236,6 +248,19 @@ export class TrainAudio {
         compressor: running ? snap.compressor.output : 0,
         level: mix.auxiliary,
       },
+      airSpring: {
+        strokeRate: running ? airSpringStrokeRate(snap.body) : 0,
+        level: mix.airSpring,
+      },
+      // 保安装置の報知音と警笛は運転台の中で鳴るので、距離減衰も走行音による
+      // マスクも受けない。運転士に届かなければ意味が無い装置だからである。
+      alarm: {
+        bell: indication.bell,
+        chime: indication.chime,
+        patternApproach: indication.patternApproach,
+        level: mix.alarm,
+      },
+      horn: { sounding: sim.input.horn, level: mix.horn },
     };
   }
 
@@ -382,4 +407,15 @@ function createTunnelImpulse(context: BaseAudioContext): AudioBuffer {
     for (let i = 0; i < 64; i++) data[i]! *= i / 64;
   }
   return buffer;
+}
+
+/**
+ * 空気ばねが伸縮する速さ [m/s]。
+ *
+ * 車体の上下動そのものと、ロールによる左右差の両方が効く。左右の空気ばねは
+ * 車体中心から `間隔/2` だけ離れているので、ロール角速度にその腕の長さを
+ * 掛けたぶんが上下速度に加わる。大きいほうの側が鳴く。
+ */
+function airSpringStrokeRate(body: BodyMotionState): number {
+  return Math.abs(body.verticalRate) + AIR_SPRING_HALF_SPACING * Math.abs(body.rollRate);
 }

@@ -34,24 +34,64 @@ const REFERENCE_SPEED = 30;
 export interface RollingParams {
   /** 車速の大きさ [m/s] */
   readonly speed: number;
+  /** レール波状摩耗の深さ 0..1 */
+  readonly corrugation: number;
   /** 音量 0..1 */
   readonly level: number;
 }
 
 /**
+ * まくらぎの間隔 [m]。
+ * 車輪の下のレールは、まくらぎの上では硬く、まくらぎ間では柔らかい。この支持
+ * 剛性の周期的な変化が接触力を脈動させるので、`v / 間隔` の周波数で転動音が
+ * 揺らぐ。在来線はほぼこの値（1km あたり 1600〜1700 本）。
+ */
+const SLEEPER_SPACING = 0.6;
+
+/** まくらぎ通過による振幅の揺らぎの深さ */
+const SLEEPER_DEPTH = 0.22;
+
+/**
+ * レール波状摩耗の代表波長 [m]。
+ *
+ * 踏面には走行を重ねるうちに周期的な摩耗（コルゲーション）ができる。在来線の
+ * 短波長波状摩耗は 25〜80mm で、粗さのスペクトルにこの波長の峰が立つ。
+ * その結果、転動音に `v / 波長` の狭帯域のうなりが現れる — 55mm なら 60km/h で
+ * 303Hz、120km/h で 606Hz と、**速度に比例して音程が上がる**。
+ */
+const CORRUGATION_WAVELENGTH = 0.055;
+
+/**
  * 転動音。車輪とレールの粗さによる加振で、**編成のすべての軸から**出る。
  * 運転台の真下にも軸があるので、距離減衰はほとんど掛からない。
+ *
+ * 継目の無いロングレール区間で高速を出したときに残るのがこの音で、
+ * 広帯域の「ゴー」に、まくらぎ通過の脈動と波状摩耗のうなりが重なって聞こえる。
+ * どちらも速度に比例して周波数が上がるので、加速していくと唸りの音程が
+ * 上がっていく。
  */
 export class RollingVoice {
   private readonly noise = new Noise(0x51ce);
   private readonly pink = new PinkFilter();
   private readonly band = new Biquad();
+  private readonly corrugationBand = new Biquad();
   private readonly level: Smoothed;
+  private readonly corrugationLevel: Smoothed;
+
   private target = 0;
+  private targetCorrugation = 0;
+  private sleeperDepth = 0;
+  private thetaSleeper = 0;
+  private targetSleeperFrequency = 0;
+  private readonly sleeperFrequency: Smoothed;
+  private readonly dt: number;
 
   constructor(private readonly sampleRate: number) {
+    this.dt = 1 / sampleRate;
     this.level = new Smoothed(sampleRate, 0.05);
-    this.setParams({ speed: 0, level: 0 });
+    this.corrugationLevel = new Smoothed(sampleRate, 0.05);
+    this.sleeperFrequency = new Smoothed(sampleRate, 0.05);
+    this.setParams({ speed: 0, corrugation: 0, level: 0 });
   }
 
   setParams(p: RollingParams): void {
@@ -59,20 +99,43 @@ export class RollingVoice {
     // スペクトル重心は速度とともに上がる（粗さの短い波長が効いてくる）
     this.band.bandPass(this.sampleRate, 380 + 14 * v, 0.7);
     this.target = p.level * 0.5 * Math.pow(v / REFERENCE_SPEED, 1.5);
+
+    // 波状摩耗: 粗さのスペクトルに峰があるので、転動音にも峰が立つ。
+    // Q を高く取ると音程のはっきりした「唸り」になる。
+    const depth = Math.max(0, Math.min(1, p.corrugation));
+    const frequency = v / CORRUGATION_WAVELENGTH;
+    if (frequency > 20) this.corrugationBand.bandPass(this.sampleRate, frequency, 14);
+    this.targetCorrugation = frequency > 20 ? this.target * 2.4 * depth : 0;
+
+    // まくらぎ通過。低速では周波数が低すぎて脈動というより粒になる。
+    this.targetSleeperFrequency = v / SLEEPER_SPACING;
+    this.sleeperDepth = SLEEPER_DEPTH;
   }
 
   /** バッファへ**加算**する */
   render(out: Float32Array): void {
     for (let i = 0; i < out.length; i++) {
       const pink = this.pink.process(this.noise.next());
-      out[i] = out[i]! + this.band.process(pink) * this.level.process(this.target);
+      const broadband = this.band.process(pink) * this.level.process(this.target);
+      const corrugation =
+        this.corrugationBand.process(pink) * this.corrugationLevel.process(this.targetCorrugation);
+
+      const sleeper = this.sleeperFrequency.process(this.targetSleeperFrequency);
+      this.thetaSleeper = wrap(this.thetaSleeper + TWO_PI * sleeper * this.dt);
+      const support = 1 + this.sleeperDepth * Math.sin(this.thetaSleeper);
+
+      out[i] = out[i]! + (broadband + corrugation) * support;
     }
   }
 
   reset(): void {
     this.pink.reset();
     this.band.reset();
+    this.corrugationBand.reset();
+    this.thetaSleeper = 0;
     this.level.set(0);
+    this.corrugationLevel.set(0);
+    this.sleeperFrequency.set(0);
   }
 }
 

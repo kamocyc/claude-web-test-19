@@ -196,6 +196,8 @@ export const routeSchema = z.object({
     .object({
       /** 継目の間隔 [m]。0 ならロングレール。 */
       spacing: z.number().nonnegative().default(25),
+      /** レール波状摩耗の深さ 0..1（0 = 削正直後の滑らかなレール） */
+      corrugation: z.number().min(0).max(1).default(0.25),
       /** 区間ごとの上書き */
       sections: z
         .array(
@@ -204,6 +206,8 @@ export const routeSchema = z.object({
             start: z.number(),
             /** 継目の間隔 [m]（0 = ロングレール） */
             spacing: z.number().nonnegative(),
+            /** レール波状摩耗の深さ 0..1（省略すれば既定値のまま） */
+            corrugation: z.number().min(0).max(1).optional(),
           }),
         )
         .default([]),

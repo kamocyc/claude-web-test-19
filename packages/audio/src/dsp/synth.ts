@@ -1,5 +1,7 @@
 import { VOICE, VOICE_COUNT } from '../mix.ts';
+import { AirSpringVoice, type AirSpringParams } from './airSpring.ts';
 import { AuxiliaryVoice, type AuxiliaryParams } from './auxiliary.ts';
+import { AlarmVoice, HornVoice, type AlarmParams, type HornParams } from './cab.ts';
 import { BrakeVoice, type BrakeParams } from './brake.ts';
 import { InverterVoice, type InverterVoiceParams } from './inverterVoice.ts';
 import { RailJointVoice, type JointImpact } from './railJointVoice.ts';
@@ -20,6 +22,9 @@ export interface TrainNoiseParams {
   readonly wind: WindParams;
   readonly brake: BrakeParams;
   readonly auxiliary: AuxiliaryParams;
+  readonly airSpring: AirSpringParams;
+  readonly alarm: AlarmParams;
+  readonly horn: HornParams;
 }
 
 /**
@@ -42,6 +47,9 @@ export class TrainNoiseSynth {
   readonly brake: BrakeVoice;
   readonly auxiliary: AuxiliaryVoice;
   readonly railJoint: RailJointVoice;
+  readonly airSpring: AirSpringVoice;
+  readonly alarm: AlarmVoice;
+  readonly horn: HornVoice;
 
   /** 音源ごとの 2 乗和（`readLevels` で実効値に直して読み出す） */
   private readonly squareSum = new Float64Array(VOICE_COUNT);
@@ -56,6 +64,9 @@ export class TrainNoiseSynth {
     this.brake = new BrakeVoice(sampleRate);
     this.auxiliary = new AuxiliaryVoice(sampleRate);
     this.railJoint = new RailJointVoice(sampleRate);
+    this.airSpring = new AirSpringVoice(sampleRate);
+    this.alarm = new AlarmVoice(sampleRate);
+    this.horn = new HornVoice(sampleRate);
   }
 
   setParams(params: TrainNoiseParams): void {
@@ -65,6 +76,9 @@ export class TrainNoiseSynth {
     this.wind.setParams(params.wind);
     this.brake.setParams(params.brake);
     this.auxiliary.setParams(params.auxiliary);
+    this.airSpring.setParams(params.airSpring);
+    this.alarm.setParams(params.alarm);
+    this.horn.setParams(params.horn);
   }
 
   /** 継目の衝撃を予約する（`delay` は次に render するバッファの先頭からのサンプル数） */
@@ -85,6 +99,9 @@ export class TrainNoiseSynth {
     this.mix(out, VOICE.brake, (b) => this.brake.render(b));
     this.mix(out, VOICE.auxiliary, (b) => this.auxiliary.render(b));
     this.mix(out, VOICE.railJoint, (b) => this.railJoint.render(b));
+    this.mix(out, VOICE.airSpring, (b) => this.airSpring.render(b));
+    this.mix(out, VOICE.alarm, (b) => this.alarm.render(b));
+    this.mix(out, VOICE.horn, (b) => this.horn.render(b));
     this.measured += out.length;
 
     // 飽和は最後に 1 回だけ掛ける。音源ごとに掛けると、混ざったときに
@@ -126,6 +143,9 @@ export class TrainNoiseSynth {
     this.brake.reset();
     this.auxiliary.reset();
     this.railJoint.reset();
+    this.airSpring.reset();
+    this.alarm.reset();
+    this.horn.reset();
     this.squareSum.fill(0);
     this.measured = 0;
   }

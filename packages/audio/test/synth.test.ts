@@ -15,10 +15,13 @@ const silence = (): TrainNoiseParams => ({
     level: 0,
   },
   gear: { meshFrequency: 0, shaftFrequency: 0, load: 0, level: 0 },
-  rolling: { speed: 0, level: 0 },
+  rolling: { speed: 0, corrugation: 0, level: 0 },
   wind: { speed: 0, level: 0 },
   brake: { speed: 0, cylinderPressure: 0, pressureRate: 0, level: 0 },
   auxiliary: { compressor: 0, level: 0 },
+  airSpring: { strokeRate: 0, level: 0 },
+  alarm: { bell: false, chime: false, patternApproach: false, level: 0 },
+  horn: { sounding: false, level: 0 },
 });
 
 const merge = (over: Partial<TrainNoiseParams>): TrainNoiseParams => ({ ...silence(), ...over });
@@ -40,7 +43,7 @@ function render(p: TrainNoiseParams, seconds = 1): Float32Array {
 const COASTING_80 = (): TrainNoiseParams =>
   merge({
     gear: { meshFrequency: 989, shaftFrequency: 58.2, load: 0.4, level: 0.385 },
-    rolling: { speed: 80 / 3.6, level: 1 },
+    rolling: { speed: 80 / 3.6, corrugation: 0, level: 1 },
     wind: { speed: 80 / 3.6, level: 1 },
   });
 
@@ -130,7 +133,7 @@ describe('走行音の合成全体', () => {
           level: 1,
         },
         gear: { meshFrequency: 1200, shaftFrequency: 70, load: 1, level: 1 },
-        rolling: { speed: 30, level: 1 },
+        rolling: { speed: 30, corrugation: 0, level: 1 },
         wind: { speed: 30, level: 1 },
         brake: { speed: 30, cylinderPressure: 1, pressureRate: -2, level: 1 },
         auxiliary: { compressor: 1, level: 1 },
@@ -181,7 +184,8 @@ describe('歯車の音', () => {
 });
 
 describe('転動音', () => {
-  const rolling = (speed: number): TrainNoiseParams => merge({ rolling: { speed, level: 1 } });
+  const rolling = (speed: number): TrainNoiseParams =>
+    merge({ rolling: { speed, corrugation: 0, level: 1 } });
 
   it('30·log₁₀v で増える（速度 2 倍で約 9dB）', () => {
     const db = 20 * Math.log10(rms(render(rolling(20))) / rms(render(rolling(10))));
@@ -225,7 +229,7 @@ describe('風切り音', () => {
     // 分けて測れなかったころは 90km/h で追い越していた（その回帰テスト）。
     const speed = 120 / 3.6;
     const w = rms(render(merge({ wind: { speed, level: 1 } })));
-    const r = rms(render(merge({ rolling: { speed, level: 1 } })));
+    const r = rms(render(merge({ rolling: { speed, corrugation: 0, level: 1 } })));
     expect(w).toBeLessThan(r * 0.5);
   });
 });
@@ -235,7 +239,7 @@ describe('走行音の主役が速度で入れ替わる', () => {
   const at = (kmh: number): { rolling: number; gear: number } => {
     const shaft = ((kmh / 3.6 / 0.43) * 7.07) / (2 * Math.PI);
     return {
-      rolling: rms(render(merge({ rolling: { speed: kmh / 3.6, level: 1 } }))),
+      rolling: rms(render(merge({ rolling: { speed: kmh / 3.6, corrugation: 0, level: 1 } }))),
       gear: rms(
         render(
           merge({
@@ -315,6 +319,37 @@ describe('レール継目の衝撃', () => {
     expect(first).toBe(1000);
   });
 
+  /** 一撃を鳴らして、区間 [from, to] 秒の帯域エネルギーを返す */
+  const shot = (from: number, to: number, lo: number, hi: number): number => {
+    const synth = new TrainNoiseSynth(SAMPLE_RATE);
+    synth.setParams(silence());
+    synth.triggerJoint({ delay: 0, strength: 1 });
+    const out = new Float32Array(SAMPLE_RATE);
+    synth.render(out);
+    const slice = out.subarray(Math.floor(SAMPLE_RATE * from), Math.floor(SAMPLE_RATE * to));
+    return Math.sqrt(bandPower(slice, SAMPLE_RATE, lo, hi, 24));
+  };
+
+  it('低い成分ほど長く残る（「ガタン」の重さの正体）', () => {
+    // 構造振動の一般則で、低次のモードほど減衰が小さい。すべて同じ時定数で
+    // 減衰させていたころは低域が高域と一緒に切れ、「カタッ」と軽くなっていた。
+    const lowEarly = shot(0, 0.02, 40, 150);
+    const lowLate = shot(0.15, 0.25, 40, 150);
+    const highEarly = shot(0, 0.02, 800, 3000);
+    const highLate = shot(0.15, 0.25, 800, 3000);
+    // 150ms 後、高域はほぼ消えているのに低域はまだ残っている
+    expect(highLate / highEarly).toBeLessThan(0.02);
+    expect(lowLate / lowEarly).toBeGreaterThan(highLate / highEarly);
+  });
+
+  it('低域・中域が高域より強い（打撃が軽く聞こえない）', () => {
+    const low = shot(0, 0.3, 40, 150);
+    const mid = shot(0, 0.3, 150, 500);
+    const high = shot(0, 0.3, 800, 3000);
+    expect(20 * Math.log10(low / high)).toBeGreaterThan(14);
+    expect(20 * Math.log10(mid / high)).toBeGreaterThan(6);
+  });
+
   it('衝撃は短く減衰し、鳴りっぱなしにならない', () => {
     const synth = new TrainNoiseSynth(SAMPLE_RATE);
     synth.setParams(silence());
@@ -334,7 +369,7 @@ describe('レール継目の衝撃', () => {
     const background: TrainNoiseParams = merge({
       // 約 90km/h
       gear: { meshFrequency: 1050, shaftFrequency: 62, load: 0, level: 0.385 },
-      rolling: { speed: 24.7, level: 1 },
+      rolling: { speed: 24.7, corrugation: 0, level: 1 },
       wind: { speed: 24.7, level: 1 },
     });
 
@@ -374,7 +409,7 @@ describe('レール継目の衝撃', () => {
       synth.setParams(
         merge({
           gear: { meshFrequency: 1000, shaftFrequency: 59, load: 0.7, level: 1 },
-          rolling: { speed: 25, level: 1 },
+          rolling: { speed: 25, corrugation: 0, level: 1 },
         }),
       );
       synth.triggerJoint({ delay: 128, strength: 0.8 });
@@ -416,7 +451,7 @@ describe('高速域のインバータ音', () => {
     const background = render(
       merge({
         gear: { meshFrequency: shaft * 17, shaftFrequency: shaft, load: 1, level: 0.385 },
-        rolling: { speed: kmh / 3.6, level: 1 },
+        rolling: { speed: kmh / 3.6, corrugation: 0, level: 1 },
         wind: { speed: kmh / 3.6, level: 1 },
       }),
     );
@@ -443,5 +478,139 @@ describe('高速域のインバータ音', () => {
     const top = heard(120, 176, 1, 0);
     expect(mid).toBeLessThan(low);
     expect(top).toBeLessThan(mid);
+  });
+});
+
+describe('ロングレール区間で高速に出る音', () => {
+  const rolling = (kmh: number, corrugation: number): Float32Array =>
+    render(merge({ rolling: { speed: kmh / 3.6, corrugation, level: 1 } }));
+
+  /** 波状摩耗の代表波長 55mm から決まるうなりの周波数 */
+  const hum = (kmh: number): number => kmh / 3.6 / 0.055;
+
+  /**
+   * 唸りの峰が周囲の谷に対して何 dB 立っているか。
+   * 雑音のスペクトルは 1 点ごとの散らばりが大きいので、帯域で均して測る。
+   */
+  const humPeak = (x: Float32Array, f: number): number => {
+    const band = (lo: number, hi: number): number =>
+      Math.sqrt(bandPower(x, SAMPLE_RATE, f * lo, f * hi, 16));
+    return 20 * Math.log10(band(0.93, 1.07) / ((band(0.5, 0.7) + band(1.4, 1.8)) / 2));
+  };
+
+  it('波状摩耗が v / 波長 の唸りを作り、速度とともに音程が上がる', () => {
+    // 転動音そのものが帯域を持っているので、峰の有無は**削正されたレールとの差**で
+    // 見る。そうしないと転動音のスペクトルの傾きを峰と読んでしまう。
+    for (const kmh of [60, 120]) {
+      const worn = humPeak(rolling(kmh, 0.7), hum(kmh));
+      const smooth = humPeak(rolling(kmh, 0), hum(kmh));
+      expect(worn - smooth).toBeGreaterThan(4);
+    }
+    // 120km/h の音を 60km/h の唸りの位置で見ても、何も立っていない
+    const off = humPeak(rolling(120, 0.7), hum(60)) - humPeak(rolling(120, 0), hum(60));
+    expect(off).toBeLessThan(1);
+  });
+
+  it('まくらぎ通過で転動音が v / 0.6m の周期で脈動する', () => {
+    // レールはまくらぎの上で硬く、間では柔らかい。支持剛性の周期変化が
+    // 接触力を脈動させるので、包絡（整流した波形）にその周波数の峰が立つ。
+    const speed = 100 / 3.6;
+    const x = rolling(100, 0);
+    const envelope = new Float32Array(x.length);
+    for (let i = 0; i < x.length; i++) envelope[i] = Math.abs(x[i]!);
+    const sleeper = speed / 0.6;
+    expect(peakProminence(envelope, SAMPLE_RATE, sleeper, 12)).toBeGreaterThan(4);
+  });
+});
+
+describe('空気ばねのきしみ', () => {
+  const spring = (strokeRate: number): Float32Array =>
+    render(merge({ airSpring: { strokeRate, level: 1 } }));
+
+  it('車体が動いていなければ無音', () => {
+    expect(rms(spring(0))).toBeLessThan(1e-5);
+  });
+
+  it('擦れは伸縮が速いほど大きい（摩擦の仕事率）', () => {
+    expect(rms(spring(0.04))).toBeGreaterThan(rms(spring(0.01)));
+  });
+
+  it('きしみは「動いてはいるが遅い」ときにだけ出る', () => {
+    // スティックスリップの自励振動なので、速く滑ると固着する暇が無く鳴かない。
+    // 制輪子の鳴きとまったく同じ条件。擦れの音は速いほど大きくなるので、
+    // 「きしみの帯（780Hz）が擦れの帯（360Hz）に対してどれだけ立っているか」で
+    // 見る。こうすれば全体の音量に引きずられない。
+    const ratio = (rate: number): number => {
+      const x = spring(rate);
+      return bandPower(x, SAMPLE_RATE, 740, 820, 8) / bandPower(x, SAMPLE_RATE, 300, 420, 8);
+    };
+    expect(ratio(0.025)).toBeGreaterThan(ratio(0.3) * 3);
+  });
+});
+
+describe('運転台の音', () => {
+  const alarm = (over: Partial<TrainNoiseParams['alarm']>): Float32Array =>
+    render(merge({ alarm: { ...silence().alarm, level: 1, ...over } }));
+
+  /**
+   * 保安装置と警笛は**運転台の中**で鳴るので距離減衰を受けない。走行音に
+   * 埋もれてしまっては装置の意味が無いのだから、走行音より大きいのは
+   * 都合ではなく設計である。
+   */
+  const RUNNING_A = (): number => aWeightedRms(render(COASTING_80()), SAMPLE_RATE);
+
+  it('打鈴・チャイム・ブザーがそれぞれ独立に鳴る', () => {
+    expect(rms(alarm({ bell: true }))).toBeGreaterThan(1e-3);
+    expect(rms(alarm({ chime: true }))).toBeGreaterThan(1e-3);
+    expect(rms(alarm({ patternApproach: true }))).toBeGreaterThan(1e-3);
+    expect(rms(alarm({}))).toBeLessThan(1e-5);
+  });
+
+  it('報知音は 80km/h の走行音より大きい（埋もれない）', () => {
+    const running = RUNNING_A();
+    for (const on of [{ bell: true }, { chime: true }, { patternApproach: true }]) {
+      expect(aWeightedRms(alarm(on), SAMPLE_RATE)).toBeGreaterThan(running);
+    }
+  });
+
+  it('打鈴はハンマーの打数で脈動する（持続音ではない）', () => {
+    const x = alarm({ bell: true });
+    const envelope = new Float32Array(x.length);
+    for (let i = 0; i < x.length; i++) envelope[i] = Math.abs(x[i]!);
+    expect(peakProminence(envelope, SAMPLE_RATE, 32, 10)).toBeGreaterThan(4);
+  });
+
+  describe('警笛', () => {
+    const horn = (sounding: boolean): Float32Array =>
+      render(merge({ horn: { sounding, level: 1 } }));
+
+    it('吹鳴すると走行音より大きく鳴る', () => {
+      expect(aWeightedRms(horn(true), SAMPLE_RATE)).toBeGreaterThan(RUNNING_A() * 2);
+      expect(rms(horn(false))).toBeLessThan(1e-5);
+    });
+
+    it('2 管の和音になっている（単音ではない）', () => {
+      const x = horn(true);
+      expect(peakProminence(x, SAMPLE_RATE, 311, 40)).toBeGreaterThan(6);
+      expect(peakProminence(x, SAMPLE_RATE, 370, 25)).toBeGreaterThan(6);
+    });
+
+    it('リードの音なので倍音が豊か', () => {
+      const x = horn(true);
+      // 基音の 2 倍・3 倍にもはっきり峰が立つ
+      expect(peakProminence(x, SAMPLE_RATE, 622, 40)).toBeGreaterThan(6);
+      expect(peakProminence(x, SAMPLE_RATE, 933, 40)).toBeGreaterThan(6);
+    });
+
+    it('離すと圧力が抜けて消える', () => {
+      const synth = new TrainNoiseSynth(SAMPLE_RATE);
+      synth.setParams(merge({ horn: { sounding: true, level: 1 } }));
+      synth.render(new Float32Array(SAMPLE_RATE / 2));
+      synth.setParams(merge({ horn: { sounding: false, level: 1 } }));
+      const out = new Float32Array(SAMPLE_RATE / 2);
+      synth.render(out);
+      expect(rms(out.subarray(0, 2400))).toBeGreaterThan(1e-3);
+      expect(rms(out.subarray(out.length - 2400))).toBeLessThan(1e-5);
+    });
   });
 });

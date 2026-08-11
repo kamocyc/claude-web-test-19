@@ -67,6 +67,8 @@ export interface BodyMotionState {
   vertical: Meters;
   /** ロール角速度 [rad/s] */
   rollRate: number;
+  /** 上下速度 [m/s]（空気ばねが伸縮する速さ） */
+  verticalRate: number;
   /** ロールの角加速度 [rad/s^2]（吊り革の支点が振られる量） */
   rollAcceleration: number;
   /** ピッチの角加速度 [rad/s^2] */
@@ -99,6 +101,7 @@ export function createBodyMotionState(): BodyMotionState {
     lateral: 0,
     vertical: 0,
     rollRate: 0,
+    verticalRate: 0,
     rollAcceleration: 0,
     pitchAcceleration: 0,
     feltLateral: 0,
@@ -264,6 +267,7 @@ export class CarBodyMotion {
     st.lateral = lateral;
     st.vertical = vertical;
     st.rollRate = this.rollOsc.rate;
+    st.verticalRate = this.bounceOsc.rate;
     st.rollAcceleration = this.rollOsc.acceleration;
     st.pitchAcceleration = this.pitchOsc.acceleration;
     st.feltLateral = feltLateral;

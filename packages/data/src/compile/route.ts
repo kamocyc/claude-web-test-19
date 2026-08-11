@@ -333,6 +333,12 @@ export function compileRoute(definition: RouteDefinition): CompiledRoute {
       def.rail.sections.map((s) => ({ s: s.start, value: s.spacing })),
       def.rail.spacing,
     ),
+    railCorrugation: new StepTable(
+      def.rail.sections
+        .filter((s) => s.corrugation !== undefined)
+        .map((s) => ({ s: s.start, value: s.corrugation! })),
+      def.rail.corrugation,
+    ),
     maxCantDeficiency: mmToM(def.autoCurveLimits.maxCantDeficiency),
     aspectSpeeds,
   };

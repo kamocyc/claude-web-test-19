@@ -133,6 +133,15 @@ export interface CompiledRoute {
    * 定尺レール区間では軸が継目を踏むたびに衝撃音が出る。
    */
   readonly railJointSpacing: StepTable<number>;
+  /**
+   * 距離程 -> レール波状摩耗（コルゲーション）の深さ 0..1。
+   *
+   * レール踏面には走行を重ねるうちに波長数 cm の周期的な摩耗ができる。粗さの
+   * スペクトルにその波長の峰が立つので、転動音に `v / 波長` の狭帯域のうなりが
+   * 現れる。速度に比例して音程が上がるので、ロングレール区間を高速で走ると
+   * 継目音の代わりにこの連続した唸りが主役になる。
+   */
+  readonly railCorrugation: StepTable<number>;
   /** 許容カント不足 [m]。曲線の制限速度はこれを基準に決まる。 */
   readonly maxCantDeficiency: Meters;
   /** 現示ごとの既定許容速度 */

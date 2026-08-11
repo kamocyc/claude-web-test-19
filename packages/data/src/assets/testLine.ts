@@ -93,12 +93,18 @@ export const testLineRoute: RouteDefinition = {
    * トンネル（4700〜5900m）はあえて定尺のままにしてある。トンネルの反響が
    * いちばん分かるのは継目の衝撃が響くときで、ロングレールを重ねてしまうと
    * その組み合わせが試せないため。
+   *
+   * ロングレール区間には波状摩耗を深めに与えてある。継目音が無いぶん、高速で
+   * 走ると `速度 / 波長` のうなりが主役になり、加速するにつれて音程が上がって
+   * いくのが聞き取れる。R600 曲線の出口にあたるので、波状摩耗が育ちやすい
+   * 場所という点でも無理がない。
    */
   rail: {
     spacing: 25,
+    corrugation: 0.2,
     sections: [
-      { start: 2600, spacing: 0 },
-      { start: 4300, spacing: 25 },
+      { start: 2600, spacing: 0, corrugation: 0.65 },
+      { start: 4300, spacing: 25, corrugation: 0.2 },
     ],
   },
 

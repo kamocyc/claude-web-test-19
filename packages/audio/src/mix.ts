@@ -25,6 +25,12 @@ export interface NoiseMix {
   readonly brake: number;
   /** 補機（空気圧縮機） */
   readonly auxiliary: number;
+  /** 空気ばねのきしみ */
+  readonly airSpring: number;
+  /** 保安装置の報知音（打鈴・チャイム・ブザー） */
+  readonly alarm: number;
+  /** 警笛 */
+  readonly horn: number;
   /**
    * インバータ音がトルクにどれだけ追従するか 0..1。
    *
@@ -53,6 +59,9 @@ export const DEFAULT_NOISE_MIX: NoiseMix = {
   railJoint: 1,
   brake: 1,
   auxiliary: 1,
+  airSpring: 1,
+  alarm: 1,
+  horn: 1,
   inverterLoadTracking: 0.3,
   gearLoadTracking: 0.6,
 };
@@ -77,12 +86,15 @@ export const VOICE = {
   railJoint: 4,
   brake: 5,
   auxiliary: 6,
+  airSpring: 7,
+  alarm: 8,
+  horn: 9,
 } as const;
 
 export type VoiceIndex = (typeof VOICE)[keyof typeof VOICE];
 
 /** 音源の数（メータの配列長） */
-export const VOICE_COUNT = 7;
+export const VOICE_COUNT = 10;
 
 /** 音量のつまみ */
 export const NOISE_MIX_LEVELS: readonly NoiseMixControl[] = [
@@ -94,6 +106,9 @@ export const NOISE_MIX_LEVELS: readonly NoiseMixControl[] = [
   { key: 'railJoint', label: 'レール継目', voice: VOICE.railJoint },
   { key: 'brake', label: 'ブレーキ', voice: VOICE.brake },
   { key: 'auxiliary', label: '補機（空気圧縮機）', voice: VOICE.auxiliary },
+  { key: 'airSpring', label: '空気ばねのきしみ', voice: VOICE.airSpring },
+  { key: 'alarm', label: '保安装置の報知音', voice: VOICE.alarm },
+  { key: 'horn', label: '警笛', voice: VOICE.horn },
 ];
 
 /** 力行と惰行の差を決めるつまみ */
