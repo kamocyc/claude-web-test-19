@@ -403,6 +403,44 @@ describe('滑走と滑走防止装置', () => {
   });
 });
 
+describe('停止と停車の保持', () => {
+  it('停止直前までブレーキ力が抜けず、止まった瞬間に減速度が消える', () => {
+    const r = rig({ cars: 4, initialSpeed: kmhToMps(60) });
+    r.brake.setCommand(brakeCmd(0, true));
+    // 1km/h まで落ちた時点の減速度。摩擦に静止摩擦が無いと、ここで
+    // ブレーキトルクが半分ほどに抜けてしまい、停止がなだらかになる。
+    let atCrawl: number | null = null;
+    for (let i = 0; i < 30_000; i++) {
+      r.step();
+      if (atCrawl === null && r.dyn.speed < kmhToMps(1)) atCrawl = r.dyn.acceleration;
+    }
+    expect(atCrawl).toBeLessThan(-1.2);
+    // 止まったあとは動かず、減速度も残らない
+    expect(r.dyn.speed).toBe(0);
+    expect(r.dyn.acceleration).toBe(0);
+  });
+
+  it('非常ブレーキで勾配上に停車すると 1 分間 1mm も動かない', () => {
+    const r = rig({ cars: 4, initialSpeed: kmhToMps(15), gradePermil: -33 });
+    r.brake.setCommand(brakeCmd(0, true));
+    r.run(20);
+    expect(r.dyn.speed).toBe(0);
+    const stopped = r.dyn.frontPosition;
+    r.run(60);
+    expect(r.dyn.frontPosition - stopped).toBe(0);
+  });
+
+  it('勾配上で停車中にブレーキを緩解すると転動する', () => {
+    const r = rig({ cars: 4, initialSpeed: kmhToMps(15), gradePermil: -33 });
+    r.brake.setCommand(brakeCmd(0, true));
+    r.run(20);
+    expect(r.dyn.speed).toBe(0);
+    r.brake.setCommand(brakeCmd(0, false));
+    r.run(10);
+    expect(r.dyn.speed).toBeGreaterThan(kmhToMps(3));
+  });
+});
+
 describe('抑速ブレーキ', () => {
   it('下り勾配で電気ブレーキのみで速度上昇を抑える', () => {
     const free = rig({ cars: 4, initialSpeed: kmhToMps(50), gradePermil: -33 });

@@ -141,8 +141,11 @@ export const suspensionSchema = z.object({
 export const passengerSchema = z.object({
   /** 振り子の長さ [m]。固有周期 T = 2π√(L/g) が 1.4〜1.7 秒になる 0.5〜0.7m 程度。 */
   pendulumLength: z.number().positive().default(0.6),
-  /** 減衰比（0 = 減衰なし、1 = 臨界減衰） */
-  dampingRatio: z.number().positive().default(0.45),
+  /**
+   * 減衰比（0 = 減衰なし、1 = 臨界減衰）。
+   * 吊り革の減衰は弱く、急停車では前へ振られたぶんの半分ほど後ろへ戻る。
+   */
+  dampingRatio: z.number().positive().default(0.2),
 });
 
 export const carSchema = z.object({

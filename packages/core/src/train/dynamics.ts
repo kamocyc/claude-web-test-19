@@ -12,7 +12,7 @@ import {
 } from '../physics/resistance.ts';
 import { GRAVITY, type Meters, type MetersPerSecond, type Newtons } from '../units.ts';
 import { axleInertia, vehicleMass, type ConsistSpec, type VehicleSpec } from '../vehicle/spec.ts';
-import { sign } from '../math/scalar.ts';
+import { clamp, sign } from '../math/scalar.ts';
 
 /** 停止判定に用いる速度のしきい値 [m/s] */
 const V_EPS = 1e-3;
@@ -101,6 +101,29 @@ export interface DynamicsOptions {
 }
 
 const scratchResult: AxleSolveResult = { omega: 0, creepForce: 0, slip: 0 };
+
+/** 停止保持に使えるレール面の長手力の範囲 [N] */
+interface StickRange {
+  min: Newtons;
+  max: Newtons;
+}
+
+/**
+ * 外力 `external` を打ち消してその場に留まれるかを判定する。
+ *
+ * 静止摩擦の範囲（レール面の `range` と静止時の転がり抵抗 `staticResistance`）に
+ * 必要な力が収まっていれば、レール面が受け持つ力 [N] を返す。収まらなければ
+ * `null`（動き出す）。
+ */
+function holdForce(
+  range: StickRange,
+  external: Newtons,
+  staticResistance: Newtons,
+): Newtons | null {
+  const needed = -external;
+  if (needed < range.min - staticResistance || needed > range.max + staticResistance) return null;
+  return clamp(needed, range.min, range.max);
+}
 
 /**
  * 列車の縦方向運動を解く多質点ダイナミクス。
@@ -276,6 +299,9 @@ export class TrainDynamics {
     let rigidDriving = 0;
     let rigidResistive = 0;
     let rigidStaticResistive = 0;
+    let rigidExternal = 0;
+    let rigidStick: StickRange | null = { min: 0, max: 0 };
+    let rigidStandstill = true;
     const vRef = this.rigid ? this.vehicles[0]!.v : 0;
 
     for (let i = 0; i < n; i++) {
@@ -337,42 +363,72 @@ export class TrainDynamics {
       veh.frontCouplerForce = frontCoupler;
       veh.rearCouplerForce = -rearCoupler;
 
-      const driving = railForce + veh.gradeForce + veh.frontCouplerForce + veh.rearCouplerForce;
+      // レール面以外の外力。停止保持ではこれをレール面の摩擦が打ち消す。
+      const external = veh.gradeForce + veh.frontCouplerForce + veh.rearCouplerForce;
+      const driving = railForce + external;
+      // 停止していれば、静止摩擦でその場に留まれるかを判定する
+      const standstill = Math.abs(veh.v) < V_EPS;
+      const stick = standstill ? this.stickRange(veh, mu) : null;
 
       if (this.rigid) {
         rigidDriving += driving;
         rigidResistive += resistiveMagnitude;
         rigidStaticResistive += staticMagnitude;
+        rigidExternal += external;
+        if (!standstill || stick === null) rigidStandstill = false;
+        if (rigidStick !== null && stick !== null) {
+          rigidStick.min += stick.min;
+          rigidStick.max += stick.max;
+        } else {
+          rigidStick = null;
+        }
         // 個々の抵抗力は編成全体で解いた後に配分する
         veh.runningResistanceForce = 0;
         veh.curveResistanceForce = 0;
       } else {
-        const applied = this.applyResistance(veh.v, driving, resistiveMagnitude, staticMagnitude);
-        // 走行抵抗と曲線抵抗の内訳（診断用に比で分ける）
-        const total = rRun + rCurve;
-        const ratio = total > 0 ? rRun / total : 1;
-        veh.runningResistanceForce = applied.resistance * ratio;
-        veh.curveResistanceForce = applied.resistance * (1 - ratio);
-        veh.a = applied.locked ? 0 : (driving + applied.resistance) / veh.mass;
-        veh.v = applied.locked ? 0 : veh.v + veh.a * dt;
+        const hold = stick === null ? null : holdForce(stick, external, staticMagnitude);
+        if (hold !== null) {
+          this.holdAtStandstill(veh, hold, external);
+        } else {
+          const applied = this.applyResistance(veh.v, driving, resistiveMagnitude, staticMagnitude);
+          // 走行抵抗と曲線抵抗の内訳（診断用に比で分ける）
+          const total = rRun + rCurve;
+          const ratio = total > 0 ? rRun / total : 1;
+          veh.runningResistanceForce = applied.resistance * ratio;
+          veh.curveResistanceForce = applied.resistance * (1 - ratio);
+          veh.a = applied.locked ? 0 : (driving + applied.resistance) / veh.mass;
+          veh.v = applied.locked ? 0 : veh.v + veh.a * dt;
+        }
       }
     }
 
     if (this.rigid) {
-      const applied = this.applyResistance(
-        vRef,
-        rigidDriving,
-        rigidResistive,
-        rigidStaticResistive,
-      );
-      const a = applied.locked ? 0 : (rigidDriving + applied.resistance) / this.totalMass;
-      const newV = applied.locked ? 0 : vRef + a * dt;
-      for (const veh of this.vehicles) {
-        veh.a = a;
-        veh.v = newV;
-        // 剛体モードでは抵抗を編成でまとめて解くため、内訳は均等配分して表示する
-        veh.runningResistanceForce = applied.resistance / n;
-        veh.curveResistanceForce = 0;
+      const hold =
+        rigidStandstill && rigidStick !== null
+          ? holdForce(rigidStick, rigidExternal, rigidStaticResistive)
+          : null;
+      if (hold !== null) {
+        // 保持力は各車が自重ぶんを受け持つものとして配分する
+        for (const veh of this.vehicles) {
+          const share = veh.mass / this.totalMass;
+          this.holdAtStandstill(veh, hold * share, rigidExternal * share);
+        }
+      } else {
+        const applied = this.applyResistance(
+          vRef,
+          rigidDriving,
+          rigidResistive,
+          rigidStaticResistive,
+        );
+        const a = applied.locked ? 0 : (rigidDriving + applied.resistance) / this.totalMass;
+        const newV = applied.locked ? 0 : vRef + a * dt;
+        for (const veh of this.vehicles) {
+          veh.a = a;
+          veh.v = newV;
+          // 剛体モードでは抵抗を編成でまとめて解くため、内訳は均等配分して表示する
+          veh.runningResistanceForce = applied.resistance / n;
+          veh.curveResistanceForce = 0;
+        }
       }
     }
 
@@ -415,6 +471,65 @@ export class TrainDynamics {
         gauge,
       });
     }
+  }
+
+  /**
+   * 停止中にレール面が受け持てる長手力の範囲 [N]。
+   *
+   * 車輪が固着している（ブレーキの静止摩擦が車輪を保持している）とき、レール面の
+   * 力は輪軸のトルクと釣り合う**拘束力**になる。輪軸のつり合い
+   * `0 = T_drive + T_friction - r F` と `|T_friction| <= T_brake` から、1 軸あたり
+   *
+   *   F ∈ [(T_drive - T_brake)/r, (T_drive + T_brake)/r] ∩ [-μW, +μW]
+   *
+   * の範囲で任意の値を取れる。両端の意味はそのまま実車の挙動になる:
+   *
+   * - ブレーキが緩んでいれば範囲は `T_drive/r` の 1 点に潰れる。車輪が転がるので
+   *   勾配上では必ず動き出す（駆動力が勾配とちょうど釣り合うときだけ止まる）。
+   * - 非常ブレーキなら ±μW いっぱいまで使えるので、粘着が足りるかぎり停車を保つ。
+   * - 粘着を超える駆動トルクが掛かっている軸があれば範囲が空になり（`null`）、
+   *   空転として動き出す。
+   */
+  private stickRange(veh: VehicleRuntime, mu: number): StickRange | null {
+    const r = veh.spec.wheelDiameter / 2;
+    let min = 0;
+    let max = 0;
+    for (const ax of veh.axles) {
+      const center = ax.driveTorque / r;
+      const half = ax.brakeTorque / r;
+      const limit = mu * ax.load;
+      const lo = Math.max(-limit, center - half);
+      const hi = Math.min(limit, center + half);
+      if (lo > hi) return null;
+      min += lo;
+      max += hi;
+    }
+    return { min, max };
+  }
+
+  /**
+   * 静止摩擦で停止を保持する。速度と加速度を 0 に固定し、
+   * レール面の拘束力を軸重に比例して各軸へ配分する。
+   */
+  private holdAtStandstill(veh: VehicleRuntime, railForce: Newtons, external: Newtons): void {
+    veh.v = 0;
+    veh.a = 0;
+    veh.railForce = railForce;
+
+    let totalLoad = 0;
+    for (const ax of veh.axles) totalLoad += ax.load;
+    for (const ax of veh.axles) {
+      const share = totalLoad > 0 ? ax.load / totalLoad : 1 / veh.axles.length;
+      // 停止中は車輪も止まっている。すべりが無いので空転・滑走の表示も落とす。
+      ax.omega = 0;
+      ax.slip = 0;
+      ax.slipping = false;
+      ax.sliding = false;
+      ax.creepForce = railForce * share;
+    }
+    // 残差は静止している車両の転がり抵抗が受け持つ（大きさは静止抵抗以下）
+    veh.runningResistanceForce = -(external + railForce);
+    veh.curveResistanceForce = 0;
   }
 
   /**

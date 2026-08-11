@@ -86,27 +86,58 @@ export interface AxleSolveResult {
   slip: number;
 }
 
-/** 機械ブレーキトルクの符号を滑らかにする角速度スケール [rad/s] */
-const BRAKE_SIGN_SCALE = 1.0;
-
 /**
  * 輪軸の回転運動を 1 ステップ進める。
  *
- *   J dω/dt = T_drive - T_brake*sgn(ω) - r F_creep(ω, v)
+ *   J dω/dt = T_drive + T_friction - r F_creep(ω, v)
+ *
+ * **機械ブレーキの摩擦はクーロン摩擦なので、静止摩擦（固着）を持つ。**
+ * まず「車輪を ω = 0 に留めておくのに必要な摩擦トルク」を求め、
+ * それが摩擦の容量 T_brake に収まっていれば車輪は固着する。収まらなければ
+ * 滑り域として T_friction = -T_brake sgn(ω) を固定する。
+ *
+ * 固着を持たない正則化（以前は sgn(ω) ≒ tanh(ω / 1 rad/s)）では、
+ * ブレーキトルクが低速で角速度に比例して抜けてしまう。車輪径 0.86m では
+ * 1km/h で本来の 57%、0.5km/h で 31% しか出ないため、
+ *
+ *  - 停止直前に減速度がなだらかに消え、停止の衝撃（＝乗客の揺り戻し）が出ない
+ *  - 静止摩擦が無いので勾配上でいくらブレーキを掛けても列車が転動し続ける
+ *
+ * という二つの症状になる。固着を陽に解くとどちらも自然に解消する。
  *
  * クリープ力はすべり率に対して非常に急峻（微小すべりで立ち上がる）なため、
- * 陽解法では dt = 1ms でも容易に発散する。ここでは**後退オイラー法を
+ * 陽解法では dt = 1ms でも容易に発散する。滑り域では**後退オイラー法を
  * ニュートン反復で解く**ことで、剛性に関係なく安定に積分する。
- * 機械ブレーキの符号関数は tanh で正則化し、ヤコビアンに含める（車輪ロックの表現）。
  */
 export function solveAxle(input: AxleSolveInput, out: AxleSolveResult): AxleSolveResult {
   const { inertia: J, radius: r, dt, load: W, vehicleSpeed: v } = input;
   const vref = input.creepReferenceSpeed;
   const xiPeak = input.peakCreep;
   const w0 = input.omega;
-  let w = w0;
 
+  const forceAt = (omega: number): number => {
+    const xi = slipRatio(r * omega, v, vref);
+    return W * creepAdhesion(xi / xiPeak, input.peakAdhesion, input.kineticRatio);
+  };
+
+  // --- 固着の判定 ---
+  // ω = 0 を保つのに必要な摩擦トルク（J(0 - ω0)/dt = T_drive + T_f - r F(0) より）。
+  // 回転している車輪ほど J|ω0|/dt が大きく、1 ステップでは止められない。
+  const holdTorque = (-J * w0) / dt - input.driveTorque + r * forceAt(0);
+  if (Math.abs(holdTorque) <= input.brakeTorque) {
+    out.omega = 0;
+    out.creepForce = forceAt(0);
+    out.slip = slipRatio(0, v, vref);
+    return out;
+  }
+
+  // --- 滑り域 ---
+  // 摩擦は回転を妨げる向きに、大きさ T_brake で一定。固着に必要なトルクが
+  // 足りなかった向きへ車輪は回り続けるので、その符号が回転の向きになる。
+  const direction = holdTorque < 0 ? 1 : -1;
+  const T = input.driveTorque - input.brakeTorque * direction;
   const denomSpeed = Math.max(Math.abs(v), vref);
+  let w = w0;
 
   for (let iter = 0; iter < 4; iter++) {
     const xi = slipRatio(r * w, v, vref);
@@ -117,17 +148,16 @@ export function solveAxle(input: AxleSolveInput, out: AxleSolveResult): AxleSolv
     // dF/dω = W * dμ/dx * dx/dξ * dξ/dω
     const dFdw = (W * dmu * r) / (xiPeak * denomSpeed);
 
-    const th = Math.tanh(w / BRAKE_SIGN_SCALE);
-    const T = input.driveTorque - input.brakeTorque * th;
-    const dTdw = (-input.brakeTorque * (1 - th * th)) / BRAKE_SIGN_SCALE;
-
     const residual = (J * (w - w0)) / dt - T + r * F;
-    const jac = J / dt - dTdw + r * dFdw;
+    const jac = J / dt + r * dFdw;
     if (jac === 0) break;
     const step = residual / jac;
     w -= step;
     if (Math.abs(step) < 1e-9) break;
   }
+
+  // 摩擦が回転を反転させることはない。行き過ぎたら固着として扱う。
+  if (input.brakeTorque > 0 && direction * w < 0) w = 0;
 
   const xi = slipRatio(r * w, v, vref);
   const mu = creepAdhesion(xi / xiPeak, input.peakAdhesion, input.kineticRatio);
