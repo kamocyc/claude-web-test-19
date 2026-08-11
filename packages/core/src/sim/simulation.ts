@@ -435,7 +435,7 @@ export class Simulation {
       grade: dyn.vehicles[0]!.grade,
       curvature: dyn.vehicles[0]!.curvature,
       cant: alignment.cantAt(dyn.frontPosition),
-      cantDeficiency: alignment.cantDeficiency(dyn.frontPosition, dyn.speed),
+      cantDeficiency: alignment.cantDeficiencyAmount(dyn.frontPosition, dyn.speed),
       lateralAcceleration: alignment.lateralAcceleration(dyn.frontPosition, dyn.speed),
       body: dyn.vehicles[0]!.body,
       speedLimit: this.currentSpeedLimit,
@@ -476,7 +476,7 @@ export interface SimSnapshot {
   curvature: number;
   /** カント [m] */
   cant: number;
-  /** カント不足 [m]（負なら超過） */
+  /** カント過不足量 [m]（正 = 不足、負 = 超過。曲線の左右によらない） */
   cantDeficiency: number;
   lateralAcceleration: number;
   /** 先頭車の車体動揺と体感加速度 */

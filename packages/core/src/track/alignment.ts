@@ -169,12 +169,27 @@ export class Alignment {
   }
 
   /**
-   * カント不足 [m] = 均衡カント - 実カント。
-   * 絶対値が「カント不足量」、符号は不足している向き（曲率と同符号なら曲線外側へ超過遠心力）。
-   * 負の場合はカント超過（低速通過時に内側へ倒れる側）。
+   * カント不足 [m] = 均衡カント - 実カント。**向き付きの量**で、
+   * 曲率と同符号なら曲線外側へ超過遠心力が働いていることを表す。
+   *
+   * 左曲線（曲率が正）では正が不足・負が超過だが、**右曲線では逆になる**。
+   * 「何 mm 不足しているか」を人に見せる用途には向かないので、
+   * その場合は `cantDeficiencyAmount()` を使うこと。
    */
   cantDeficiency(s: Meters, v: number): Meters {
     return this.equilibriumCant(s, v) - this.cantAt(s);
+  }
+
+  /**
+   * カント過不足量 [m]。**正 = 不足、負 = 超過**で、曲線の左右によらない。
+   *
+   * `cantDeficiency()` を曲線の向きへ射影したもので、実務で言う「カント不足量」
+   * （許容値 60mm などと比べる量）はこちら。表示・警告・評価にはこれを使う。
+   */
+  cantDeficiencyAmount(s: Meters, v: number): Meters {
+    const k = this.curvatureAt(s);
+    if (k === 0) return 0;
+    return this.cantDeficiency(s, v) * Math.sign(k);
   }
 
   /**

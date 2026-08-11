@@ -281,6 +281,38 @@ describe('Alignment - カント', () => {
     expect(a.cantDeficiency(250, v)).toBeCloseTo(0, 12);
   });
 
+  /**
+   * カント不足は左右の曲線で同じように読めなければならない。
+   * `cantDeficiency` は向き付きなので右曲線では符号が反転する。表示に使うのは
+   * `cantDeficiencyAmount`（正 = 不足）のほう。
+   */
+  it('カント過不足量は曲線の左右によらず正 = 不足になる', () => {
+    const gauge = 1.067;
+    const build = (radius: number) =>
+      buildAlignment({
+        gauge,
+        horizontal: [{ length: 500, radius, cant: mmToM(90) }],
+        vertical: [{ length: 500, gradePermil: 0 }],
+      });
+    const left = build(400);
+    const right = build(-400);
+
+    const fast = kmhToMps(80); // 均衡速度（約 66km/h）より速い → 不足
+    const slow = kmhToMps(30); // 遅い → 超過
+
+    expect(left.cantDeficiencyAmount(250, fast)).toBeGreaterThan(0);
+    expect(right.cantDeficiencyAmount(250, fast)).toBeGreaterThan(0);
+    expect(left.cantDeficiencyAmount(250, slow)).toBeLessThan(0);
+    expect(right.cantDeficiencyAmount(250, slow)).toBeLessThan(0);
+    // 左右で量は同じ
+    expect(right.cantDeficiencyAmount(250, fast)).toBeCloseTo(
+      left.cantDeficiencyAmount(250, fast),
+      12,
+    );
+    // 向き付きの cantDeficiency は右曲線で符号が反転する
+    expect(right.cantDeficiency(250, fast)).toBeCloseTo(-left.cantDeficiency(250, fast), 12);
+  });
+
   it('カント不足があると外向きの非平衡加速度が生じる', () => {
     const R = 400;
     const a = buildAlignment({
