@@ -13,6 +13,13 @@ const JOINT_REFERENCE_SPEED = 25;
  */
 const DISTANCE_HALF = 25;
 
+/** トンネル内の残響時間 [s]（覆工が硬く、断面が狭いので長め） */
+const TUNNEL_REVERB_TIME = 1.1;
+/** トンネル内で残響へ送る比率 */
+const TUNNEL_WET = 0.55;
+/** 坑口での切り替わりの滑らかさ [s] */
+const TUNNEL_FADE = 0.35;
+
 /**
  * 走行音の出力。
  *
@@ -27,6 +34,7 @@ export class TrainAudio {
   private context: AudioContext | null = null;
   private worklet: AudioWorkletNode | null = null;
   private master: GainNode | null = null;
+  private tunnelSend: GainNode | null = null;
   private starting: Promise<void> | null = null;
   private failed = false;
   private volume = 0.7;
@@ -67,11 +75,21 @@ export class TrainAudio {
       });
       const master = context.createGain();
       master.gain.value = 0;
-      worklet.connect(master).connect(context.destination);
+      master.connect(context.destination);
+
+      // トンネルの反響。乾いた音はそのまま、送り量ぶんだけ残響へ回す。
+      const convolver = context.createConvolver();
+      convolver.buffer = createTunnelImpulse(context);
+      const tunnelSend = context.createGain();
+      tunnelSend.gain.value = 0;
+      worklet.connect(master);
+      worklet.connect(tunnelSend).connect(convolver).connect(master);
+
       if (context.state === 'suspended') await context.resume();
       this.context = context;
       this.worklet = worklet;
       this.master = master;
+      this.tunnelSend = tunnelSend;
       this.applyGain();
     } catch (error) {
       // 音が出せなくても運転はできる。黙って落とさず、以後は諦める。
@@ -123,6 +141,21 @@ export class TrainAudio {
     const params = this.buildParams(sim, snap, running);
     const joints = running ? this.collectJoints(sim, wall) : this.clearJoints(sim);
     worklet.port.postMessage(joints.length > 0 ? { params, joints } : { params });
+    this.updateTunnel(sim);
+  }
+
+  /**
+   * トンネル内かどうかで残響の送り量を切り替える。
+   * 坑口では一瞬で変わるのではなく、列車が入りきるまでのあいだに移り変わる。
+   */
+  private updateTunnel(sim: Simulation): void {
+    const context = this.context;
+    const send = this.tunnelSend;
+    if (!context || !send) return;
+    let inside = 0;
+    for (const veh of sim.dynamics.vehicles) if (veh.inTunnel) inside++;
+    const ratio = sim.dynamics.vehicles.length > 0 ? inside / sim.dynamics.vehicles.length : 0;
+    send.gain.setTargetAtTime(ratio * TUNNEL_WET, context.currentTime, TUNNEL_FADE);
   }
 
   private buildParams(
@@ -284,5 +317,41 @@ export class TrainAudio {
     this.context = null;
     this.worklet = null;
     this.master = null;
+    this.tunnelSend = null;
   }
+}
+
+/**
+ * トンネルのインパルス応答を合成する。
+ *
+ * 音源を持ち込まずに済ませたいので、指数減衰する雑音から作る。断面が狭く
+ * 覆工が硬いトンネルでは、初期反射が密で残響時間が長く、低域ほどよく残る。
+ * 左右で別の雑音を使うと横方向の広がりが出る。
+ */
+function createTunnelImpulse(context: BaseAudioContext): AudioBuffer {
+  const length = Math.floor(context.sampleRate * TUNNEL_REVERB_TIME);
+  const buffer = context.createBuffer(2, length, context.sampleRate);
+  // 決定論のため（そして毎回同じトンネルであるため）固定シードの雑音を使う
+  let state = 0x2f6e >>> 0;
+  const random = (): number => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 2147483648 - 1;
+  };
+  for (let channel = 0; channel < 2; channel++) {
+    const data = buffer.getChannelData(channel);
+    let low = 0;
+    for (let i = 0; i < length; i++) {
+      const t = i / length;
+      // 低域ほど長く残る（高域は覆工と車体に吸われる）
+      low = low * 0.72 + random() * 0.28;
+      const decay = Math.pow(1 - t, 2.6);
+      data[i] = (random() * 0.45 + low * 0.55) * decay;
+    }
+    // 直達音のぶんは畳み込みの外にあるので、先頭は落としておく
+    for (let i = 0; i < 64; i++) data[i]! *= i / 64;
+  }
+  return buffer;
 }

@@ -80,6 +80,15 @@ export class Hud {
       ),
     );
     rows.push(row('BC 圧', `${paToKpa(snap.cylinderPressure).toFixed(0)} kPa`));
+    // 元空気溜め圧とコンプレッサ。運転操作と無関係な周期で回り出すので、
+    // 音が鳴り始めた理由がここで読み取れる。
+    rows.push(
+      row(
+        'MR 圧 / CP',
+        `${paToKpa(snap.compressor.pressure).toFixed(0)} kPa / ` +
+          (snap.compressor.running ? '<span class="warn">運転</span>' : '停止'),
+      ),
+    );
     rows.push(row('主回路電流', `${snap.motorCurrent.toFixed(0)} A`));
     // インバータの変調。音がこの数値どおりに鳴っているかを耳と目で突き合わせられる。
     const inv = snap.inverter;

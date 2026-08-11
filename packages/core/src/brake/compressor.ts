@@ -22,17 +22,18 @@ export interface CompressorSpec {
 /**
  * 在来線の通勤形の代表値。
  *
- * 750kPa まで下がると起動し、880kPa で停止する。漏れだけなら 7 分ほどで
- * 下限に達し、そこから 45 秒ほど回って止まる。ブレーキを使えばそのぶん
- * 早く回り出すので、停車のたびに「プシュー」のあとしばらくして
- * コンプレッサが回り出す、という実車の間合いになる。
+ * 750kPa まで下がると起動し、880kPa で停止する。漏れ（ブレーキ管・戸閉め
+ * 装置・空気ばねの消費を均した値）だけなら 2.7 分ほどで下限に達し、そこから
+ * 45 秒ほど回って止まる。常用最大のブレーキ 1 回で 32kPa ほど余分に食うので、
+ * 駅に止まるたびにコンプレッサの起動が早まる。停車中に「プシュー」のあと
+ * しばらくして突然回り出す、という実車の間合いになる。
  */
 export const DEFAULT_COMPRESSOR: CompressorSpec = {
   cutInPressure: 750_000,
   cutOutPressure: 880_000,
   chargeRate: 3_250,
-  leakRate: 300,
-  cylinderConsumption: 0.012,
+  leakRate: 800,
+  cylinderConsumption: 0.02,
   startupTime: 0.6,
 };
 
