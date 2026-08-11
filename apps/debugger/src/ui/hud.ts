@@ -19,6 +19,16 @@ export interface HandlePosition {
 const notchText = (power: number, brake: number, emergency: boolean): string =>
   emergency ? '非常' : brake > 0 ? `B${brake}` : power > 0 ? `P${power}` : '切';
 
+/** 自動運転装置の動作モードの表示名 */
+const AUTO_MODE_TEXT: Record<string, string> = {
+  standby: '停車中',
+  power: '力行',
+  coast: '惰行',
+  regulate: '抑速',
+  brake: '制限へ減速',
+  stopping: '停止位置制御',
+};
+
 /** 画面左上の運転情報表示 */
 export class Hud {
   constructor(private readonly element: HTMLElement) {}
@@ -49,15 +59,50 @@ export class Hud {
       ),
     );
     rows.push(row('時刻', `${formatClock(snap.time)}（経過 ${snap.elapsed.toFixed(1)}s）`));
+    // 自動運転中は、装置が「何を見て」「どれだけの減速度を出そうとしているか」を出す。
+    // ノッチが動かないのが正常なので、動かない理由がここで読み取れる必要がある。
+    const auto = snap.autoDrive;
+    if (auto) {
+      rows.push(
+        row(
+          '<span class="ok">自動運転</span>',
+          `${AUTO_MODE_TEXT[auto.mode] ?? auto.mode} / 目標 ${mpsToKmh(auto.targetSpeed).toFixed(0)} km/h`,
+        ),
+      );
+      const detail: string[] = [];
+      if (auto.stopDistance !== null) detail.push(`停止まで ${auto.stopDistance.toFixed(0)} m`);
+      if (auto.departureCountdown !== null) {
+        detail.push(`発車まで ${auto.departureCountdown.toFixed(0)} s`);
+      }
+      if (auto.governing !== null) detail.push(auto.governing);
+      if (detail.length > 0) rows.push(row('自動運転 対象', detail.join(' / ')));
+      rows.push(
+        row(
+          '要求 / 指令 減速度',
+          `${auto.requiredDeceleration.toFixed(2)} / ${auto.commandedDeceleration.toFixed(2)} m/s²` +
+            `（勾配等 ${auto.externalDeceleration >= 0 ? '+' : ''}${auto.externalDeceleration.toFixed(2)}）`,
+        ),
+      );
+      rows.push(
+        row(
+          'ノッチ操作 / 込め',
+          `${auto.notchChanges} 回 / ${auto.brakeApplications} 回` +
+            (auto.brakeGain < 0.98 || auto.brakeGain > 1.02
+              ? `（効き ${(auto.brakeGain * 100).toFixed(0)}%）`
+              : ''),
+        ),
+      );
+    }
     rows.push(row('距離程', `${snap.front.toFixed(1)} m`));
     // ハンドル位置（運転士の操作）と実効ノッチ（保安装置・戸閉め条件を通したあと）は
     // 一致しないことがある。取り違えると「ノッチが効かない」と見えるので両方出す。
+    const handleLabel = snap.autoDrive ? 'ノッチ（自動）' : 'ノッチ（手元）';
     const handle = notchText(handles.power, handles.brake, handles.emergency);
     const effective = notchText(snap.powerNotch, snap.brakeNotch, snap.emergency);
     const cutOff = handles.power > 0 && snap.powerNotch === 0;
     rows.push(
       row(
-        'ノッチ（手元）',
+        handleLabel,
         handles.emergency
           ? '<span class="danger">非常</span>'
           : handle + (handles.doorsClosed ? '' : ' <span class="warn">戸開</span>'),

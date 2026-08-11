@@ -8,6 +8,9 @@ import {
   type SafetySystem,
 } from './types.ts';
 
+/** 停止していると見なす速度 [m/s] */
+const STOPPED_SPEED = 0.1;
+
 export interface AtsPOptions extends Partial<PatternParameters> {
   /** パターン接近警報を出す速度余裕 [m/s] */
   readonly warningMargin?: MetersPerSecond;
@@ -107,9 +110,15 @@ export class AtsPSystem implements SafetySystem {
     const indication = { ...NO_INDICATION };
 
     // 現示アップの即時反映（オプション）と、通過済みパターンの掃除
+    const halted = Math.abs(ctx.speed) < STOPPED_SPEED;
     for (const [id, p] of [...this.patterns]) {
       if (p.kind === 'signal') {
-        if (this.opts.patternRelease === 'immediate' && ctx.signalling.aspectOf(id) !== 'R') {
+        const cleared = ctx.signalling.aspectOf(id) !== 'R';
+        // 停止信号の手前で止まった列車は、その信号が現示アップしたら発進できる。
+        // パターンの余裕距離の内側には次の地上子が無く、パターン速度も 0 なので、
+        // ここで解放しないと現示アップしても二度と動き出せない。
+        // 実機で直下地上子がパターンを消去するのに相当する。
+        if (cleared && (this.opts.patternRelease === 'immediate' || halted)) {
           this.patterns.delete(id);
           continue;
         }

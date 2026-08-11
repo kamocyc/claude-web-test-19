@@ -7,6 +7,8 @@ export interface DriverDeskOptions {
   /** 常用ブレーキノッチ段数 */
   brakeNotchCount(): number;
   onCameraChange?(mode: CameraMode): void;
+  /** 自動運転の入切 */
+  onAutoDriveToggle?(): void;
   onPauseToggle?(): void;
   onSingleStep?(): void;
   onRateChange?(delta: number): void;
@@ -100,6 +102,9 @@ export class DriverDesk {
           if (mode) this.options.onCameraChange?.(mode);
           break;
         }
+        case 'o':
+          this.options.onAutoDriveToggle?.();
+          break;
         case 'p':
           this.options.onPauseToggle?.();
           break;
@@ -137,6 +142,18 @@ export class DriverDesk {
     this.emergency = false;
     this.doorsClosed = true;
     this.held.clear();
+  }
+
+  /**
+   * ハンドル位置を外から合わせる。
+   * 自動運転を切った瞬間に運転士へ引き継ぐときに使う。合わせておかないと、
+   * 装置が入れていたブレーキが解除に変わって列車が走り出してしまう。
+   */
+  takeOver(power: number, brake: number, doorsClosed: boolean): void {
+    this.powerNotch = Math.max(0, Math.round(power));
+    this.brakeNotch = Math.max(0, Math.round(brake));
+    this.emergency = false;
+    this.doorsClosed = doorsClosed;
   }
 
   /** 運転士が握っているハンドルの位置（シミュレーションの実効ノッチとは別） */
