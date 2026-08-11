@@ -82,10 +82,17 @@ class Gauge {
   }
 }
 
+/** 運転士が握っているハンドルの位置 */
+export interface CabHandles {
+  readonly power: number;
+  readonly brake: number;
+  readonly emergency: boolean;
+}
+
 export interface CabInterior {
   readonly group: THREE.Group;
   /** 計器と表示灯をシミュレーションの状態に合わせる */
-  update(sim: Simulation): void;
+  update(sim: Simulation, handles: CabHandles): void;
 }
 
 /**
@@ -165,18 +172,19 @@ export function createCabInterior(): CabInterior {
 
   return {
     group,
-    update(sim: Simulation): void {
+    update(sim: Simulation, handles: CabHandles): void {
       const snap = sim.snapshot();
       const maxSpeed = mpsToKmh(sim.scenario.consist.maxSpeed);
       speedGauge.setRatio(mpsToKmh(snap.speed) / maxSpeed);
       pressureGauge.setRatio(paToKpa(snap.cylinderPressure) / 400);
       currentGauge.setRatio(0.5 + snap.motorCurrent / 3000);
 
-      // ハンドルの角度をノッチに連動させる（左手前が力行、右手前がブレーキ）
-      const powerRatio = snap.powerNotch / Math.max(1, sim.scenario.consist.traction.notchCount);
-      const brakeRatio = snap.emergency
+      // ハンドルの角度は「手元の位置」に連動させる。実効ノッチ（保安装置で
+      // 力行がカットされた後の値）を使うと、動かしたハンドルが動かなく見えてしまう。
+      const powerRatio = handles.power / Math.max(1, sim.scenario.consist.traction.notchCount);
+      const brakeRatio = handles.emergency
         ? 1.15
-        : snap.brakeNotch / Math.max(1, sim.scenario.consist.brake.notchCount);
+        : handles.brake / Math.max(1, sim.scenario.consist.brake.notchCount);
       mascon.rotation.z = 0.1 + powerRatio * 0.55;
       brakeHandle.rotation.z = -0.1 - brakeRatio * 0.55;
 

@@ -8,11 +8,28 @@ const ASPECT_TEXT: Record<string, string> = {
   G: '進行',
 };
 
+/** 運転士が握っているハンドルの位置 */
+export interface HandlePosition {
+  readonly power: number;
+  readonly brake: number;
+  readonly emergency: boolean;
+  readonly doorsClosed: boolean;
+}
+
+const notchText = (power: number, brake: number, emergency: boolean): string =>
+  emergency ? '非常' : brake > 0 ? `B${brake}` : power > 0 ? `P${power}` : '切';
+
 /** 画面左上の運転情報表示 */
 export class Hud {
   constructor(private readonly element: HTMLElement) {}
 
-  update(sim: Simulation, cameraLabel: string, rate: number, paused: boolean): void {
+  update(
+    sim: Simulation,
+    cameraLabel: string,
+    rate: number,
+    paused: boolean,
+    handles: HandlePosition,
+  ): void {
     const snap = sim.snapshot();
     const next = sim.nextStation;
     const rows: string[] = [];
@@ -33,16 +50,25 @@ export class Hud {
     );
     rows.push(row('時刻', `${formatClock(snap.time)}（経過 ${snap.elapsed.toFixed(1)}s）`));
     rows.push(row('距離程', `${snap.front.toFixed(1)} m`));
+    // ハンドル位置（運転士の操作）と実効ノッチ（保安装置・戸閉め条件を通したあと）は
+    // 一致しないことがある。取り違えると「ノッチが効かない」と見えるので両方出す。
+    const handle = notchText(handles.power, handles.brake, handles.emergency);
+    const effective = notchText(snap.powerNotch, snap.brakeNotch, snap.emergency);
+    const cutOff = handles.power > 0 && snap.powerNotch === 0;
     rows.push(
       row(
-        'ノッチ',
-        snap.emergency
+        'ノッチ（手元）',
+        handles.emergency
           ? '<span class="danger">非常</span>'
-          : snap.brakeNotch > 0
-            ? `B${snap.brakeNotch}`
-            : snap.powerNotch > 0
-              ? `P${snap.powerNotch}`
-              : '切',
+          : handle + (handles.doorsClosed ? '' : ' <span class="warn">戸開</span>'),
+      ),
+    );
+    rows.push(
+      row(
+        'ノッチ（実効）',
+        snap.emergency || snap.safety.emergencyBrake
+          ? '<span class="danger">非常</span>'
+          : effective + (cutOff ? ' <span class="warn">力行カット</span>' : ''),
       ),
     );
     rows.push(row('加速度', `${snap.acceleration.toFixed(3)} m/s²`));

@@ -13,7 +13,7 @@
   <body>
     <div id="app">
       <div id="viewport">
-        <canvas id="scene"></canvas>
+        <canvas id="scene" tabindex="0"></canvas>
         <div id="hud"></div>
         <div id="gmeter"></div>
         <div id="help">
@@ -25,6 +25,9 @@
           <div>S: 砂撒き / H: 警笛 / D: 戸閉め</div>
           <div>1-5: カメラ（運転席/追跡/側面/俯瞰/自由）</div>
           <div>P: 一時停止 / F: 1 ステップ / [ ]: 速度倍率</div>
+          <div class="note">
+            手元のノッチが効かないときは HUD の「実効」行を確認（保安装置や戸開でカットされる）
+          </div>
         </div>
       </div>
       <aside id="side">

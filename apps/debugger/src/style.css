@@ -19,7 +19,11 @@ body {
   background: var(--bg);
   color: var(--text);
   font-family:
-    'Hiragino Kaku Gothic ProN', 'Noto Sans JP', system-ui, -apple-system, sans-serif;
+    'Hiragino Kaku Gothic ProN',
+    'Noto Sans JP',
+    system-ui,
+    -apple-system,
+    sans-serif;
   font-size: 13px;
   overflow: hidden;
 }
@@ -39,6 +43,8 @@ body {
   display: block;
   width: 100%;
   height: 100%;
+  /* キー操作を受け取れるようフォーカス可能にしてあるが、枠は出さない */
+  outline: none;
 }
 
 #hud {
@@ -101,6 +107,14 @@ body {
   color: var(--text);
   display: block;
   margin-bottom: 4px;
+}
+
+#help .note {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--line);
+  max-width: 30em;
+  opacity: 0.8;
 }
 
 #side {

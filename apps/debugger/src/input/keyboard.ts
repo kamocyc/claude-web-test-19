@@ -2,12 +2,33 @@ import { NEUTRAL_INPUT, type ControlInput } from '@railsim/core';
 import { CAMERA_MODES, type CameraMode } from '../render/cameras.ts';
 
 export interface DriverDeskOptions {
-  readonly powerNotchCount: number;
-  readonly brakeNotchCount: number;
+  /** 力行ノッチ段数。シナリオ（車両）を切り替えても追従できるよう関数で受ける。 */
+  powerNotchCount(): number;
+  /** 常用ブレーキノッチ段数 */
+  brakeNotchCount(): number;
   onCameraChange?(mode: CameraMode): void;
   onPauseToggle?(): void;
   onSingleStep?(): void;
   onRateChange?(delta: number): void;
+}
+
+/** 「押している間だけ有効」なキー（離すまで状態が続く操作） */
+const HELD_KEYS = new Set(['enter', 'r', 'h', 's']);
+
+/**
+ * キー入力を無視すべき相手か。
+ *
+ * 文字入力中のフィールドだけを除外する。`<select>` やボタンを除外してしまうと、
+ * 画面のボタンを一度クリックしただけでノッチ操作を受け付けなくなる。
+ */
+function isTextEntry(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.isContentEditable) return true;
+  if (target instanceof HTMLTextAreaElement) return true;
+  if (target instanceof HTMLInputElement) {
+    return !['file', 'checkbox', 'radio', 'button', 'submit', 'range'].includes(target.type);
+  }
+  return false;
 }
 
 /**
@@ -31,15 +52,17 @@ export class DriverDesk {
   }
 
   private onKeyDown = (e: KeyboardEvent): void => {
-    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
+    if (isTextEntry(e.target)) return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
     const key = e.key.toLowerCase();
+    let handled = true;
     if (!e.repeat) {
       switch (key) {
         case 'z':
         case 'arrowup':
           this.brakeNotch = 0;
           this.emergency = false;
-          this.powerNotch = Math.min(this.options.powerNotchCount, this.powerNotch + 1);
+          this.powerNotch = Math.min(this.options.powerNotchCount(), this.powerNotch + 1);
           break;
         case 'a':
         case 'arrowdown':
@@ -48,7 +71,7 @@ export class DriverDesk {
         case '.':
         case 'arrowright':
           this.powerNotch = 0;
-          this.brakeNotch = Math.min(this.options.brakeNotchCount, this.brakeNotch + 1);
+          this.brakeNotch = Math.min(this.options.brakeNotchCount(), this.brakeNotch + 1);
           break;
         case ',':
         case 'arrowleft':
@@ -57,7 +80,7 @@ export class DriverDesk {
           break;
         case ' ':
           this.powerNotch = 0;
-          this.brakeNotch = this.options.brakeNotchCount;
+          this.brakeNotch = this.options.brakeNotchCount();
           this.emergency = true;
           break;
         case 'd':
@@ -85,11 +108,15 @@ export class DriverDesk {
           this.options.onRateChange?.(1);
           break;
         default:
+          handled = HELD_KEYS.has(key);
           break;
       }
     }
     this.held.add(key);
-    if (key === ' ' || key.startsWith('arrow')) e.preventDefault();
+    // 運転操作に使うキーはブラウザ既定の動作を止める。
+    // 特に Space / Enter は、直前にクリックしたボタンを再度押してしまうため
+    // （非常ブレーキのつもりが「一時停止」を叩く、といった事故になる）。
+    if (handled) e.preventDefault();
   };
 
   private onKeyUp = (e: KeyboardEvent): void => {
@@ -102,6 +129,16 @@ export class DriverDesk {
     this.emergency = false;
     this.doorsClosed = true;
     this.held.clear();
+  }
+
+  /** 運転士が握っているハンドルの位置（シミュレーションの実効ノッチとは別） */
+  get handles(): { power: number; brake: number; emergency: boolean; doorsClosed: boolean } {
+    return {
+      power: this.powerNotch,
+      brake: this.brakeNotch,
+      emergency: this.emergency,
+      doorsClosed: this.doorsClosed,
+    };
   }
 
   /** 現在の操作入力 */

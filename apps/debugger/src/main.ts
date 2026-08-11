@@ -58,8 +58,8 @@ let sampleTimer = 0;
 let replaying: Recording | null = null;
 
 const desk = new DriverDesk({
-  powerNotchCount: scenario.consist.traction.notchCount,
-  brakeNotchCount: scenario.consist.brake.notchCount,
+  powerNotchCount: () => scenario.consist.traction.notchCount,
+  brakeNotchCount: () => scenario.consist.brake.notchCount,
   onCameraChange: (mode: CameraMode) => applyCameraMode(mode),
   onPauseToggle: () => setPaused(!paused),
   onSingleStep: () => {
@@ -103,11 +103,30 @@ function restart(id = scenarioId): void {
   setPaused(false);
 }
 
-scenarioSelect.addEventListener('change', () => restart(scenarioSelect.value));
-restartButton.addEventListener('click', () => restart());
-pauseButton.addEventListener('click', () => setPaused(!paused));
+/**
+ * 画面のコントロールを操作したあとはフォーカスを外して運転台へ返す。
+ * `<select>` やボタンにフォーカスが残っていると、Z / A がリストの先頭一致選択に、
+ * Space / Enter がボタンの再押下に食われて、ノッチが効かなくなる。
+ */
+function releaseFocus(element: HTMLElement): void {
+  element.blur();
+  canvas.focus();
+}
 
+scenarioSelect.addEventListener('change', () => {
+  releaseFocus(scenarioSelect);
+  restart(scenarioSelect.value);
+});
+restartButton.addEventListener('click', () => {
+  releaseFocus(restartButton);
+  restart();
+});
+pauseButton.addEventListener('click', () => {
+  releaseFocus(pauseButton);
+  setPaused(!paused);
+});
 saveButton.addEventListener('click', () => {
+  releaseFocus(saveButton);
   const recording = recorder.toRecording(scenarioId, scenario.seed);
   const blob = new Blob([JSON.stringify(recording, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
@@ -119,6 +138,7 @@ saveButton.addEventListener('click', () => {
 });
 
 loadInput.addEventListener('change', async () => {
+  releaseFocus(loadInput);
   const file = loadInput.files?.[0];
   if (!file) return;
   const recording = JSON.parse(await file.text()) as Recording;
@@ -156,10 +176,12 @@ function frame(now: number): void {
   resize();
 
   if (replaying === null) {
+    // 一時停止中でもハンドル位置は反映する（再開した瞬間に効くのではなく、
+    // 手元の操作がその場で計器と HUD に出るほうが運転台として自然）。
+    sim.input = desk.input;
     const advance = paused ? (singleStep ? 1 / 60 : 0) : wall * RATES[rateIndex]!;
     singleStep = false;
     if (advance > 0) {
-      sim.input = desk.input;
       recorder.record(sim.elapsed, sim.input);
       sim.step(advance);
       sampleTimer += advance;
@@ -171,7 +193,7 @@ function frame(now: number): void {
   }
 
   scene.update(sim);
-  if (cameraRig.mode === 'cab') cabInterior.update(sim);
+  if (cameraRig.mode === 'cab') cabInterior.update(sim, desk.handles);
   cameraRig.update({
     frame: scene.frontFrame(sim),
     trainLength: trainLength(),
@@ -179,7 +201,7 @@ function frame(now: number): void {
     cabQuaternion: scene.cabQuaternion,
   });
   renderer.render(scene.scene, cameraRig.camera);
-  hud.update(sim, CAMERA_LABEL[cameraRig.mode], RATES[rateIndex]!, paused);
+  hud.update(sim, CAMERA_LABEL[cameraRig.mode], RATES[rateIndex]!, paused, desk.handles);
   gmeter.draw(sim);
   charts.draw();
 }
