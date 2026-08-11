@@ -1,0 +1,180 @@
+:root {
+  --bg: #10141a;
+  --panel: #171d26;
+  --line: #2a3440;
+  --text: #d7e0ea;
+  --muted: #8a99ab;
+  --accent: #4ea3ff;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family:
+    'Hiragino Kaku Gothic ProN', 'Noto Sans JP', system-ui, -apple-system, sans-serif;
+  font-size: 13px;
+  overflow: hidden;
+}
+
+#app {
+  display: grid;
+  grid-template-columns: 1fr 420px;
+  height: 100%;
+}
+
+#viewport {
+  position: relative;
+  min-width: 0;
+}
+
+#scene {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+#hud {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  padding: 10px 14px;
+  background: rgba(16, 20, 26, 0.82);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  line-height: 1.55;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  min-width: 300px;
+}
+
+#hud .speed {
+  font-size: 30px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+#hud .row {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+#hud .label {
+  color: var(--muted);
+}
+
+#hud .warn {
+  color: #ffb454;
+}
+
+#hud .danger {
+  color: #ff6b6b;
+  font-weight: 700;
+}
+
+#hud .ok {
+  color: #7ddc8a;
+}
+
+#help {
+  position: absolute;
+  bottom: 12px;
+  left: 12px;
+  padding: 8px 12px;
+  background: rgba(16, 20, 26, 0.75);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--muted);
+  line-height: 1.5;
+  pointer-events: none;
+}
+
+#help strong {
+  color: var(--text);
+  display: block;
+  margin-bottom: 4px;
+}
+
+#side {
+  border-left: 1px solid var(--line);
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+#controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  padding: 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+#controls select,
+#controls button,
+#controls .file {
+  background: #202836;
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 5px 9px;
+  font: inherit;
+  cursor: pointer;
+}
+
+#controls button:hover,
+#controls .file:hover {
+  border-color: var(--accent);
+}
+
+#controls .file input {
+  display: none;
+}
+
+#rate {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+#charts {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+}
+
+.chart {
+  margin-bottom: 8px;
+}
+
+.chart h3 {
+  margin: 0 0 3px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.chart h3 .legend {
+  font-weight: 500;
+}
+
+.chart canvas {
+  display: block;
+  width: 100%;
+  height: 92px;
+  background: #0d1117;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
