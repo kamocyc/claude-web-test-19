@@ -32,8 +32,14 @@
         </div>
       </div>
       <aside id="side">
+        <div id="conditions">
+          <label class="pick">車両<select id="vehicle"></select></label>
+          <label class="pick">天気<select id="weather"></select></label>
+          <span class="pick">保安装置<span id="safety" class="radios"></span></span>
+          <label class="toggle"><input id="preceding" type="checkbox" />先行列車</label>
+          <label class="toggle"><input id="platform" type="checkbox" />2 番線から発車</label>
+        </div>
         <div id="controls">
-          <select id="scenario"></select>
           <button id="restart" type="button">再スタート</button>
           <button id="pause" type="button">一時停止</button>
           <span id="rate">1.0x</span>

@@ -5,6 +5,7 @@ import {
   NEUTRAL_INPUT,
   Simulation,
   SignallingSystem,
+  consistLength,
   kmhToMps,
   mpsToKmh,
   replay,
@@ -162,6 +163,79 @@ describe('線形が走行に与える影響', () => {
       },
     );
     expect(sawTunnel).toBe(true);
+  });
+});
+
+describe('速度制限と編成長', () => {
+  const route = lib.route('test-line');
+  /** R400 の制限（4200〜）が明ける距離程 */
+  const exit = route.speedLimitEntries.find(
+    (e) => e.start > 4200 && e.speed > kmhToMps(100),
+  )!.start;
+  const trainLength = consistLength(lib.vehicle('commuter-4'));
+
+  /** 制限区間の出口を惰行のまま渡る */
+  const leaveLimit = (): Simulation => {
+    const sim = new Simulation({
+      ...scenarioOf('test-line-local'),
+      startPosition: exit - 200,
+      startSpeed: kmhToMps(78),
+    });
+    sim.input = input();
+    return sim;
+  };
+
+  it('先頭が制限区間を抜けても、最後部が抜けるまで制限が続く', () => {
+    const sim = leaveLimit();
+    // 先頭が抜けた直後 — 最後部はまだ曲線の中
+    runUntil(sim, (s) => s.position > exit + 5);
+    expect(sim.dynamics.rearPosition).toBeLessThan(exit);
+    expect(mpsToKmh(sim.snapshot().speedLimit)).toBeCloseTo(80, 6);
+
+    // 最後部まであと少し
+    runUntil(sim, (s) => s.dynamics.rearPosition > exit - 5);
+    expect(mpsToKmh(sim.snapshot().speedLimit)).toBeCloseTo(80, 6);
+  });
+
+  it('制限が明けるのは最後部が抜けた時点で、先頭端の判定より編成長ぶん遅い', () => {
+    const sim = leaveLimit();
+    runUntil(sim, (s) => s.snapshot().speedLimit > kmhToMps(100), 60, undefined, 0.005);
+    expect(sim.dynamics.rearPosition).toBeCloseTo(exit, 0);
+    // 先頭端で引いていたら exit で明けていたはずで、その差が編成長そのものになる
+    expect(sim.position - exit).toBeGreaterThan(trainLength - 1);
+    expect(sim.position - exit).toBeLessThan(trainLength + 1);
+  });
+
+  it('先頭が入った時点では効きはじめる（入るほうは先頭端）', () => {
+    const sim = new Simulation({
+      ...scenarioOf('test-line-local'),
+      startPosition: 4100,
+      startSpeed: kmhToMps(78),
+    });
+    sim.input = input();
+    expect(mpsToKmh(sim.snapshot().speedLimit)).toBeCloseTo(110, 6);
+    runUntil(sim, (s) => s.position > 4205, 60, undefined, 0.005);
+    // 最後部はまだ制限の手前にいるが、先頭が入っているので制限がかかる
+    expect(sim.dynamics.rearPosition).toBeLessThan(4200);
+    expect(mpsToKmh(sim.snapshot().speedLimit)).toBeCloseTo(80, 6);
+  });
+
+  it('自動運転は最後部が抜けるまで加速を始めない', () => {
+    const sim = leaveLimit();
+    sim.setAutoDrive(true);
+    let poweredAt: number | null = null;
+    runUntil(
+      sim,
+      (s) => s.dynamics.rearPosition > exit + 100,
+      120,
+      (s) => {
+        if (poweredAt === null && s.effectiveInput.powerNotch > 0) poweredAt = s.position;
+      },
+      0.005,
+    );
+    expect(poweredAt).not.toBeNull();
+    // 先頭端で引いていれば exit の時点で力行できてしまう
+    expect(poweredAt!).toBeGreaterThan(exit + trainLength - 1);
   });
 });
 
@@ -510,10 +584,8 @@ describe('駅の取り扱いと運転評価', () => {
 });
 
 describe('分岐器の通過', () => {
-  const turnoutOf = (id: string) => {
-    const scenario = scenarioOf(id);
-    return scenario.route.turnouts.turnouts[0]!;
-  };
+  const turnoutOf = (id: string, turnoutId: string) =>
+    scenarioOf(id).route.turnouts.get(turnoutId)!;
 
   /**
    * 分岐器の 250m 手前から、指定の速度で**惰行のまま**入って通過する。
@@ -522,9 +594,9 @@ describe('分岐器の通過', () => {
    * 見るために惰行で渡る。保安装置も切ってある（分岐制限に ATS-P のパターンが
    * 掛かると、制限超過で渡るという条件そのものが成立しない）。
    */
-  const cross = (id: string, kmh: number) => {
+  const cross = (id: string, turnoutId: string, kmh: number) => {
     const base = scenarioOf(id);
-    const turnout = turnoutOf(id);
+    const turnout = turnoutOf(id, turnoutId);
     const sim = new Simulation({
       ...base,
       safetySystems: [],
@@ -559,7 +631,7 @@ describe('分岐器の通過', () => {
    * 踏むので、車体は揺れる（欠線は片方のレールにしかないのでロールになる）。
    */
   it('直進側でも分岐器を通れば車体が揺れる', () => {
-    const crossing = cross('test-line-turnout', 100);
+    const crossing = cross('test-line-turnout', 'to-3', 100);
     expect(mpsToKmh(crossing.before.speed)).toBeGreaterThan(90);
     expect(crossing.maxRoll).toBeGreaterThan(0.0004);
     // 揺れはするが、よろけるほどではない
@@ -568,11 +640,12 @@ describe('分岐器の通過', () => {
   });
 
   /**
-   * 分岐側は緩和曲線もカントも無い R350 へ入ることになる。制限（45km/h）を
-   * 無視して渡れば横 G が階段状に立ち上がり、立っている乗客は足を出す。
+   * 2 番線から出る列車は、緩和曲線もカントも無い R350 を戻し曲線と合わせて
+   * **逆向きに 2 度**通ることになる。制限（45km/h）を無視して渡れば横 G が
+   * 階段状に立ち上がり、しかも符号が反転するので、立っている乗客は足を出す。
    */
   it('分岐側を制限速度超過で渡ると乗客がよろける', () => {
-    const fast = cross('test-line-turnout-diverging', 90);
+    const fast = cross('test-line-loop', 'to-2', 90);
     expect(mpsToKmh(fast.before.speed)).toBeGreaterThan(80);
     // R350 を 90km/h → v²/R = 1.8 m/s²。許容カント不足の範囲をはるかに超える。
     expect(fast.maxLateral).toBeGreaterThan(1.5);
@@ -582,7 +655,7 @@ describe('分岐器の通過', () => {
 
   /** 制限速度まで落として渡れば、同じ分岐器でも横 G は乗り心地の範囲に収まる */
   it('制限速度まで落として渡ればよろけない', () => {
-    const slow = cross('test-line-turnout-diverging', 45);
+    const slow = cross('test-line-loop', 'to-2', 45);
     // R350 を 45km/h → 0.45 m/s²。カント不足に直せば 48mm で、許容値の内側。
     expect(slow.maxLateral).toBeLessThan(0.7);
     expect(slow.maxStagger).toBeLessThan(1);
@@ -591,9 +664,11 @@ describe('分岐器の通過', () => {
 
   /** 分岐器の位置と開通方向はスナップショットから読める（HUD の表示に使う） */
   it('次の分岐器がスナップショットに出る', () => {
-    const sim = new Simulation(scenarioOf('test-line-turnout-diverging'));
+    const sim = new Simulation(scenarioOf('test-line-loop'));
     const snap = sim.snapshot();
     expect(snap.nextTurnout).not.toBeNull();
+    // 起点駅の 2 番線に停まっているので、次は交換設備の出口（背向・分岐側）
+    expect(snap.nextTurnout!.turnout.id).toBe('to-2');
     expect(snap.nextTurnout!.turnout.route).toBe('diverging');
     expect(snap.nextTurnout!.distance).toBeGreaterThan(0);
     expect(mpsToKmh(snap.nextTurnout!.turnout.divergingSpeed)).toBeCloseTo(45, 6);

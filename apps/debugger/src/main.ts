@@ -1,6 +1,17 @@
 import * as THREE from 'three';
 import { InputRecorder, Simulation, replay, type Recording, type Scenario } from '@railsim/core';
-import { createDefaultLibrary } from '@railsim/data';
+import {
+  DEFAULT_RUN_OPTIONS,
+  SAFETY_CHOICES,
+  VEHICLE_CHOICES,
+  WEATHER_CHOICES,
+  createDefaultLibrary,
+  parseRunScenarioId,
+  runScenarioId,
+  type RunOptions,
+  type SafetyChoice,
+  type WeatherChoice,
+} from '@railsim/data';
 import { TrainAudio } from './audio/engine.ts';
 import { ChartPanel } from './charts/panel.ts';
 import { DriverDesk } from './input/keyboard.ts';
@@ -20,7 +31,11 @@ const library = createDefaultLibrary();
 const canvas = document.querySelector<HTMLCanvasElement>('#scene')!;
 const hudElement = document.querySelector<HTMLElement>('#hud')!;
 const chartsElement = document.querySelector<HTMLElement>('#charts')!;
-const scenarioSelect = document.querySelector<HTMLSelectElement>('#scenario')!;
+const vehicleSelect = document.querySelector<HTMLSelectElement>('#vehicle')!;
+const weatherSelect = document.querySelector<HTMLSelectElement>('#weather')!;
+const safetyGroup = document.querySelector<HTMLElement>('#safety')!;
+const precedingCheck = document.querySelector<HTMLInputElement>('#preceding')!;
+const platformCheck = document.querySelector<HTMLInputElement>('#platform')!;
 const restartButton = document.querySelector<HTMLButtonElement>('#restart')!;
 const pauseButton = document.querySelector<HTMLButtonElement>('#pause')!;
 const rateLabel = document.querySelector<HTMLElement>('#rate')!;
@@ -54,14 +69,58 @@ const mixer = new Mixer(mixerElement, {
 const cabInterior = createCabInterior();
 cameraRig.camera.add(cabInterior.group);
 
-for (const id of library.scenarioIds) {
-  const option = document.createElement('option');
-  option.value = id;
-  option.textContent = library.scenarioName(id);
-  scenarioSelect.append(option);
+/**
+ * 走行条件の選択肢はデータ側（`@railsim/data` の `run.ts`）が持っている。
+ * 車両を 1 形式足したら、この画面には何も書かずに選べるようになる。
+ */
+function fillSelect(
+  select: HTMLSelectElement,
+  choices: ReadonlyArray<{ id: string; label: string }>,
+): void {
+  for (const choice of choices) {
+    const option = document.createElement('option');
+    option.value = choice.id;
+    option.textContent = choice.label;
+    select.append(option);
+  }
+}
+fillSelect(vehicleSelect, VEHICLE_CHOICES);
+fillSelect(weatherSelect, WEATHER_CHOICES);
+for (const choice of SAFETY_CHOICES) {
+  const label = document.createElement('label');
+  const radio = document.createElement('input');
+  radio.type = 'radio';
+  radio.name = 'safety';
+  radio.value = choice.id;
+  label.append(radio, choice.label);
+  safetyGroup.append(label);
 }
 
-let scenarioId = library.scenarioIds[0]!;
+/** 画面の選択状態を読む */
+function readOptions(): RunOptions {
+  const safety = safetyGroup.querySelector<HTMLInputElement>('input:checked');
+  return {
+    vehicleId: vehicleSelect.value,
+    weather: weatherSelect.value as WeatherChoice,
+    divergingPlatform: platformCheck.checked,
+    precedingTrain: precedingCheck.checked,
+    safety: (safety?.value ?? DEFAULT_RUN_OPTIONS.safety) as SafetyChoice,
+  };
+}
+
+/** 条件を画面へ反映する（既定値の表示と、記録を読み込んだときの復元） */
+function showOptions(options: RunOptions): void {
+  vehicleSelect.value = options.vehicleId;
+  weatherSelect.value = options.weather;
+  platformCheck.checked = options.divergingPlatform;
+  precedingCheck.checked = options.precedingTrain;
+  for (const radio of safetyGroup.querySelectorAll<HTMLInputElement>('input')) {
+    radio.checked = radio.value === options.safety;
+  }
+}
+showOptions(DEFAULT_RUN_OPTIONS);
+
+let scenarioId = runScenarioId(DEFAULT_RUN_OPTIONS);
 let scenario: Scenario = library.scenario(scenarioId);
 let sim = new Simulation(scenario);
 let scene = new TrackScene(scenario.route, sim, renderer);
@@ -179,10 +238,13 @@ muteButton.addEventListener('click', () => {
   startAudio();
   setMuted(!audio.isMuted);
 });
-scenarioSelect.addEventListener('change', () => {
-  releaseFocus(scenarioSelect);
-  restart(scenarioSelect.value);
-});
+// 走行条件はどれを触っても、その組み合わせのシナリオで走り直す
+for (const control of [vehicleSelect, weatherSelect, safetyGroup, precedingCheck, platformCheck]) {
+  control.addEventListener('change', () => {
+    releaseFocus(control);
+    restart(runScenarioId(readOptions()));
+  });
+}
 restartButton.addEventListener('click', () => {
   releaseFocus(restartButton);
   restart();
@@ -208,13 +270,15 @@ loadInput.addEventListener('change', async () => {
   const file = loadInput.files?.[0];
   if (!file) return;
   const recording = JSON.parse(await file.text()) as Recording;
-  if (!library.scenarioIds.includes(recording.scenarioId)) {
+  if (!library.hasScenario(recording.scenarioId)) {
     window.alert(`記録のシナリオ "${recording.scenarioId}" が見つかりません`);
     loadInput.value = '';
     return;
   }
   restart(recording.scenarioId);
-  scenarioSelect.value = recording.scenarioId;
+  // 記録の ID には走行条件が入っているので、画面の選択もそこへ戻す
+  const options = parseRunScenarioId(recording.scenarioId);
+  if (options) showOptions(options);
   replaying = recording;
   // 記録どおりに再生する（入力以外に外部依存が無いので同じ走行が再現される）
   replay(sim, recording, SAMPLE_PERIOD, (s) => charts.sample(s));

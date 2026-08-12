@@ -96,7 +96,10 @@ export class StepTable<T> {
     return this.keys;
   }
 
-  /** 区間 [sFrom, sTo] に現れるすべての値のうち、数値として最小のものを返す用のヘルパ */
+  /**
+   * 区間 [sFrom, sTo] に現れる値（始点 `sFrom` の時点の値を含む）。
+   * 在線範囲にかかっている最も低い制限速度を求めるのに使う。
+   */
   entriesInRange(sFrom: number, sTo: number): ReadonlyArray<PointEntry<T>> {
     const out: PointEntry<T>[] = [];
     out.push({ s: sFrom, value: this.at(sFrom) });

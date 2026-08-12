@@ -166,3 +166,32 @@ export interface Occupancy {
 export function occupancyOverlaps(a: Occupancy, start: Meters, end: Meters): boolean {
   return a.front > start && a.rear < end;
 }
+
+/**
+ * 列車にかかっている制限速度 [m/s]。
+ *
+ * 引くのは先頭端の 1 点ではなく**在線範囲**である。速度制限は先頭が制限区間へ
+ * 入った時点で効きはじめ、**最後部が抜けるまで**解けない。曲線の中に車体が
+ * 残っているうちに加速してよい理由は無いので、これは取扱の決まりごとである以前に
+ * 物理の話である。閉塞の在線判定 (`occupancyOverlaps`) が最後部で閉塞を開放するのと
+ * 同じ考え方で、列車を点ではなく長さのあるものとして扱う。
+ *
+ * 4 両編成なら 80m あるので、R400（制限 80km/h）を抜けたあとも 80m のあいだは
+ * 制限が続く。80km/h で走っていれば 3.6 秒ぶんになる。分岐器の制限は制限区間の
+ * ほうが編成長より短いことすらあり、そこでは**在線範囲で引くかどうかが制限の
+ * 長さそのものを決める**。
+ *
+ * 在線範囲に複数の制限が跨がっているときは最も低いものを採る。編成より短い
+ * 一時制限が編成の中にすっぽり収まっている場合も、これで拾える。
+ */
+export function occupiedSpeedLimit(
+  limits: StepTable<number>,
+  occupancy: Occupancy,
+): MetersPerSecond {
+  const rear = Math.max(0, Math.min(occupancy.rear, occupancy.front));
+  let lowest = Number.POSITIVE_INFINITY;
+  for (const entry of limits.entriesInRange(rear, occupancy.front)) {
+    if (entry.value < lowest) lowest = entry.value;
+  }
+  return lowest;
+}

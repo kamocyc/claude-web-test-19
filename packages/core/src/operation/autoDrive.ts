@@ -1,5 +1,6 @@
 import type { BrakeSystem } from '../brake/types.ts';
 import { clamp, firstOrderLag } from '../math/scalar.ts';
+import { occupiedSpeedLimit } from '../route/types.ts';
 import type { CompiledRoute, Station } from '../route/types.ts';
 import type { SignallingSystem } from '../signalling/system.ts';
 import { NEUTRAL_INPUT, type ControlInput } from '../sim/types.ts';
@@ -453,10 +454,15 @@ export class AutoDriver {
     // 保安装置の照査速度も上限に入れる。自動運転装置が保安装置に叱られてブレーキを
     // 掛けられる、というのは運転としても保安としても最悪で、そこだけ突然の
     // 常用最大が入ってしまう。常に照査速度の内側を走れば、保安装置は動作しない。
+    // 制限は在線範囲で引く。先頭が制限区間を抜けても最後部が残っているうちは
+    // まだ制限の中なので、そこで力行を始めてはいけない。
     const ceiling = Math.min(
       ctx.route.maxSpeed,
       ctx.consist.maxSpeed,
-      ctx.route.speedLimits.at(ctx.position),
+      occupiedSpeedLimit(ctx.route.speedLimits, {
+        front: ctx.dynamics.frontPosition,
+        rear: ctx.dynamics.rearPosition,
+      }),
       this.signalCeiling,
       ctx.patternSpeed === null ? Number.POSITIVE_INFINITY : ctx.patternSpeed - p.patternMargin,
     );
