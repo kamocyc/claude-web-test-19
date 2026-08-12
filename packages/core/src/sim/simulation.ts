@@ -9,6 +9,7 @@ import {
   type AutoDriveState,
 } from '../operation/autoDrive.ts';
 import { MetricsRecorder, type StopRecord } from '../operation/metrics.ts';
+import { occupiedSpeedLimit } from '../route/types.ts';
 import type { BeaconPayload, SafetySystemKind, Station } from '../route/types.ts';
 import { AtcSystem } from '../safety/atc.ts';
 import { AtsPSystem } from '../safety/atsP.ts';
@@ -201,9 +202,15 @@ export class Simulation {
     return this.dynamics.frontPosition;
   }
 
-  /** 現在位置の速度制限 [m/s] */
+  /**
+   * いまかかっている速度制限 [m/s]。
+   *
+   * 在線範囲で引くので、先頭が制限区間へ入った時点で効きはじめ、最後部が抜けるまで
+   * 解けない（`occupiedSpeedLimit`）。ここ 1 か所で決まった値が保安装置の照査速度の
+   * 上限・HUD・グラフへ配られる。
+   */
   get currentSpeedLimit(): MetersPerSecond {
-    return this.scenario.route.speedLimits.at(this.dynamics.frontPosition);
+    return occupiedSpeedLimit(this.scenario.route.speedLimits, this.occupancy());
   }
 
   /** 次に停車すべき駅 */

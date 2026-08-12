@@ -5,6 +5,7 @@ import {
   NEUTRAL_INPUT,
   Simulation,
   SignallingSystem,
+  consistLength,
   kmhToMps,
   mpsToKmh,
   replay,
@@ -162,6 +163,79 @@ describe('線形が走行に与える影響', () => {
       },
     );
     expect(sawTunnel).toBe(true);
+  });
+});
+
+describe('速度制限と編成長', () => {
+  const route = lib.route('test-line');
+  /** R400 の制限（4200〜）が明ける距離程 */
+  const exit = route.speedLimitEntries.find(
+    (e) => e.start > 4200 && e.speed > kmhToMps(100),
+  )!.start;
+  const trainLength = consistLength(lib.vehicle('commuter-4'));
+
+  /** 制限区間の出口を惰行のまま渡る */
+  const leaveLimit = (): Simulation => {
+    const sim = new Simulation({
+      ...scenarioOf('test-line-local'),
+      startPosition: exit - 200,
+      startSpeed: kmhToMps(78),
+    });
+    sim.input = input();
+    return sim;
+  };
+
+  it('先頭が制限区間を抜けても、最後部が抜けるまで制限が続く', () => {
+    const sim = leaveLimit();
+    // 先頭が抜けた直後 — 最後部はまだ曲線の中
+    runUntil(sim, (s) => s.position > exit + 5);
+    expect(sim.dynamics.rearPosition).toBeLessThan(exit);
+    expect(mpsToKmh(sim.snapshot().speedLimit)).toBeCloseTo(80, 6);
+
+    // 最後部まであと少し
+    runUntil(sim, (s) => s.dynamics.rearPosition > exit - 5);
+    expect(mpsToKmh(sim.snapshot().speedLimit)).toBeCloseTo(80, 6);
+  });
+
+  it('制限が明けるのは最後部が抜けた時点で、先頭端の判定より編成長ぶん遅い', () => {
+    const sim = leaveLimit();
+    runUntil(sim, (s) => s.snapshot().speedLimit > kmhToMps(100), 60, undefined, 0.005);
+    expect(sim.dynamics.rearPosition).toBeCloseTo(exit, 0);
+    // 先頭端で引いていたら exit で明けていたはずで、その差が編成長そのものになる
+    expect(sim.position - exit).toBeGreaterThan(trainLength - 1);
+    expect(sim.position - exit).toBeLessThan(trainLength + 1);
+  });
+
+  it('先頭が入った時点では効きはじめる（入るほうは先頭端）', () => {
+    const sim = new Simulation({
+      ...scenarioOf('test-line-local'),
+      startPosition: 4100,
+      startSpeed: kmhToMps(78),
+    });
+    sim.input = input();
+    expect(mpsToKmh(sim.snapshot().speedLimit)).toBeCloseTo(110, 6);
+    runUntil(sim, (s) => s.position > 4205, 60, undefined, 0.005);
+    // 最後部はまだ制限の手前にいるが、先頭が入っているので制限がかかる
+    expect(sim.dynamics.rearPosition).toBeLessThan(4200);
+    expect(mpsToKmh(sim.snapshot().speedLimit)).toBeCloseTo(80, 6);
+  });
+
+  it('自動運転は最後部が抜けるまで加速を始めない', () => {
+    const sim = leaveLimit();
+    sim.setAutoDrive(true);
+    let poweredAt: number | null = null;
+    runUntil(
+      sim,
+      (s) => s.dynamics.rearPosition > exit + 100,
+      120,
+      (s) => {
+        if (poweredAt === null && s.effectiveInput.powerNotch > 0) poweredAt = s.position;
+      },
+      0.005,
+    );
+    expect(poweredAt).not.toBeNull();
+    // 先頭端で引いていれば exit の時点で力行できてしまう
+    expect(poweredAt!).toBeGreaterThan(exit + trainLength - 1);
   });
 });
 
