@@ -50,10 +50,35 @@ export function createSky(radius = 5000): THREE.Mesh {
   return mesh;
 }
 
-/** 昼光の照明（太陽の平行光 + 空と地面からの環境光） */
-export function createDaylight(): THREE.Object3D[] {
-  const sun = new THREE.DirectionalLight(0xfff4e0, 2.1);
-  sun.position.set(-400, 700, 300);
-  const sky = new THREE.HemisphereLight(0xbfd8f5, 0x6b7a5a, 1.5);
-  return [sun, sky];
+/** 太陽の向き（列車から見た太陽の位置。影の落ちる方向を決める） */
+export const SUN_DIRECTION = new THREE.Vector3(-0.45, 0.79, 0.34).normalize();
+
+/**
+ * 昼光の照明（太陽の平行光 + 空と地面からの環境光）。
+ *
+ * 太陽には影を落とさせる。列車が道床に落とす影、上屋がホームに落とす影、
+ * 架線柱がのり面に落とす影 — 晴れた日の線路の見え方は、明るさよりも影の
+ * 形で決まる。ただし影を焼く範囲は狭くしないと粗くなるので、列車の周りだけを
+ * 追いかける（`TrackScene.update()` が光源を運ぶ）。
+ */
+export function createDaylight(): { sun: THREE.DirectionalLight; ambient: THREE.HemisphereLight } {
+  const sun = new THREE.DirectionalLight(0xfff4e0, 2.9);
+  sun.position.copy(SUN_DIRECTION).multiplyScalar(300);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(1024, 1024);
+  const extent = 90;
+  sun.shadow.camera.left = -extent;
+  sun.shadow.camera.right = extent;
+  sun.shadow.camera.top = extent;
+  sun.shadow.camera.bottom = -extent;
+  sun.shadow.camera.near = 1;
+  sun.shadow.camera.far = 700;
+  // 自分自身に縞模様の影が出る（シャドウアクネ）のを防ぐ。法線方向へずらすほうが
+  // 深度をずらすより、レールのような細い立体の影が痩せにくい。
+  sun.shadow.bias = -0.0004;
+  sun.shadow.normalBias = 0.045;
+  // 空からの光は太陽より弱くしておく。ここを強くすると影の中まで明るくなり、
+  // せっかく落とした影が見えなくなる。
+  const ambient = new THREE.HemisphereLight(0xbfd8f5, 0x6b7a5a, 0.7);
+  return { sun, ambient };
 }

@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url';
 const r = (p: string) => fileURLToPath(new URL(p, import.meta.url));
 
 export default defineConfig({
+  // GitHub Pages のようなサブディレクトリ配信では BASE_PATH で上書きする
+  base: process.env.BASE_PATH ?? '/',
   resolve: {
     alias: {
       '@railsim/core': r('../../packages/core/src/index.ts'),

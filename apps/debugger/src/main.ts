@@ -32,6 +32,10 @@ const mixerElement = document.querySelector<HTMLElement>('#mixer')!;
 
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+// 影を落とす。柔らかい影（PCF）にしないと、レールやまくらぎの細い影が
+// 拡大されたドットの列に見えてしまう。
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
 const cameraRig = new CameraRig(canvas);
 const hud = new Hud(hudElement);
@@ -60,7 +64,7 @@ for (const id of library.scenarioIds) {
 let scenarioId = library.scenarioIds[0]!;
 let scenario: Scenario = library.scenario(scenarioId);
 let sim = new Simulation(scenario);
-let scene = new TrackScene(scenario.route, sim);
+let scene = new TrackScene(scenario.route, sim, renderer);
 charts.setDriveKind(sim.traction.driveState.kind);
 let recorder = new InputRecorder();
 let paused = false;
@@ -141,7 +145,7 @@ function restart(id = scenarioId): void {
   scenarioId = id;
   scenario = library.scenario(scenarioId);
   sim = new Simulation(scenario);
-  scene = new TrackScene(scenario.route, sim);
+  scene = new TrackScene(scenario.route, sim, renderer);
   // カメラの子（運転席内装）を描画させるため、カメラをシーングラフに入れる
   scene.scene.add(cameraRig.camera);
   recorder = new InputRecorder();
