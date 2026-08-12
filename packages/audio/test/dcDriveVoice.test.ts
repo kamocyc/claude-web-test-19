@@ -1,13 +1,40 @@
 import { describe, expect, it } from 'vitest';
 import {
   ChopperVoice,
+  InverterVoice,
   ResistorVoice,
   SILENT_CHOPPER,
   SILENT_RESISTOR,
   type ChopperVoiceParams,
   type ResistorVoiceParams,
 } from '@railsim/audio';
-import { bandPower, peakProminence, rms } from './spectrum.ts';
+import { aWeightedRms, bandPower, goertzel, peakProminence, rms } from './spectrum.ts';
+
+/** 実車の整流子片数。回転数からブラシの通過周波数を出すのに使う。 */
+const COMMUTATOR_BARS = 93;
+const commutatorFrequencyAt = (rpm: number) => (COMMUTATOR_BARS * rpm) / 60;
+
+/**
+ * 比較の基準になるインバータ音。
+ * どの制御方式でもミキサのつまみ 1.0 でおおむね同じ大きさに聞こえてほしいので、
+ * 直流機の音はこれを物差しにして較正してある。
+ */
+function renderInverterReference(): Float32Array {
+  const voice = new InverterVoice(SAMPLE_RATE);
+  voice.setParams({
+    gate: true,
+    fundamental: 45,
+    carrier: 480,
+    modulation: 1,
+    pulses: 0,
+    slotFrequency: 1200,
+    level: 1,
+  });
+  voice.render(new Float32Array(Math.floor(SAMPLE_RATE * 0.5)));
+  const out = new Float32Array(LENGTH);
+  voice.render(out);
+  return out;
+}
 
 const SAMPLE_RATE = 48_000;
 /** 1 秒ぶんレンダすれば 1Hz 分解能で峰が見える */
@@ -164,5 +191,71 @@ describe('電機子チョッパの音', () => {
     expect(bandPower(off, SAMPLE_RATE, 350, 450)).toBeLessThan(
       bandPower(on, SAMPLE_RATE, 350, 450) * 0.05,
     );
+  });
+});
+
+describe('直流電動機の音の大きさと高域', () => {
+  // 起動から最高速までの回転数（限流値制御なので電流はほぼ一定）
+  const RPMS = [200, 600, 1000, 1400, 1800, 2200];
+  const loudness = RPMS.map((rpm) =>
+    aWeightedRms(
+      renderResistor(
+        resistorParams({ commutatorFrequency: commutatorFrequencyAt(rpm), resistorPower: 0 }),
+      ),
+      SAMPLE_RATE,
+    ),
+  );
+
+  it('インバータ音とおおむね同じ大きさに収まる', () => {
+    // 直流機のほうが大きいと、整流子の高い成分がそのまま耳につく。
+    const reference = aWeightedRms(renderInverterReference(), SAMPLE_RATE);
+    for (const level of loudness) {
+      expect(level).toBeLessThan(reference * 2);
+    }
+    // 逆に小さすぎて聞こえないのも困る（走行中の代表的な回転数で確かめる）
+    expect(loudness[3]!).toBeGreaterThan(reference * 0.5);
+  });
+
+  it('回転数が上がっても音量が跳ね上がらない', () => {
+    // 共振を跨ぐぶんの上下はあってよいが、桁で変わってはいけない
+    const running = loudness.slice(1);
+    expect(Math.max(...running) / Math.min(...running)).toBeLessThan(2.5);
+  });
+
+  it('スペクトルが高域へ向かって落ちる（上がりっぱなしにならない）', () => {
+    for (const rpm of RPMS) {
+      const out = renderResistor(
+        resistorParams({ commutatorFrequency: commutatorFrequencyAt(rpm), resistorPower: 0 }),
+      );
+      const mid = bandPower(out, SAMPLE_RATE, 800, 3000);
+      const high = bandPower(out, SAMPLE_RATE, 4000, 14000);
+      // 放射効率が高域を持ち上げるぶんを、質量制御のロールオフが上回っていること。
+      // ここが逆転すると、回転が上がるほど金属的で耳につく音になる。
+      expect(high).toBeLessThan(mid * 0.1);
+    }
+  });
+
+  it('高域の量がインバータ音と同じ桁に収まる', () => {
+    const reference = bandPower(renderInverterReference(), SAMPLE_RATE, 4000, 14000);
+    const fast = renderResistor(
+      resistorParams({ commutatorFrequency: commutatorFrequencyAt(2200), resistorPower: 0 }),
+    );
+    expect(bandPower(fast, SAMPLE_RATE, 4000, 14000)).toBeLessThan(reference * 10);
+  });
+});
+
+describe('チョッパ音と主電動機の釣り合い', () => {
+  it('チョッパ音が主電動機の音に埋もれない', () => {
+    // この車の音のいちばんの特徴なので、整流子の音と同じ桁で鳴っていること。
+    for (const rpm of [600, 1400, 2200]) {
+      const out = renderChopper(
+        chopperParams({ duty: 0.5, commutatorFrequency: commutatorFrequencyAt(rpm) }),
+      );
+      const chop = goertzel(out, SAMPLE_RATE, 400);
+      const commutator = goertzel(out, SAMPLE_RATE, commutatorFrequencyAt(rpm));
+      expect(chop / commutator).toBeGreaterThan(0.1);
+      // かといって電動機を覆い隠すほどでもない
+      expect(chop / commutator).toBeLessThan(3);
+    }
   });
 });

@@ -1,5 +1,10 @@
-import { Biquad, DcBlocker, OnePoleHighPass, Smoothed } from './biquad.ts';
-import { CommutatorTone, DC_MOTOR_RESONANCES, type CommutatorParams } from './dcMotorVoice.ts';
+import { Biquad, DcBlocker, OnePoleHighPass, OnePoleLowPass, Smoothed } from './biquad.ts';
+import {
+  CommutatorTone,
+  DC_MOTOR_RESONANCES,
+  MASS_CONTROLLED_FREQUENCY,
+  type CommutatorParams,
+} from './dcMotorVoice.ts';
 
 const TWO_PI = Math.PI * 2;
 
@@ -31,14 +36,24 @@ export const SILENT_CHOPPER: ChopperVoiceParams = {
 /** 平滑リアクトルの一致周波数 [Hz]（`dcMotorVoice.ts` と同じ考え方） */
 const COINCIDENCE_FREQUENCY = 2200;
 
-/** 放射効率を入れたことによる全体の落ちを補う */
+/** 放射効率と質量制御のロールオフを入れたことによる全体の落ちを補う */
 const RADIATION_GAIN = 2.4;
 
 /** リップル電流の漏れ積分のカットオフ [Hz]（直流分だけを落とす） */
 const RIPPLE_LEAK_FREQUENCY = 40;
 
-/** リップルを可聴域の振幅へ写す倍率 */
-const RIPPLE_GAIN = 90;
+/**
+ * リップル電流を可聴域の振幅へ写す倍率。
+ *
+ * 値は実測で決めてある。チョッパ音は**この車の音のいちばんの特徴**なので、整流子の
+ * 音に埋もれてはいけない。基音どうしで比べて整流子の 1/4〜2/3 になるようにしてある
+ * （＝−6〜−2dB）。これより下げると、通流率を動かしても音がほとんど変わらなくなる。
+ *
+ * なお、この音源がいちばん大きくなるのは起動直後の低い回転数だが、それはチョッパ音の
+ * せいではなく、整流子の基音が 980Hz の構造共振を通過するためである。倍率を下げても
+ * そこは変わらない。
+ */
+const RIPPLE_GAIN = 620;
 
 /**
  * 電機子チョッパの音。
@@ -64,6 +79,8 @@ export class ChopperVoice {
   private readonly resonators: Biquad[] = [];
   private readonly weights: number[] = [];
   private readonly radiation: OnePoleHighPass;
+  /** 質量制御域のロールオフ（`dcMotorVoice.ts` と同じ理由・同じ傾き） */
+  private readonly massRolloff: OnePoleLowPass;
   private readonly dcBlock: DcBlocker;
   private readonly levelSmooth: Smoothed;
   private readonly dutySmooth: Smoothed;
@@ -81,6 +98,7 @@ export class ChopperVoice {
       this.weights.push(weight);
     }
     this.radiation = new OnePoleHighPass(sampleRate, COINCIDENCE_FREQUENCY);
+    this.massRolloff = new OnePoleLowPass(sampleRate, MASS_CONTROLLED_FREQUENCY);
     this.dcBlock = new DcBlocker(sampleRate, 25);
     this.levelSmooth = new Smoothed(sampleRate, 0.02);
     // 通流率は電流制御ループが動かす量なので、階段を均す程度の短い平滑でよい。
@@ -132,7 +150,8 @@ export class ChopperVoice {
       for (let r = 0; r < this.resonators.length; r++) {
         radiated += this.resonators[r]!.process(force) * this.weights[r]!;
       }
-      out[i] = out[i]! + this.radiation.process(radiated) * RADIATION_GAIN * level;
+      const y = this.massRolloff.process(this.radiation.process(radiated));
+      out[i] = out[i]! + y * RADIATION_GAIN * level;
     }
   }
 
@@ -142,6 +161,7 @@ export class ChopperVoice {
     this.ripple = 0;
     this.dcBlock.reset();
     this.radiation.reset();
+    this.massRolloff.reset();
     for (const f of this.resonators) f.reset();
     this.levelSmooth.set(0);
     this.dutySmooth.set(0);

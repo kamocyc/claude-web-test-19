@@ -107,6 +107,29 @@ export class OnePoleHighPass {
   }
 }
 
+/**
+ * 1 次の低域通過。遮断周波数より下では平坦、上では 6dB/oct で落ちる。
+ * `OnePoleHighPass` の裏返しで、周波数に反比例して減る量（構造の質量制御域の
+ * 応答など）の表現に使う。
+ */
+export class OnePoleLowPass {
+  private y1 = 0;
+  private readonly a: number;
+
+  constructor(sampleRate: number, cutoff: number) {
+    this.a = 1 - Math.exp((-2 * Math.PI * cutoff) / sampleRate);
+  }
+
+  process(x: number): number {
+    this.y1 += this.a * (x - this.y1);
+    return this.y1;
+  }
+
+  reset(): void {
+    this.y1 = 0;
+  }
+}
+
 /** 直流分を抜く（遮断周波数をごく低く取った 1 次高域通過） */
 export class DcBlocker extends OnePoleHighPass {
   constructor(sampleRate: number, cutoff = 18) {

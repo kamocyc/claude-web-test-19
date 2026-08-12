@@ -1,4 +1,4 @@
-import { Biquad, DcBlocker, OnePoleHighPass, Smoothed } from './biquad.ts';
+import { Biquad, DcBlocker, OnePoleHighPass, OnePoleLowPass, Smoothed } from './biquad.ts';
 import { Noise } from './noise.ts';
 
 const TWO_PI = Math.PI * 2;
@@ -12,10 +12,10 @@ const TWO_PI = Math.PI * 2;
  * 変調のあるなしだけでなくこの共振の位置の違いでもある。
  */
 export const DC_MOTOR_RESONANCES: ReadonlyArray<readonly [number, number, number]> = [
-  [420, 6, 1.0],
-  [980, 8, 0.65],
-  [1850, 10, 0.4],
-  [3100, 12, 0.22],
+  [420, 4, 1.0],
+  [980, 5, 0.7],
+  [1850, 6, 0.5],
+  [3100, 7, 0.32],
 ];
 
 /**
@@ -24,8 +24,15 @@ export const DC_MOTOR_RESONANCES: ReadonlyArray<readonly [number, number, number
  */
 const COINCIDENCE_FREQUENCY = 2200;
 
-/** 放射効率を入れたことによる全体の落ちを補う */
-const RADIATION_GAIN = 2.6;
+/**
+ * 放射効率と質量制御のロールオフを入れたことによる全体の落ちを補う。
+ *
+ * 値は実測して決めてある。ミキサのつまみを 1.0 にしたとき、A 特性実効値が
+ * インバータ音（`inverterVoice.ts`）とおおむね揃うようにしてある。揃えていないと
+ * 車両を切り替えるたびに音量を取り直すことになるし、直流機のほうが大きいと
+ * 整流子の高い成分がそのまま耳につく。
+ */
+const RADIATION_GAIN = 0.8;
 
 /** 整流子音のパラメータ */
 export interface CommutatorParams {
@@ -47,12 +54,34 @@ export const SILENT_COMMUTATOR: CommutatorParams = {
  * 整流子片を渡る調波の重み。
  *
  * ブラシが 1 片から次の片へ移るたびに電流が転流し、そのつど電磁力が跳ねる。
- * 波形は正弦ではなく尖った繰り返しなので、基音より 2 次・3 次のほうがよく出る。
+ * ただし**その跳ねは尖っていない**。ブラシは 1 片より広く整流子に当たっていて、
+ * 転流するコイルはその間ブラシに短絡されているため、電流は有限の時間をかけて
+ * 移る。跳ねの立ち上がりが 1 片ぶんの時間と同程度に鈍るということは、次数が
+ * 上がるほど成分が落ちるということで、およそ `1/n²` になる。
+ *
+ * ここを「基音より 2 次・3 次のほうが強い」と置くと、回転が上がったときに
+ * 実車ではありえない金属的な高音になる。
  */
-const HARMONIC_WEIGHTS: readonly number[] = [0.6, 1.0, 0.7, 0.35, 0.18];
+const HARMONIC_WEIGHTS: readonly number[] = [1.0, 0.4, 0.16, 0.07];
 
-/** ブラシの接触抵抗のゆらぎ（広帯域のシャリシャリ）の深さ */
-const BRUSH_NOISE_DEPTH = 0.35;
+/**
+ * 構造が質量制御に入る周波数 [Hz]。
+ *
+ * 共振より十分上では、固定子とフレームは剛性ではなく**質量**で応答が決まるので、
+ * 加振力に対する応答が落ちていく。
+ *
+ * インバータ音（`inverterVoice.ts`）ではこの役目を磁束の積分（利得 ∝ 1/f）が
+ * 果たしていた。整流子音には積分が無いので、代わりにこれを置かないと高域が
+ * 上がりっぱなしになり、回転が上がるほど耳につく音になってしまう。
+ *
+ * 傾きは 1 極（−6dB/oct）にしてある。一致周波数より上では放射効率が平坦なので、
+ * 正味 `−20·log₁₀f` — インバータ音とまったく同じ傾きになる。2 極にすると
+ * 高速域で電動機の音がほとんど消えてしまい、これも実車と違う。
+ */
+export const MASS_CONTROLLED_FREQUENCY = 1600;
+
+/** ブラシの接触抵抗のゆらぎ（広帯域のかすれ）の深さ */
+const BRUSH_NOISE_DEPTH = 0.12;
 
 /**
  * 直流電動機そのものの音（抵抗制御・チョッパに共通）。
@@ -74,6 +103,8 @@ export class CommutatorTone {
   private readonly dcBlock: DcBlocker;
   private readonly noise = new Noise(0x27b1);
   private readonly noiseBand: Biquad;
+  /** 質量制御域のロールオフ（1 極・−6dB/oct） */
+  private readonly massRolloff: OnePoleLowPass;
   private readonly levelSmooth: Smoothed;
   private readonly currentSmooth: Smoothed;
   private readonly frequencySmooth: Smoothed;
@@ -88,7 +119,8 @@ export class CommutatorTone {
     }
     this.radiation = new OnePoleHighPass(sampleRate, COINCIDENCE_FREQUENCY);
     this.dcBlock = new DcBlocker(sampleRate, 25);
-    this.noiseBand = new Biquad().bandPass(sampleRate, 2600, 0.7);
+    this.noiseBand = new Biquad().bandPass(sampleRate, 1400, 0.5);
+    this.massRolloff = new OnePoleLowPass(sampleRate, MASS_CONTROLLED_FREQUENCY);
     this.levelSmooth = new Smoothed(sampleRate, 0.02);
     // 電流の鈍り。実機の電流も電機子回路のインダクタンスで鈍るが、ここでは
     // 制御周期（10ms）ごとの階段を均すためだけのごく短い平滑。
@@ -134,7 +166,10 @@ export class CommutatorTone {
       for (let r = 0; r < this.resonators.length; r++) {
         radiated += this.resonators[r]!.process(force) * this.weights[r]!;
       }
-      out[i] = out[i]! + this.radiation.process(radiated) * RADIATION_GAIN * level;
+      // 放射効率（一致周波数より下は f² で落ちる）→ 質量制御のロールオフ の順に通す。
+      // 前者が高域を持ち上げ、後者が落とす。正味の傾きがこの音の性格を決める。
+      const y = this.massRolloff.process(this.radiation.process(radiated));
+      out[i] = out[i]! + y * RADIATION_GAIN * level;
     }
   }
 
@@ -144,6 +179,7 @@ export class CommutatorTone {
     this.radiation.reset();
     this.noiseBand.reset();
     for (const f of this.resonators) f.reset();
+    this.massRolloff.reset();
     this.levelSmooth.set(0);
     this.currentSmooth.set(0);
     this.frequencySmooth.set(0);
