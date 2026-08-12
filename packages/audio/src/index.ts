@@ -8,4 +8,5 @@ export * from './dsp/auxiliary.ts';
 export * from './dsp/airSpring.ts';
 export * from './dsp/cab.ts';
 export * from './dsp/railJointVoice.ts';
+export * from './dsp/turnoutVoice.ts';
 export * from './dsp/synth.ts';

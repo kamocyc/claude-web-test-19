@@ -421,6 +421,101 @@ describe('レール継目の衝撃', () => {
   });
 });
 
+describe('分岐器の衝撃', () => {
+  /** 一撃を鳴らして波形を返す */
+  const shot = (crossing: boolean, strength = 1, seconds = 1): Float32Array => {
+    const synth = new TrainNoiseSynth(SAMPLE_RATE);
+    synth.setParams(silence());
+    synth.triggerTurnout({ delay: 0, strength, crossing });
+    const out = new Float32Array(Math.floor(SAMPLE_RATE * seconds));
+    synth.render(out);
+    return out;
+  };
+
+  it('予約したサンプル位置ちょうどから鳴り始める', () => {
+    const synth = new TrainNoiseSynth(SAMPLE_RATE);
+    synth.setParams(silence());
+    synth.triggerTurnout({ delay: 700, strength: 1, crossing: true });
+    const out = new Float32Array(4096);
+    synth.render(out);
+    let first = -1;
+    for (let i = 0; i < out.length; i++) {
+      if (Math.abs(out[i]!) > 1e-6) {
+        first = i;
+        break;
+      }
+    }
+    expect(first).toBe(700);
+  });
+
+  /**
+   * 分岐器のクロッシングは、継目の段差より深く落ちてばね下がまるごと上下する。
+   * 継目より低くて重い音になっていなければ、渡ったことが分からない。
+   */
+  it('レール継目より低く、長く残る', () => {
+    const turnout = shot(true);
+    const joint = (() => {
+      const synth = new TrainNoiseSynth(SAMPLE_RATE);
+      synth.setParams(silence());
+      synth.triggerJoint({ delay: 0, strength: 1 });
+      const out = new Float32Array(SAMPLE_RATE);
+      synth.render(out);
+      return out;
+    })();
+    const lowRatio = (x: Float32Array) =>
+      bandPower(x, SAMPLE_RATE, 30, 120, 24) / bandPower(x, SAMPLE_RATE, 600, 3000, 24);
+    expect(lowRatio(turnout)).toBeGreaterThan(lowRatio(joint));
+    // 200ms 後にまだ残っている量も分岐器のほうが多い
+    const late = (x: Float32Array) => rms(x.subarray(SAMPLE_RATE * 0.2, SAMPLE_RATE * 0.3));
+    expect(late(turnout)).toBeGreaterThan(late(joint));
+  });
+
+  it('トングレールの衝撃はクロッシングより軽い', () => {
+    expect(rms(shot(false))).toBeLessThan(rms(shot(true)));
+  });
+
+  it('衝撃は減衰し、鳴りっぱなしにならない', () => {
+    const out = shot(true);
+    const head = rms(out.subarray(0, 2400));
+    const tail = rms(out.subarray(SAMPLE_RATE - 2400));
+    expect(head).toBeGreaterThan(1e-3);
+    expect(tail).toBeLessThan(head / 100);
+  });
+
+  it('走行音に混ざっても衝撃として聞き取れる', () => {
+    const synth = new TrainNoiseSynth(SAMPLE_RATE);
+    synth.setParams(
+      merge({
+        rolling: { speed: 24.7, corrugation: 0, level: 1 },
+        wind: { speed: 24.7, level: 1 },
+      }),
+    );
+    synth.render(new Float32Array(SAMPLE_RATE));
+    const quiet = new Float32Array(2400);
+    synth.render(quiet);
+    synth.triggerTurnout({ delay: 0, strength: 1, crossing: true });
+    const struck = new Float32Array(2400);
+    synth.render(struck);
+    expect(rms(struck)).toBeGreaterThan(rms(quiet) * 1.8);
+  });
+
+  it('レール継目とは別の音源として測れる', () => {
+    const synth = new TrainNoiseSynth(SAMPLE_RATE);
+    synth.setParams(silence());
+    synth.triggerTurnout({ delay: 0, strength: 1, crossing: true });
+    synth.render(new Float32Array(4800));
+    const levels = new Float32Array(VOICE_COUNT);
+    synth.readLevels(levels);
+    expect(levels[VOICE.turnout]!).toBeGreaterThan(0);
+    expect(levels[VOICE.railJoint]!).toBe(0);
+  });
+
+  it('同じ入力なら同じ波形になる（決定論）', () => {
+    const once = (): string => Array.from(shot(true, 0.8, 0.1)).join(',');
+    expect(once()).toBe(once());
+  });
+});
+
 /**
  * 高速域でインバータ音がどれだけ聞こえるか。
  *

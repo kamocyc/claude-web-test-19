@@ -108,15 +108,30 @@ export class ChartPanel {
         zeroLine: true,
       }),
     );
-    // 乗客の振れは比力に遅れて追従する。平衡角との差がそのままジャークの効き具合。
+    // 吊り革は比力に遅れて追従する。平衡角との差がそのままジャークの効き具合。
     this.sway = add(
       new StripChart({
-        title: '乗客の振れ [deg]（実線 = 振り子 / 破線 = 瞬時の平衡角）',
+        title: '吊り革の振れ [deg]（実線 = 振り子 / 暗線 = 瞬時の平衡角）',
         series: [
           { key: 'swayLong', label: '前後', color: '#4ea3ff' },
           { key: 'eqLong', label: '前後 平衡', color: '#2c5e8f' },
           { key: 'swayLat', label: '左右', color: '#ffd23f' },
           { key: 'eqLat', label: '左右 平衡', color: '#8a7526' },
+        ],
+        zeroLine: true,
+      }),
+    );
+    // 立っている乗客は、目標の傾き（よりかかる角度）へ遅れながら追従する。
+    // 追従しきれないぶんが「よろけ」で、1.0 を超えると足が出る。
+    this.stance = add(
+      new StripChart({
+        title: '立っている乗客 [deg]（暗線 = 目標の傾き / よろけは 10 倍）',
+        series: [
+          { key: 'leanLong', label: '前後の傾き', color: '#4ea3ff' },
+          { key: 'targetLong', label: '前後 目標', color: '#2c5e8f' },
+          { key: 'leanLat', label: '左右の傾き', color: '#ffd23f' },
+          { key: 'targetLat', label: '左右 目標', color: '#8a7526' },
+          { key: 'stagger', label: 'よろけ ×10', color: '#ff6b6b' },
         ],
         zeroLine: true,
       }),
@@ -143,6 +158,7 @@ export class ChartPanel {
   private readonly inverter: StripChart;
   private readonly ride: StripChart;
   private readonly sway: StripChart;
+  private readonly stance: StripChart;
   private readonly coupler: StripChart;
 
   sample(sim: Simulation): void {
@@ -199,11 +215,20 @@ export class ChartPanel {
       cantDef: snap.cantDeficiency * 100,
     });
     const deg = (rad: number) => (rad * 180) / Math.PI;
+    const strap = snap.body.passenger.strap;
     this.sway.push(t, {
-      swayLong: deg(snap.body.sway.longitudinal),
-      eqLong: deg(snap.body.sway.equilibriumLongitudinal),
-      swayLat: deg(snap.body.sway.lateral),
-      eqLat: deg(snap.body.sway.equilibriumLateral),
+      swayLong: deg(strap.longitudinal),
+      eqLong: deg(strap.equilibriumLongitudinal),
+      swayLat: deg(strap.lateral),
+      eqLat: deg(strap.equilibriumLateral),
+    });
+    const stance = snap.body.passenger.stance;
+    this.stance.push(t, {
+      leanLong: deg(stance.longitudinal.lean),
+      targetLong: deg(stance.longitudinal.target),
+      leanLat: deg(stance.lateral.lean),
+      targetLat: deg(stance.lateral.target),
+      stagger: stance.stagger * 10,
     });
     this.coupler.push(t, {
       coupler: snap.maxCouplerForce / 1000,

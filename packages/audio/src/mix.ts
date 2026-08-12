@@ -21,6 +21,8 @@ export interface NoiseMix {
   readonly wind: number;
   /** レール継目 */
   readonly railJoint: number;
+  /** 分岐器（トングレール・クロッシング） */
+  readonly turnout: number;
   /** ブレーキ（摩擦・鳴き・空気） */
   readonly brake: number;
   /** 補機（空気圧縮機） */
@@ -57,6 +59,7 @@ export const DEFAULT_NOISE_MIX: NoiseMix = {
   rolling: 1,
   wind: 1,
   railJoint: 1,
+  turnout: 1,
   brake: 1,
   auxiliary: 1,
   airSpring: 1,
@@ -84,17 +87,18 @@ export const VOICE = {
   rolling: 2,
   wind: 3,
   railJoint: 4,
-  brake: 5,
-  auxiliary: 6,
-  airSpring: 7,
-  alarm: 8,
-  horn: 9,
+  turnout: 5,
+  brake: 6,
+  auxiliary: 7,
+  airSpring: 8,
+  alarm: 9,
+  horn: 10,
 } as const;
 
 export type VoiceIndex = (typeof VOICE)[keyof typeof VOICE];
 
 /** 音源の数（メータの配列長） */
-export const VOICE_COUNT = 10;
+export const VOICE_COUNT = 11;
 
 /** 音量のつまみ */
 export const NOISE_MIX_LEVELS: readonly NoiseMixControl[] = [
@@ -104,6 +108,7 @@ export const NOISE_MIX_LEVELS: readonly NoiseMixControl[] = [
   { key: 'rolling', label: '転動音', voice: VOICE.rolling },
   { key: 'wind', label: '風切り', voice: VOICE.wind },
   { key: 'railJoint', label: 'レール継目', voice: VOICE.railJoint },
+  { key: 'turnout', label: '分岐器', voice: VOICE.turnout },
   { key: 'brake', label: 'ブレーキ', voice: VOICE.brake },
   { key: 'auxiliary', label: '補機（空気圧縮機）', voice: VOICE.auxiliary },
   { key: 'airSpring', label: '空気ばねのきしみ', voice: VOICE.airSpring },

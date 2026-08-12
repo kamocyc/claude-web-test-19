@@ -1,10 +1,6 @@
 import { GRAVITY, type Meters, type Radians } from '../units.ts';
 import type { PassengerSpec, SuspensionSpec } from '../vehicle/spec.ts';
-import {
-  PassengerPendulum,
-  createPassengerSwayState,
-  type PassengerSwayState,
-} from './passenger.ts';
+import { PassengerModel, createPassengerState, type PassengerState } from './passenger.ts';
 
 /**
  * 2 次系（ばね・質量・ダンパ）の 1 自由度。
@@ -85,8 +81,11 @@ export interface BodyMotionState {
   feltLongitudinal: number;
   /** 乗客が感じる上下方向の比力 [m/s^2]（正 = 上向き。1G = 通常） */
   feltVertical: number;
-  /** 乗客（吊り革）の振れ。比力に遅れて追従するので加加速度が見える。 */
-  sway: PassengerSwayState;
+  /**
+   * 車内の乗客。吊り革は比力に遅れて追従する振り子、立っている乗客は
+   * むだ時間を持つ姿勢制御つきの倒立振子として解く。
+   */
+  passenger: PassengerState;
 }
 
 export function createBodyMotionState(): BodyMotionState {
@@ -107,7 +106,7 @@ export function createBodyMotionState(): BodyMotionState {
     feltLateral: 0,
     feltLongitudinal: 0,
     feltVertical: GRAVITY,
-    sway: createPassengerSwayState(),
+    passenger: createPassengerState(),
   };
 }
 
@@ -168,13 +167,13 @@ export class CarBodyMotion {
   private readonly yawOsc = new Oscillator();
   private readonly swayOsc = new Oscillator();
   private readonly bounceOsc = new Oscillator();
-  private readonly pendulum: PassengerPendulum;
+  private readonly passenger: PassengerModel;
 
   constructor(
     private readonly spec: SuspensionSpec,
     passenger: PassengerSpec,
   ) {
-    this.pendulum = new PassengerPendulum(passenger);
+    this.passenger = new PassengerModel(passenger);
   }
 
   step(dt: number, input: BodyMotionInput): BodyMotionState {
@@ -245,9 +244,9 @@ export class CarBodyMotion {
     // 車体が上向きに加速している瞬間は、乗客は座席へ押し付けられる。
     const feltVertical = (GRAVITY * cos - ah * sin) * cosPitch + this.bounceOsc.acceleration;
 
-    // --- 乗客（吊り革）の振れ ---
-    // 比力をそのまま角度にせず、減衰振り子として遅れて追従させる。
-    const sway = this.pendulum.step(
+    // --- 車内の乗客 ---
+    // 吊り革は比力に遅れて追従する振り子、立っている乗客は姿勢を保とうとする人間。
+    const passenger = this.passenger.step(
       dt,
       feltLateral,
       feltLongitudinal,
@@ -273,7 +272,7 @@ export class CarBodyMotion {
     st.feltLateral = feltLateral;
     st.feltLongitudinal = feltLongitudinal;
     st.feltVertical = feltVertical;
-    st.sway = sway;
+    st.passenger = passenger;
     return st;
   }
 
@@ -283,7 +282,7 @@ export class CarBodyMotion {
     this.yawOsc.reset();
     this.swayOsc.reset();
     this.bounceOsc.reset();
-    this.pendulum.reset();
+    this.passenger.reset();
   }
 }
 

@@ -4,7 +4,12 @@ import {
   SpanTable,
   StepTable,
   TrackIrregularity,
+  TurnoutTrack,
   buildAlignment,
+  crossingAngle,
+  leadLengthOf,
+  standardLeadRadius,
+  turnoutLengthOf,
   kmhToMps,
   mmToM,
   parseClock,
@@ -19,6 +24,7 @@ import {
   type SpeedLimitEntry,
   type Station,
   type TunnelSection,
+  type Turnout,
   type VerticalSegment,
 } from '@railsim/core';
 import { routeSchema, type ParsedRoute, type RouteDefinition } from '../schema/route.ts';
@@ -50,6 +56,12 @@ function curveSpeedLimit(
   const r = Math.abs(radius);
   if (!Number.isFinite(r) || r <= 0) return Infinity;
   return Math.sqrt(((cant + maxCantDeficiency) * GRAVITY * r) / gauge);
+}
+
+/** 制限速度を 5km/h 単位などに切り下げる [m/s] */
+function roundDownSpeed(speed: number, stepKmh: number): number {
+  const kmh = speed * 3.6;
+  return kmhToMps(stepKmh > 0 ? Math.floor(kmh / stepKmh) * stepKmh : kmh);
 }
 
 /** 平面線形の区間境界（距離程）を求める */
@@ -138,9 +150,58 @@ export function compileRoute(definition: RouteDefinition): CompiledRoute {
   });
   const routeLength = alignment.length;
 
+  // --- 分岐器 ---
+  // 分岐器の寸法は番数ひとつで決まる。クロッシング角 α（tan α = 1/N）とリード半径から
+  // リード長 R α が出て、全長もそれに比例する。分岐側の制限速度は、緩和曲線もカントも
+  // 無い曲線として許容カント不足から求める。
+  const turnoutCd = mmToM(def.autoTurnoutLimits.maxCantDeficiency);
+  const turnouts: Turnout[] = def.turnouts.map((t) => {
+    const angle = crossingAngle(t.number);
+    const radius = t.radius ?? standardLeadRadius(t.number);
+    const leadLength = leadLengthOf(radius, angle);
+    const length = turnoutLengthOf(leadLength);
+    const divergingSpeed =
+      t.divergingSpeed === undefined
+        ? roundDownSpeed(
+            curveSpeedLimit(radius, 0, gauge, turnoutCd),
+            def.autoTurnoutLimits.roundDown,
+          )
+        : kmhToMps(t.divergingSpeed);
+    // 対向はトングレールから、背向はクロッシングから進入する
+    const facing = t.orientation === 'facing';
+    return {
+      id: t.id,
+      position: t.at,
+      length,
+      number: t.number,
+      crossingAngle: angle,
+      radius,
+      leadLength,
+      side: t.side,
+      orientation: t.orientation,
+      route: t.route,
+      swingNose: t.swingNose,
+      divergingSpeed,
+      pointsPosition: facing ? t.at : t.at + leadLength,
+      crossingPosition: facing ? t.at + leadLength : t.at,
+    } satisfies Turnout;
+  });
+
   // --- 速度制限 ---
   const spans: LimitSpan[] = [];
   const boundaries = segmentBoundaries(def.horizontal);
+  if (def.autoTurnoutLimits.enabled) {
+    for (const t of turnouts) {
+      if (t.route !== 'diverging' || t.divergingSpeed >= lineSpeed) continue;
+      spans.push({
+        id: `turnout-${t.id}`,
+        start: t.position,
+        end: Math.min(routeLength, t.position + t.length),
+        speed: t.divergingSpeed,
+        reason: 'turnout',
+      });
+    }
+  }
   if (def.autoCurveLimits.enabled) {
     const cdMax = mmToM(def.autoCurveLimits.maxCantDeficiency);
     for (let i = 0; i < def.horizontal.length; i++) {
@@ -149,10 +210,7 @@ export function compileRoute(definition: RouteDefinition): CompiledRoute {
       const cant = mmToM(seg.cant ?? 0);
       const raw = curveSpeedLimit(seg.radius, cant, gauge, cdMax);
       if (!Number.isFinite(raw)) continue;
-      // 5km/h 単位などに切り下げる
-      const stepKmh = def.autoCurveLimits.roundDown;
-      const kmh = stepKmh > 0 ? Math.floor((raw * 3.6) / stepKmh) * stepKmh : raw * 3.6;
-      const speed = kmhToMps(kmh);
+      const speed = roundDownSpeed(raw, def.autoCurveLimits.roundDown);
       if (speed >= lineSpeed) continue;
       const start = boundaries[i]!;
       // 出口側の緩和曲線（次区間の先頭）も曲線の一部なので制限に含める
@@ -329,6 +387,7 @@ export function compileRoute(definition: RouteDefinition): CompiledRoute {
     beacons: new PointTable(beacons),
     safetySections,
     irregularity,
+    turnouts: new TurnoutTrack(turnouts),
     railJointSpacing: new StepTable(
       def.rail.sections.map((s) => ({ s: s.start, value: s.spacing })),
       def.rail.spacing,

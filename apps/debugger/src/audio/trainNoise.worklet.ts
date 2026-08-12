@@ -3,6 +3,7 @@ import {
   VOICE_COUNT,
   type JointImpact,
   type TrainNoiseParams,
+  type TurnoutImpact,
 } from '@railsim/audio';
 
 /**
@@ -10,7 +11,7 @@ import {
  *
  * ここには DSP を書かない。合成の中身は `TrainNoiseSynth` という**素のクラス**に
  * あり、このファイルはそれを `AudioWorkletProcessor` に載せてパラメータと
- * 継目のイベントを受け取るだけである。こう分けておくことで、同じ合成コードを
+ * 継目・分岐器のイベントを受け取るだけである。こう分けておくことで、同じ合成コードを
  * node のテストからも呼んでスペクトルを検定できる（`render/frame.ts` を
  * `TrackScene` から切り離してあるのと同じ構造）。
  */
@@ -19,6 +20,7 @@ import {
 interface TrainNoiseMessage {
   readonly params?: TrainNoiseParams;
   readonly joints?: readonly JointImpact[];
+  readonly turnouts?: readonly TurnoutImpact[];
   readonly reset?: boolean;
 }
 
@@ -60,6 +62,9 @@ class TrainNoiseProcessor extends AudioWorkletProcessor {
     if (message.params) this.synth.setParams(message.params);
     if (message.joints) {
       for (const impact of message.joints) this.synth.triggerJoint(impact);
+    }
+    if (message.turnouts) {
+      for (const impact of message.turnouts) this.synth.triggerTurnout(impact);
     }
   }
 

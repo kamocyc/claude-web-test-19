@@ -12,6 +12,18 @@ export interface RideMetrics {
   maxLateralAcceleration: MetersPerSecondSquared;
   /** 最大連結器力 [N] */
   maxCouplerForce: number;
+  /**
+   * 立っている乗客のよろけ具合の最大値（支持余裕に対する比）。
+   * 1 を超えると足を出すしかない状態になったことを表す。
+   */
+  maxStagger: number;
+  /**
+   * 立っている乗客が足を出した回数。
+   *
+   * 加速度の**大きさ**ではなく**変え方**で決まる量で、同じ加減速でもノッチを
+   * 刻めば 0 のままにできる。乗り心地の指標としては最大加速度より辛い。
+   */
+  passengerSteps: number;
 }
 
 /** 電力収支 */
@@ -62,6 +74,8 @@ export class MetricsRecorder {
     maxJerk: 0,
     maxLateralAcceleration: 0,
     maxCouplerForce: 0,
+    maxStagger: 0,
+    passengerSteps: 0,
   };
   readonly energy: EnergyMetrics = {
     consumed: 0,
@@ -89,6 +103,10 @@ export class MetricsRecorder {
     electricPower: Watts;
     resistancePower: Watts;
     brakePower: Watts;
+    /** 立っている乗客のよろけ具合（支持余裕に対する比） */
+    stagger: number;
+    /** 立っている乗客が足を出した累計回数 */
+    passengerSteps: number;
   }): void {
     const { dt } = input;
     this.ride.maxAcceleration = Math.max(this.ride.maxAcceleration, input.acceleration);
@@ -105,6 +123,9 @@ export class MetricsRecorder {
       Math.abs(input.lateralAcceleration),
     );
     this.ride.maxCouplerForce = Math.max(this.ride.maxCouplerForce, Math.abs(input.couplerForce));
+    this.ride.maxStagger = Math.max(this.ride.maxStagger, input.stagger);
+    // 踏み出しの回数は乗客の模型が積算しているので、そのまま写す
+    this.ride.passengerSteps = input.passengerSteps;
 
     if (input.electricPower >= 0) {
       this.energy.consumed += input.electricPower * dt;

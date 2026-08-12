@@ -7,6 +7,7 @@ import type {
   NewtonMeters,
   Newtons,
   Pascals,
+  Radians,
   Seconds,
 } from '../units.ts';
 
@@ -239,14 +240,15 @@ export const DEFAULT_SUSPENSION: SuspensionSpec = {
 };
 
 /**
- * 乗客の振られ方（車内に吊るした減衰振り子）の仕様。
+ * 車内の乗客の仕様。
  *
- * 吊り革は天井の握り棒からリングまで 0.5〜0.7m 程度、固有周期は
- * `T = 2π√(L/g)` で 1.4〜1.7 秒。立っている乗客も重心高さがおよそ 1m なので
- * 同じ帯域になる。
+ * 吊り革は**物**なので減衰振り子（天井の握り棒からリングまで 0.5〜0.7m、固有周期は
+ * `T = 2π√(L/g)` で 1.4〜1.7 秒）。立っている乗客は**人**なので、足首を支点とした
+ * 倒立振子に、むだ時間を持つ姿勢制御を載せたものとして扱う。
+ * 数値は姿勢制御の生理学で使われる代表値による。
  *
- * 減衰は吊り革の支点の摩擦と乗客自身の姿勢制御だけなので弱い。減衰比 ζ の
- * ステップ応答の行き過ぎ量は `exp(-πζ/√(1-ζ²))` で、
+ * 吊り革の減衰は支点の摩擦だけなので弱い。減衰比 ζ のステップ応答の
+ * 行き過ぎ量は `exp(-πζ/√(1-ζ²))` で、
  *
  *   ζ = 0.45 → 20%   ζ = 0.2 → 53%   ζ = 0.1 → 73%
  *
@@ -254,15 +256,76 @@ export const DEFAULT_SUSPENSION: SuspensionSpec = {
  * 数回揺れて収まる。ζ = 0.2 がその挙動になる。
  */
 export interface PassengerSpec {
-  /** 振り子の長さ [m] */
-  readonly pendulumLength: Meters;
-  /** 減衰比（0 = 減衰なし、1 = 臨界減衰） */
-  readonly dampingRatio: number;
+  /** 吊り革の長さ [m] */
+  readonly strapLength: Meters;
+  /** 吊り革の減衰比（0 = 減衰なし、1 = 臨界減衰） */
+  readonly strapDamping: number;
+
+  /** 立っている乗客の重心高さ [m]（身長のおよそ 55%） */
+  readonly comHeight: Meters;
+  /** 支持基底面: くるぶしから爪先まで [m] */
+  readonly footForward: Meters;
+  /** 支持基底面: くるぶしから踵まで [m]。爪先側より狭いので後ろへは倒れやすい。 */
+  readonly footBackward: Meters;
+  /** 支持基底面: 左右（両足の間隔の半分 + 足幅）[m] */
+  readonly footLateral: Meters;
+  /**
+   * 吊り革・手すりにつかまることで増える支持余裕 [m]（足圧中心の可動域に換算）。
+   * 手は重心より高い位置で力を出せるので、実際には足だけの場合より効きが大きい。
+   */
+  readonly handSupport: Meters;
+  /**
+   * 姿勢制御のむだ時間 [s]。感覚の伝導・中枢の処理・電気機械遅延の合計で 0.1〜0.2 秒。
+   * **急な加速度変化でよろけ、緩やかな変化には抵抗できる**のはこの遅れによる。
+   */
+  readonly reactionDelay: Seconds;
+  /** 筋張力の立ち上がり時定数 [s] */
+  readonly muscleTimeConstant: Seconds;
+  /**
+   * 姿勢の比例ゲイン（重心高さに対する比）。傾き 1 rad あたり足圧中心を
+   * `stiffnessRatio × 重心高さ` [m] 動かす。**1 を超えていないと倒立振子の
+   * 不安定性に勝てず、そもそも立っていられない。** */
+  readonly stiffnessRatio: number;
+  /**
+   * 姿勢の微分ゲイン [m/(rad/s)]。
+   *
+   * むだ時間があると比例項が `k_p τ` ぶんの**負の減衰**として働くため、
+   * 遅れの無い系で必要な値よりかなり大きくないと揺れが収まらない。
+   * 人が「速く動いているほど強く踏ん張る」のはこれを埋め合わせている。
+   */
+  readonly dampingGain: number;
+  /**
+   * 倒れたと見なす傾き [rad]。これを超えたら支えきれずに倒れた（あるいは
+   * まわりの人にぶつかって止まった）ものとして、そこで角度を止める。
+   */
+  readonly maxLean: Radians;
+  /** 片足支持（踏み出し中）の支持基底面の縮小率 */
+  readonly singleSupportFactor: number;
+  /** 一歩の最大長さ [m] */
+  readonly stepLength: Meters;
+  /** 踏み出しから着地までの時間 [s] */
+  readonly stepDuration: Seconds;
+  /** 着地で角速度が減る割合（0 = 完全に止まる、1 = そのまま） */
+  readonly stepDissipation: number;
 }
 
 export const DEFAULT_PASSENGER: PassengerSpec = {
-  pendulumLength: 0.6,
-  dampingRatio: 0.2,
+  strapLength: 0.6,
+  strapDamping: 0.2,
+  comHeight: 0.95,
+  footForward: 0.12,
+  footBackward: 0.07,
+  footLateral: 0.085,
+  handSupport: 0.05,
+  reactionDelay: 0.14,
+  muscleTimeConstant: 0.06,
+  stiffnessRatio: 1.35,
+  dampingGain: 0.45,
+  maxLean: 0.5,
+  singleSupportFactor: 0.45,
+  stepLength: 0.22,
+  stepDuration: 0.35,
+  stepDissipation: 0.35,
 };
 
 /** 連結器（緩衝器を含む）の仕様 */

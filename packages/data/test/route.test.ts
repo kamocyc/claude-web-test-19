@@ -5,6 +5,7 @@ import {
   compileRoute,
   compileVehicle,
   createDefaultLibrary,
+  testLineBranchRoute,
   testLineRoute,
 } from '@railsim/data';
 
@@ -139,6 +140,91 @@ describe('車両のコンパイル', () => {
     expect(consist.vehicles[0]!.traction).toBeNull();
     expect(consist.vehicles[1]!.traction).not.toBeNull();
     expect(consist.vehicles[1]!.drivenAxleCount).toBe(4);
+  });
+});
+
+describe('分岐器のコンパイル', () => {
+  const through = compileRoute(testLineRoute);
+  const branch = compileRoute(testLineBranchRoute);
+  const toThrough = through.turnouts.turnouts[0]!;
+  const toBranch = branch.turnouts.turnouts[0]!;
+
+  it('番数から寸法が決まる', () => {
+    expect(through.turnouts.length).toBe(1);
+    expect(toThrough.number).toBe(12);
+    expect(toThrough.radius).toBeCloseTo(350, 6);
+    // リード長 = R α、全長はその 1.4 倍
+    expect(toThrough.leadLength).toBeCloseTo(350 * Math.atan(1 / 12), 9);
+    expect(toThrough.crossingPosition - toThrough.pointsPosition).toBeCloseTo(
+      toThrough.leadLength,
+      9,
+    );
+    expect(toThrough.length).toBeCloseTo(toThrough.leadLength * 1.4, 9);
+  });
+
+  /** 同じ分岐器が、本線データでは直進側、分岐線データでは分岐側に開通している */
+  it('本線と分岐線で開通方向だけが違う', () => {
+    expect(toThrough.route).toBe('through');
+    expect(toBranch.route).toBe('diverging');
+    expect(toBranch.position).toBe(toThrough.position);
+    expect(toBranch.length).toBeCloseTo(toThrough.length, 9);
+  });
+
+  it('分岐側にだけ制限速度が付く（#12 → 45km/h）', () => {
+    // 直進側は本線と同じ速度で通過できる
+    expect(mpsToKmh(through.speedLimits.at(toThrough.position + 10))).toBeCloseTo(110, 6);
+    expect(mpsToKmh(toBranch.divergingSpeed)).toBeCloseTo(45, 6);
+    expect(mpsToKmh(branch.speedLimits.at(toBranch.position + 10))).toBeCloseTo(45, 6);
+    // 分岐器を抜ければ制限は解ける
+    expect(mpsToKmh(branch.speedLimits.at(toBranch.position + toBranch.length + 10))).toBeCloseTo(
+      110,
+      6,
+    );
+    const entry = branch.speedLimitEntries.find((e) => e.reason === 'turnout');
+    expect(entry?.start).toBe(toBranch.position);
+  });
+
+  /** 分岐制限は速度制限の 1 つなので、ATS-P の地上子も自動で置かれる */
+  it('分岐制限に ATS-P の地上子が置かれる', () => {
+    const beacons = branch.beacons.all.filter(
+      (b) => b.value.kind === 'ats-p-limit' && b.value.limitId.startsWith('turnout-'),
+    );
+    expect(beacons.length).toBeGreaterThan(0);
+    expect(beacons.map((b) => Math.round(toBranch.position - b.s)).sort((a, b) => a - b)).toEqual([
+      50, 150, 300, 500,
+    ]);
+  });
+
+  /**
+   * リード曲線には**緩和曲線もカントも無い**。曲率が一段で立ち上がるのが、
+   * 分岐側を渡るときに横 G が階段状に来る理由そのものである。
+   */
+  it('分岐線のリード曲線は緩和曲線もカントも持たない', () => {
+    const s = toBranch.position + 1;
+    expect(branch.alignment.radiusAt(s)).toBeCloseTo(350, 3);
+    expect(branch.alignment.curvatureAt(s)).toBeLessThan(0); // 右へ曲がる
+    expect(branch.alignment.cantAt(s)).toBe(0);
+    // 分岐器の直前は直線のまま
+    expect(branch.alignment.radiusAt(toBranch.position - 1)).toBe(Infinity);
+    // リード曲線を抜けると、ちょうどクロッシング角ぶん向きが変わっている
+    const turned =
+      branch.alignment.headingAt(toBranch.position) -
+      branch.alignment.headingAt(toBranch.crossingPosition);
+    expect(turned).toBeCloseTo(toBranch.crossingAngle, 6);
+  });
+
+  it('分岐線は本線と別の終点へ向かう', () => {
+    expect(branch.stations.at(-1)!.name).toBe('分岐終端');
+    expect(through.stations.at(-1)!.name).toBe('終端');
+    // 分岐器より手前は同じ線形
+    expect(branch.alignment.positionAt(3000).x).toBeCloseTo(
+      through.alignment.positionAt(3000).x,
+      6,
+    );
+    // 分岐器より先は横へ離れていく
+    const bp = branch.alignment.positionAt(7000);
+    const tp = through.alignment.positionAt(7000);
+    expect(Math.hypot(bp.x - tp.x, bp.z - tp.z)).toBeGreaterThan(20);
   });
 });
 

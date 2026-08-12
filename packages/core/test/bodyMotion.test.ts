@@ -234,7 +234,7 @@ describe('車体の動揺', () => {
     // 床が起きるぶんで、これは実在する効果。
     expect(Math.abs(body.state.feltLongitudinal)).toBeLessThan(a / 10);
     // 吊り革もほぼ鉛直のまま（下り勾配で後ろへ倒れたりしない）
-    expect(Math.abs(body.state.sway.longitudinal)).toBeLessThan(0.005);
+    expect(Math.abs(body.state.passenger.strap.longitudinal)).toBeLessThan(0.005);
   });
 
   it('水準狂いは軌道の傾きとしてそのまま車体を傾ける', () => {
@@ -264,29 +264,29 @@ describe('車体の動揺', () => {
   });
 });
 
-describe('乗客の振られ方（減衰振り子）', () => {
+describe('吊り革の振られ方（減衰振り子）', () => {
   const run = (steps: number, input: Partial<BodyMotionInput>, spec = DEFAULT_PASSENGER) => {
     const body = new CarBodyMotion({ ...DEFAULT_SUSPENSION, rollFlexibility: 0 }, spec);
     const history: number[] = [];
     for (let i = 0; i < steps; i++) {
       body.step(DT, baseInput(input));
-      history.push(body.state.sway.lateral);
+      history.push(body.state.passenger.strap.lateral);
     }
     return { body, history };
   };
 
   it('静止していれば振れない', () => {
     const { body } = run(5000, {});
-    expect(body.state.sway.lateral).toBeCloseTo(0, 9);
-    expect(body.state.sway.longitudinal).toBeCloseTo(0, 9);
+    expect(body.state.passenger.strap.lateral).toBeCloseTo(0, 9);
+    expect(body.state.passenger.strap.longitudinal).toBeCloseTo(0, 9);
   });
 
   it('一定加速度では tan θ = a / g へ収束する', () => {
     const a = 1.0;
     const { body } = run(40_000, { unbalancedLateral: a });
-    expect(Math.tan(body.state.sway.lateral)).toBeCloseTo(a / GRAVITY, 4);
+    expect(Math.tan(body.state.passenger.strap.lateral)).toBeCloseTo(a / GRAVITY, 4);
     // 平衡角は瞬時値そのもの
-    expect(body.state.sway.equilibriumLateral).toBeCloseTo(
+    expect(body.state.passenger.strap.equilibriumLateral).toBeCloseTo(
       Math.atan2(body.state.feltLateral, body.state.feltVertical),
       9,
     );
@@ -300,23 +300,25 @@ describe('乗客の振られ方（減衰振り子）', () => {
     expect(history[299]!).toBeLessThan(target);
     expect(history[299]!).toBeGreaterThan(0);
     // 瞬時値との差が「まだ振れ切っていない量」
-    expect(body.state.sway.equilibriumLateral - body.state.sway.lateral).toBeGreaterThan(0.005);
+    expect(
+      body.state.passenger.strap.equilibriumLateral - body.state.passenger.strap.lateral,
+    ).toBeGreaterThan(0.005);
   });
 
   it('減衰が弱いと行き過ぎてから収束する', () => {
-    const light = { ...DEFAULT_PASSENGER, dampingRatio: 0.05 };
+    const light = { ...DEFAULT_PASSENGER, strapDamping: 0.05 };
     const target = Math.atan2(1.0, GRAVITY);
     const { history } = run(4000, { unbalancedLateral: 1.0 }, light);
     expect(Math.max(...history)).toBeGreaterThan(target * 1.5);
     // 減衰が強ければ行き過ぎない
-    const heavy = { ...DEFAULT_PASSENGER, dampingRatio: 1.0 };
+    const heavy = { ...DEFAULT_PASSENGER, strapDamping: 1.0 };
     const h2 = run(4000, { unbalancedLateral: 1.0 }, heavy).history;
     expect(Math.max(...h2)).toBeLessThan(target * 1.02);
   });
 
   it('固有周期が 2π√(L/g) と一致する', () => {
     const L = 0.6;
-    const undamped = { pendulumLength: L, dampingRatio: 0.0005 };
+    const undamped = { ...DEFAULT_PASSENGER, strapLength: L, strapDamping: 0.0005 };
     const { history } = run(4000, { unbalancedLateral: 1.0 }, undamped);
     let peak = 0;
     for (let i = 1; i < history.length; i++) {
@@ -328,17 +330,11 @@ describe('乗客の振られ方（減衰振り子）', () => {
   });
 
   it('振り子が短いほど速く追従する', () => {
-    const shortP = run(
-      300,
-      { unbalancedLateral: 1.0 },
-      { ...DEFAULT_PASSENGER, pendulumLength: 0.2 },
+    const shortP = run(300, { unbalancedLateral: 1.0 }, { ...DEFAULT_PASSENGER, strapLength: 0.2 });
+    const longP = run(300, { unbalancedLateral: 1.0 }, { ...DEFAULT_PASSENGER, strapLength: 1.2 });
+    expect(shortP.body.state.passenger.strap.lateral).toBeGreaterThan(
+      longP.body.state.passenger.strap.lateral,
     );
-    const longP = run(
-      300,
-      { unbalancedLateral: 1.0 },
-      { ...DEFAULT_PASSENGER, pendulumLength: 1.2 },
-    );
-    expect(shortP.body.state.sway.lateral).toBeGreaterThan(longP.body.state.sway.lateral);
   });
 
   it('制動が急に切れると後ろへ大きく揺り戻す', () => {
@@ -348,14 +344,14 @@ describe('乗客の振られ方（減衰振り子）', () => {
     );
     // 制動が定常になるまで前へ振られる
     for (let i = 0; i < 20_000; i++) body.step(DT, baseInput({ longitudinalAcceleration: -1.2 }));
-    const leaned = body.state.sway.longitudinal;
+    const leaned = body.state.passenger.strap.longitudinal;
     expect(leaned).toBeGreaterThan(0);
 
     // 停車した瞬間に減速度が消える
     let back = 0;
     for (let i = 0; i < 4000; i++) {
       body.step(DT, baseInput({}));
-      back = Math.min(back, body.state.sway.longitudinal);
+      back = Math.min(back, body.state.passenger.strap.longitudinal);
     }
     // 行き過ぎ量 exp(-πζ/√(1-ζ²)) は ζ = 0.2 で約 53%。
     // 減衰が強すぎると揺り戻しが見えなくなる（ζ = 0.45 なら 20%）。
@@ -366,15 +362,17 @@ describe('乗客の振られ方（減衰振り子）', () => {
   it('制動では前へ、力行では後ろへ振れる', () => {
     const braking = run(20_000, { longitudinalAcceleration: -1.0 });
     const powering = run(20_000, { longitudinalAcceleration: 1.0 });
-    expect(braking.body.state.sway.longitudinal).toBeGreaterThan(0);
-    expect(powering.body.state.sway.longitudinal).toBeLessThan(0);
+    expect(braking.body.state.passenger.strap.longitudinal).toBeGreaterThan(0);
+    expect(powering.body.state.passenger.strap.longitudinal).toBeLessThan(0);
   });
 
   it('同じ入力なら同じ振れになる（決定論）', () => {
     const a = run(2000, { unbalancedLateral: 0.7, longitudinalAcceleration: -0.5 });
     const b = run(2000, { unbalancedLateral: 0.7, longitudinalAcceleration: -0.5 });
-    expect(a.body.state.sway.lateral).toBe(b.body.state.sway.lateral);
-    expect(a.body.state.sway.longitudinal).toBe(b.body.state.sway.longitudinal);
+    expect(a.body.state.passenger.strap.lateral).toBe(b.body.state.passenger.strap.lateral);
+    expect(a.body.state.passenger.strap.longitudinal).toBe(
+      b.body.state.passenger.strap.longitudinal,
+    );
   });
 });
 
