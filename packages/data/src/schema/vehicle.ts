@@ -347,6 +347,25 @@ export const carSchema = z.object({
   passenger: passengerSchema.default({}),
 });
 
+/**
+ * 客用扉。走りに効くのは閉まり切るまでの時間（戸閉連動）だけで、
+ * あとは音と表示のための量である。
+ */
+export const doorSchema = z.object({
+  /** 開指令から全開までの時間 [s] */
+  openTime: z.number().positive().default(2.2),
+  /** 扉が動き出してから全閉・施錠までの時間 [s] */
+  closeTime: z.number().positive().default(2.4),
+  /** 閉扉予告の時間 [s]。チャイムが鳴ってから扉が動き出すまでの間。 */
+  closeWarningTime: z.number().nonnegative().default(0.6),
+  /** 開くときにドアチャイムを鳴らすか */
+  chimeOnOpen: z.boolean().default(true),
+  /** 閉めるときにドアチャイムを鳴らすか */
+  chimeOnClose: z.boolean().default(true),
+  /** チャイムが鳴っている時間 [s] */
+  chimeDuration: z.number().nonnegative().default(1.6),
+});
+
 export const couplerSchema = z.object({
   /** 遊間の全幅 [m] */
   slack: z.number().nonnegative().default(0.01),
@@ -422,6 +441,7 @@ export const vehicleSchema = z.object({
   adhesion: adhesionSchema.default({}),
   traction: tractionControlSchema.default({}),
   brake: brakeControlSchema.default({}),
+  door: doorSchema.default({}),
   /** 曲線抵抗係数 f [kgf/t·m]（比抵抗 = f / R）。狭軌 600、標準軌 800 が目安。 */
   curveResistanceCoefficient: z.number().nonnegative().default(600),
   /** トンネル内で走行抵抗の速度 2 乗項に掛かる倍率 */

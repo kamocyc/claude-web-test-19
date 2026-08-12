@@ -576,6 +576,40 @@ export interface BrakeControlSpec {
   readonly hasHoldingBrake: boolean;
 }
 
+/**
+ * 客用扉の仕様（編成としての取り扱い）。
+ *
+ * 扉そのものの寸法や枚数は持たない。走りに効くのは**閉まり切るまでの時間**
+ * （戸閉連動が成立するまで力行できない）だけで、あとは音と表示のための量である。
+ */
+export interface DoorSpec {
+  /** 開指令から全開までの時間 [s] */
+  readonly openTime: Seconds;
+  /** 扉が動き出してから全閉・施錠までの時間 [s] */
+  readonly closeTime: Seconds;
+  /**
+   * 閉扉予告の時間 [s]。閉指令からこの時間が経ってから扉が動き出す。
+   * チャイムが鳴ってから閉まり始めるまでの間そのもの。
+   */
+  readonly closeWarningTime: Seconds;
+  /** 開くときにドアチャイムを鳴らすか */
+  readonly chimeOnOpen: boolean;
+  /** 閉めるときにドアチャイムを鳴らすか */
+  readonly chimeOnClose: boolean;
+  /** チャイムが鳴っている時間 [s] */
+  readonly chimeDuration: Seconds;
+}
+
+/** 空気式の両開き扉の代表的な動作時間 */
+export const DEFAULT_DOOR: DoorSpec = {
+  openTime: 2.2,
+  closeTime: 2.4,
+  closeWarningTime: 0.6,
+  chimeOnOpen: true,
+  chimeOnClose: true,
+  chimeDuration: 1.6,
+};
+
 /** レール踏面の状態 */
 export type RailCondition = 'dry' | 'wet' | 'leaves' | 'snow';
 
@@ -588,6 +622,8 @@ export interface ConsistSpec {
   readonly adhesion: AdhesionSpec;
   readonly traction: TractionControlSpec;
   readonly brake: BrakeControlSpec;
+  /** 客用扉 */
+  readonly door: DoorSpec;
   /** 設計最高速度 [m/s] */
   readonly maxSpeed: MetersPerSecond;
   /**

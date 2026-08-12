@@ -127,6 +127,21 @@ export const testLineChopper: ScenarioDefinition = {
   vehicleId: 'commuter-4-chopper',
 };
 
+/**
+ * 音階インバータシナリオ: 走りは既定の通勤形とまったく同じで、変調だけが違う。
+ *
+ * 力行すると起動から 40km/h あたりまでキャリア周波数が平均律の音名を階段状に
+ * 上っていき（ソラシド レミファソ ラシドレ）、そこで同期モードへ移って音の性格が
+ * 変わる。減速すれば同じ階段を下りてくる。「試験線 各駅停車（晴天）」と
+ * 聴き比べると、走りが同じで音だけが違うことが確かめられる。
+ */
+export const testLineScale: ScenarioDefinition = {
+  ...testLineLocal,
+  id: 'test-line-scale',
+  name: '試験線 各駅停車（音階インバータ）',
+  vehicleId: 'commuter-4-scale',
+};
+
 export const scenarios = [
   testLineLocal,
   testLineSnow,
@@ -137,4 +152,5 @@ export const scenarios = [
   testLineResistor,
   testLineResistorSnow,
   testLineChopper,
+  testLineScale,
 ] as const;

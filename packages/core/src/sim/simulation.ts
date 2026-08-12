@@ -21,6 +21,7 @@ import { SignallingSystem } from '../signalling/system.ts';
 import type { Turnout } from '../track/turnout.ts';
 import type { BodyMotionState } from '../train/bodyMotion.ts';
 import { TrainDynamics, type DynamicsEnvironment } from '../train/dynamics.ts';
+import { DoorSystem, type DoorState } from '../door/index.ts';
 import type { DriveState } from '../traction/driveState.ts';
 import { createTractionSystem } from '../traction/factory.ts';
 import type { TractionSystem } from '../traction/types.ts';
@@ -75,6 +76,7 @@ export class Simulation {
   readonly traction: TractionSystem;
   readonly brake: ElectroPneumaticBrakeSystem;
   readonly compressor = new AirCompressor();
+  readonly doors: DoorSystem;
   readonly signalling: SignallingSystem;
   readonly safety: SafetySystem;
   readonly metrics = new MetricsRecorder();
@@ -134,6 +136,7 @@ export class Simulation {
       ...(scenario.rigidConsist === undefined ? {} : { rigidConsist: scenario.rigidConsist }),
     });
     this.traction = createTractionSystem(scenario.consist);
+    this.doors = new DoorSystem(scenario.consist.door);
     this.brake = new ElectroPneumaticBrakeSystem(scenario.consist, {
       controlPeriod: CONTROL_DT,
     });
@@ -294,6 +297,10 @@ export class Simulation {
         })
       : this.input;
 
+    // 扉は指令に対して有限の時間をかけて動く。閉扉予告のチャイムもここで進む。
+    this.doors.setCommand(this.activeInput.doorsClosed);
+    this.doors.update(dt);
+
     if (this.activeInput.safetyReset && Math.abs(this.dynamics.speed) < 0.05) {
       this.safety.reset();
     }
@@ -308,8 +315,11 @@ export class Simulation {
       );
     }
     const cutOff = this.safetyOutput.cutOffTraction || emergency || brakeNotch > 0;
+    // 戸閉連動は**指令ではなく扉の実際の状態**で判定する。実車の力行回路も、
+    // 全部の扉が閉じて施錠されたことを確かめる接点を通っている。閉指令を出しても
+    // 閉まり切るまでは力行できない。
     const powerNotch =
-      cutOff || this.activeInput.reverser === 0 || !this.activeInput.doorsClosed
+      cutOff || this.activeInput.reverser === 0 || !this.doors.interlocked
         ? 0
         : this.activeInput.powerNotch;
 
@@ -481,7 +491,7 @@ export class Simulation {
     }
 
     if (!progress.departed) {
-      progress.doorsOpen = !this.activeInput.doorsClosed && stopped;
+      progress.doorsOpen = this.doors.state.position > 0 && stopped;
       if (progress.doorsOpen || progress.dwellElapsed > 0) {
         progress.dwellElapsed += dt;
       }
@@ -541,6 +551,7 @@ export class Simulation {
       antiSkidActive: this.brake.state.antiSkidActive,
       reAdhesionFactor: this.traction.state.reAdhesionFactor,
       drive: this.traction.driveState,
+      doors: this.doors.state,
       compressor: this.compressor.state,
       maxSlip: dyn.vehicles.reduce(
         (m, v) => v.axles.reduce((mm, a) => (Math.abs(a.slip) > Math.abs(mm) ? a.slip : mm), m),
@@ -589,6 +600,8 @@ export interface SimSnapshot {
   reAdhesionFactor: number;
   /** 制御方式ごとの駆動装置の状態（変調 / 進段 / 通流率） */
   drive: DriveState;
+  /** 客用扉（開閉の途中も含む） */
+  doors: DoorState;
   /** 元空気溜めと空気圧縮機 */
   compressor: CompressorState;
   maxSlip: number;

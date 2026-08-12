@@ -5,6 +5,7 @@ export * from './dsp/inverterVoice.ts';
 export * from './dsp/dcMotorVoice.ts';
 export * from './dsp/resistorVoice.ts';
 export * from './dsp/chopperVoice.ts';
+export * from './dsp/doorVoice.ts';
 export * from './dsp/runningGear.ts';
 export * from './dsp/brake.ts';
 export * from './dsp/auxiliary.ts';

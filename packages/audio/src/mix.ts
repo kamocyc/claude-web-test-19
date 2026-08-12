@@ -33,6 +33,8 @@ export interface NoiseMix {
   readonly auxiliary: number;
   /** 空気ばねのきしみ */
   readonly airSpring: number;
+  /** 客用扉（チャイム・空気・戸当たり） */
+  readonly door: number;
   /** 保安装置の報知音（打鈴・チャイム・ブザー） */
   readonly alarm: number;
   /** 警笛 */
@@ -69,6 +71,7 @@ export const DEFAULT_NOISE_MIX: NoiseMix = {
   brake: 1,
   auxiliary: 1,
   airSpring: 1,
+  door: 1,
   alarm: 1,
   horn: 1,
   inverterLoadTracking: 0.3,
@@ -101,12 +104,13 @@ export const VOICE = {
   horn: 10,
   resistor: 11,
   chopper: 12,
+  door: 13,
 } as const;
 
 export type VoiceIndex = (typeof VOICE)[keyof typeof VOICE];
 
 /** 音源の数（メータの配列長） */
-export const VOICE_COUNT = 13;
+export const VOICE_COUNT = 14;
 
 /** 音量のつまみ */
 export const NOISE_MIX_LEVELS: readonly NoiseMixControl[] = [
@@ -122,6 +126,7 @@ export const NOISE_MIX_LEVELS: readonly NoiseMixControl[] = [
   { key: 'brake', label: 'ブレーキ', voice: VOICE.brake },
   { key: 'auxiliary', label: '補機（空気圧縮機）', voice: VOICE.auxiliary },
   { key: 'airSpring', label: '空気ばねのきしみ', voice: VOICE.airSpring },
+  { key: 'door', label: '客用扉・ドアチャイム', voice: VOICE.door },
   { key: 'alarm', label: '保安装置の報知音', voice: VOICE.alarm },
   { key: 'horn', label: '警笛', voice: VOICE.horn },
 ];

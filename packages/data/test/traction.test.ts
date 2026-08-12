@@ -50,8 +50,11 @@ describe('制御方式の判別可能ユニオン', () => {
   });
 
   it('標準ライブラリに 3 方式の車両とシナリオが入っている', () => {
+    // 車両は今後も増えるので、この検定は「3 方式が揃っていること」だけを見る。
     const lib = createDefaultLibrary();
-    expect(lib.vehicleIds).toEqual(['commuter-4', 'commuter-4-resistor', 'commuter-4-chopper']);
+    for (const id of ['commuter-4', 'commuter-4-resistor', 'commuter-4-chopper']) {
+      expect(lib.vehicleIds).toContain(id);
+    }
     expect(lib.scenarioIds).toContain('test-line-resistor');
     expect(lib.scenarioIds).toContain('test-line-chopper');
   });

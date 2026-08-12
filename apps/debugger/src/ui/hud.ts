@@ -1,4 +1,5 @@
 import {
+  doorLabel,
   driveDetail,
   driveDetailRowLabel,
   driveLabel,
@@ -114,7 +115,7 @@ export class Hud {
         handleLabel,
         handles.emergency
           ? '<span class="danger">非常</span>'
-          : handle + (handles.doorsClosed ? '' : ' <span class="warn">戸開</span>'),
+          : handle + (snap.doors.interlocked ? '' : ' <span class="warn">戸開</span>'),
       ),
     );
     rows.push(
@@ -148,6 +149,16 @@ export class Hud {
     // 制御方式によって出す量が違う（VVVF は周波数、直流機は電流と電圧）ので、
     // 行の見出しごと `drive` から引く。
     const drive = snap.drive;
+    // 扉。閉指令を出しても閉まり切るまでは力行できない（戸閉連動）ので、
+    // 動いている途中も見えるようにしておく。
+    rows.push(
+      row(
+        '客用扉',
+        snap.doors.interlocked
+          ? doorLabel(snap.doors)
+          : `<span class="warn">${doorLabel(snap.doors)}</span>`,
+      ),
+    );
     rows.push(row(driveRowLabel(drive), driveLabel(drive)));
     rows.push(row(driveDetailRowLabel(drive), driveDetail(drive)));
     rows.push(

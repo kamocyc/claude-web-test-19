@@ -94,6 +94,9 @@ export class TrainAudio {
   /** 進段・組替えのカウンタ（増分を撃力の回数として鳴らす） */
   private lastStepEvents = 0;
   private lastGroupEvents = 0;
+  /** 扉の戸当たりのカウンタ（増分を撃力の回数として鳴らす） */
+  private lastLatchEvents = 0;
+  private lastOpenEvents = 0;
 
   get available(): boolean {
     return !this.failed;
@@ -323,6 +326,19 @@ export class TrainAudio {
     // 数十メートル後方から聞こえることになる。
     const motorGain = this.motorDistanceGain(sim);
 
+    // 戸当たりは進段と同じくフレーム精度で足りる（1 回の停車で数回しか鳴らない）。
+    const doorParams = {
+      moving: snap.doors.moving && running,
+      closing: snap.doors.closing,
+      chiming: snap.doors.chiming && running,
+      latches: running ? Math.max(0, snap.doors.latchEvents - this.lastLatchEvents) : 0,
+      opens: running ? Math.max(0, snap.doors.openEvents - this.lastOpenEvents) : 0,
+      // 扉は運転台のすぐ後ろから編成の端までにあるので、距離減衰は掛けない。
+      level: mix.door,
+    };
+    this.lastLatchEvents = snap.doors.latchEvents;
+    this.lastOpenEvents = snap.doors.openEvents;
+
     const cylinder = spec
       ? snap.cylinderPressure /
         (sim.scenario.consist.vehicles[0]?.brake.maxCylinderPressure ?? 400_000)
@@ -340,6 +356,7 @@ export class TrainAudio {
         // 歯車箱は M 車の床下にしか無いので、電動機と同じだけ遠い
         level: motorGain * mix.gear,
       },
+      door: doorParams,
       // 転動音と風切り音は編成のどこからでも来る。運転台の真下にも軸があるし、
       // 前面は自分が風を切っている当人なので、距離減衰は掛からない。
       rolling: {
@@ -485,6 +502,8 @@ export class TrainAudio {
     this.lastCylinderTime = 0;
     this.lastStepEvents = 0;
     this.lastGroupEvents = 0;
+    this.lastLatchEvents = 0;
+    this.lastOpenEvents = 0;
     this.worklet?.port.postMessage({ reset: true });
   }
 
