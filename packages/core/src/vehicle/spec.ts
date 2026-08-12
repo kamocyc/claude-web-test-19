@@ -1,4 +1,6 @@
 import type {
+  Amperes,
+  Henries,
   Hertz,
   Kilograms,
   Meters,
@@ -6,9 +8,11 @@ import type {
   MetersPerSecondSquared,
   NewtonMeters,
   Newtons,
+  Ohms,
   Pascals,
   Radians,
   Seconds,
+  Volts,
 } from '../units.ts';
 
 /**
@@ -78,15 +82,29 @@ export interface InverterSpec {
   readonly pinionTeeth: number;
 }
 
-/** VVVF インバータ制御・誘導電動機の仕様 */
-export interface VvvfTractionSpec {
-  readonly kind: 'vvvf';
+/**
+ * 制御方式によらず共通の駆動諸元。
+ *
+ * 電動機のトルクを車輪周の引張力へ換算するのに要る量と、電力の勘定に要る量だけを
+ * ここに置く。**どの方式でもこの換算はまったく同じ**であり、方式ごとに違うのは
+ * 「そのトルクをどうやって作るか」だけである。
+ */
+export interface TractionSpecBase {
   /** 1 両あたりの主電動機数 */
   readonly motorCount: number;
   /** 歯車比（電動機回転数 / 車軸回転数） */
   readonly gearRatio: number;
   /** 歯車・軸受を含む駆動効率 */
   readonly driveEfficiency: number;
+  /** 公称架線電圧 [V] */
+  readonly lineVoltage: Volts;
+  /** 主変換装置（インバータ・チョッパ・接触器）の効率（電力計算用） */
+  readonly converterEfficiency: number;
+}
+
+/** VVVF インバータ制御・誘導電動機の仕様 */
+export interface VvvfTractionSpec extends TractionSpecBase {
+  readonly kind: 'vvvf';
   /** 電動機 1 台あたりの最大トルク [N*m]（定トルク域） */
   readonly maxMotorTorque: NewtonMeters;
   /** 定トルク域の上限速度 [m/s] */
@@ -99,10 +117,6 @@ export interface VvvfTractionSpec {
   readonly regenFadeStartSpeed: MetersPerSecond;
   /** 回生が完全に失効する速度 [m/s] */
   readonly regenFadeEndSpeed: MetersPerSecond;
-  /** 公称架線電圧 [V] */
-  readonly lineVoltage: number;
-  /** 主変換装置の効率（電力計算用） */
-  readonly converterEfficiency: number;
   /** 変調方式と音に関わる諸元 */
   readonly inverter: InverterSpec;
 }
@@ -140,7 +154,135 @@ export const DEFAULT_INVERTER: InverterSpec = {
   pinionTeeth: 17,
 };
 
-export type VehicleTractionSpec = VvvfTractionSpec;
+/**
+ * 直流直巻電動機の仕様。抵抗制御・電機子チョッパ制御が共有する。
+ *
+ * 誘導電動機と決定的に違うのは、**トルクも回転数も電機子回路の解として出てくる**点で
+ * ある。VVVF なら「定トルク → 定出力 → 特性領域」という 3 領域の曲線を仕様として
+ * 与えられるが、直流機でその曲線を与えてはいけない。曲線は回路から出てくる結果で
+ * あって、原因ではないからである。
+ *
+ * 直巻とは界磁巻線が電機子と**直列**につながっているということで、界磁磁束が電機子
+ * 電流そのもので作られる。磁化曲線を
+ *
+ * ```
+ * φ(I) = I / (I + I_飽和)        （0..1、鉄心の飽和で 1 に漸近）
+ * ```
+ *
+ * と置くと、直巻機の 2 つの顔が 1 本の式から出る:
+ *
+ *  - 小電流 `φ ≒ I / I_飽和` → `T ∝ I²`（起動時に大きな引張力が出る）
+ *  - 大電流 `φ → 1`          → `T ∝ I`（鉄心が飽和して他励機と同じになる）
+ *
+ * さらにこの形なら発電ブレーキの自励条件が閉じた式で解ける（`selfExcitedCurrent`）。
+ * 飽和電流 `I_飽和` ただ 1 つで曲線の形が決まるので、諸元としても書きやすい。
+ */
+export interface DcSeriesMotorSpec {
+  /** 電機子抵抗（直巻界磁巻線・ブラシを含む合計）[Ω]（1 台あたり） */
+  readonly armatureResistance: Ohms;
+  /** 磁化曲線の飽和電流 I_飽和 [A] */
+  readonly saturationCurrent: Amperes;
+  /** 完全飽和・全界磁での磁束定数 kΦ_max [V*s/rad]（= [N*m/A]） */
+  readonly fluxConstant: number;
+  /** 連続定格電流 [A]（表示と音量の正規化基準） */
+  readonly ratedCurrent: Amperes;
+  /** 電機子回路のインダクタンス [H]（1 台あたり） */
+  readonly armatureInductance: Henries;
+  /** 整流子片数。ブラシの通過周波数 = 電動機回転数/60 × 片数 が音に乗る */
+  readonly commutatorBars: number;
+  /** 小歯車の歯数。かみ合い周波数 = 電動機回転数/60 × 歯数 */
+  readonly pinionTeeth: number;
+}
+
+/**
+ * カム軸の 1 段。
+ *
+ * 「電動機を何台直列につないで、どれだけ抵抗を残して、界磁をどれだけ弱めているか」
+ * の 3 つで主回路は完全に決まる。進段とはこの 3 つ組を順に切り替えていくことである。
+ */
+export interface CamStep {
+  /** 1 分岐に直列に入る主電動機の数（4 = 全直列、2 = 直並列、1 = 全並列） */
+  readonly motorsInSeries: number;
+  /** 1 分岐に直列に残っている起動抵抗 [Ω]（0 = 全短絡） */
+  readonly resistance: Ohms;
+  /** 界磁率（1 = 全界磁、0.4 = 40% 弱め界磁） */
+  readonly fieldRatio: number;
+}
+
+/**
+ * 抵抗制御（カム軸進段・直並列切替・弱め界磁）の仕様。
+ *
+ * 起動時は電動機に全電圧を掛けられない（逆起電力が無いので短絡に近い電流が流れる）。
+ * そこで起動抵抗を直列に入れて電流を抑え、速度が上がって電流が進段電流まで落ちるたび
+ * に抵抗を 1 段ずつ短絡していく。これがカム軸の進段である。抵抗を使い切ったら電動機の
+ * つなぎ方を直列から並列へ組み替えて 1 台あたりの電圧を上げ、また抵抗を入れ直して
+ * 同じことを繰り返す。最後は界磁を弱めてさらに回転を伸ばす。
+ *
+ * 進段表 `camSteps` はデータ側に直接書かず、限流値・進段電流・つなぎ方から
+ * コンパイラが幾何級数として生成する（`packages/data/src/compile/vehicle.ts`）。
+ */
+export interface ResistorTractionSpec extends TractionSpecBase {
+  readonly kind: 'resistor';
+  readonly motor: DcSeriesMotorSpec;
+  /** 進段表（起動の順）。最終段が最弱め界磁。 */
+  readonly camSteps: readonly CamStep[];
+  /** 限流値 [A]（1 台あたり）。段が進んだ直後の電流がこの値になる。 */
+  readonly currentLimit: Amperes;
+  /** 進段電流 [A]。電流がこれを下回るとカム軸が 1 段進む。限流値より小さいこと。 */
+  readonly stepCurrent: Amperes;
+  /** 1 段あたりの最短滞留時間 [s]（カム軸の回転速度） */
+  readonly stepDwell: Seconds;
+  /** 各力行ノッチで到達を許す最終段（`camSteps` の添字。要素数 = notchCount） */
+  readonly notchFinalStep: readonly number[];
+  /** 発電ブレーキを持つか */
+  readonly hasDynamicBrake: boolean;
+  /** 発電ブレーキの制動抵抗 [Ω]（1 分岐）。自励の下限速度を決める。 */
+  readonly brakeResistance: Ohms;
+  /** 発電ブレーキの限流値 [A] */
+  readonly brakeCurrentLimit: Amperes;
+  /** 発電ブレーキ時に 1 分岐へ直列に入る電動機数 */
+  readonly brakeMotorsInSeries: number;
+  /** 発電ブレーキの界磁率 */
+  readonly brakeFieldRatio: number;
+}
+
+/**
+ * 電機子チョッパ制御の仕様。
+ *
+ * 起動抵抗の代わりにサイリスタチョッパで電機子電圧を刻む。通流率を連続に変えられる
+ * ので段が無く、抵抗で熱にしていた分をそのまま省エネにできる。回生ブレーキも
+ * 同じ回路を昇圧動作させるだけで作れる。電動機そのものは抵抗制御車と同じ直流直巻機
+ * であり、**違うのは電圧の作り方だけ**である。
+ */
+export interface ChopperTractionSpec extends TractionSpecBase {
+  readonly kind: 'chopper';
+  readonly motor: DcSeriesMotorSpec;
+  /** 1 分岐に直列に入る主電動機の数（固定。チョッパは組替えをしない） */
+  readonly motorsInSeries: number;
+  /** チョッピング周波数 [Hz]（固定周波数・可変通流率） */
+  readonly chopFrequency: Hertz;
+  /** 通流率の上限（素子の転流に要る最小オフ時間のぶんだけ 1 を切る） */
+  readonly maxDuty: number;
+  /** 通流率の変化速度 [1/s]（電流制御ループの応答） */
+  readonly dutyRate: number;
+  /** 弱め界磁の下限（分路界磁の最小界磁率） */
+  readonly minFieldRatio: number;
+  /** 界磁率の変化速度 [1/s] */
+  readonly fieldRate: number;
+  /** 力行の限流値 [A] */
+  readonly currentLimit: Amperes;
+  /** 回生の限流値 [A] */
+  readonly brakeCurrentLimit: Amperes;
+  /** 回生の絞り込みが始まる速度 [m/s] */
+  readonly regenFadeStartSpeed: MetersPerSecond;
+  /** 回生が完全に失効する速度 [m/s] */
+  readonly regenFadeEndSpeed: MetersPerSecond;
+}
+
+export type VehicleTractionSpec = VvvfTractionSpec | ResistorTractionSpec | ChopperTractionSpec;
+
+/** 制御方式の種別 */
+export type TractionKind = VehicleTractionSpec['kind'];
 
 /** 基礎ブレーキ装置（車両側） */
 export interface VehicleBrakeSpec {

@@ -11,8 +11,12 @@
 export interface NoiseMix {
   /** 全体 0..1 */
   readonly master: number;
-  /** インバータ・主電動機 */
+  /** インバータ・主電動機（VVVF 車） */
   readonly inverter: number;
+  /** 主電動機・起動抵抗・カム軸の進段（抵抗制御車） */
+  readonly resistor: number;
+  /** チョッパ・主電動機（電機子チョッパ車） */
+  readonly chopper: number;
   /** 歯車のかみ合い（M 車の床下） */
   readonly gear: number;
   /** 転動音（全車の足元） */
@@ -55,6 +59,8 @@ export interface NoiseMix {
 export const DEFAULT_NOISE_MIX: NoiseMix = {
   master: 0.7,
   inverter: 1,
+  resistor: 1,
+  chopper: 1,
   gear: 1,
   rolling: 1,
   wind: 1,
@@ -93,17 +99,21 @@ export const VOICE = {
   airSpring: 8,
   alarm: 9,
   horn: 10,
+  resistor: 11,
+  chopper: 12,
 } as const;
 
 export type VoiceIndex = (typeof VOICE)[keyof typeof VOICE];
 
 /** 音源の数（メータの配列長） */
-export const VOICE_COUNT = 11;
+export const VOICE_COUNT = 13;
 
 /** 音量のつまみ */
 export const NOISE_MIX_LEVELS: readonly NoiseMixControl[] = [
   { key: 'master', label: 'マスター' },
   { key: 'inverter', label: 'インバータ・主電動機', voice: VOICE.inverter },
+  { key: 'resistor', label: '主電動機・起動抵抗・進段', voice: VOICE.resistor },
+  { key: 'chopper', label: 'チョッパ・主電動機', voice: VOICE.chopper },
   { key: 'gear', label: '歯車', voice: VOICE.gear },
   { key: 'rolling', label: '転動音', voice: VOICE.rolling },
   { key: 'wind', label: '風切り', voice: VOICE.wind },

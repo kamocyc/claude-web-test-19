@@ -34,6 +34,17 @@ export interface InverterVoiceParams {
   readonly level: number;
 }
 
+/** 主回路が動いていないときのインバータ音（VVVF 以外の車両で使う） */
+export const SILENT_INVERTER: InverterVoiceParams = {
+  gate: false,
+  fundamental: 0,
+  carrier: 0,
+  modulation: 0,
+  pulses: 0,
+  slotFrequency: 0,
+  level: 0,
+};
+
 export interface InverterVoiceOptions {
   /**
    * オーバーサンプリング倍率。比較器の出力は理想的な矩形波なので、

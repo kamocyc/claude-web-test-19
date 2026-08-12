@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { TrainNoiseSynth, VOICE, VOICE_COUNT, type TrainNoiseParams } from '@railsim/audio';
+import {
+  SILENT_CHOPPER,
+  SILENT_RESISTOR,
+  TrainNoiseSynth,
+  VOICE,
+  VOICE_COUNT,
+  type TrainNoiseParams,
+} from '@railsim/audio';
 import { aWeightedRms, bandPower, peakProminence, rms } from './spectrum.ts';
 
 const SAMPLE_RATE = 48_000;
@@ -14,6 +21,8 @@ const silence = (): TrainNoiseParams => ({
     slotFrequency: 0,
     level: 0,
   },
+  resistor: SILENT_RESISTOR,
+  chopper: SILENT_CHOPPER,
   gear: { meshFrequency: 0, shaftFrequency: 0, load: 0, level: 0 },
   rolling: { speed: 0, corrugation: 0, level: 0 },
   wind: { speed: 0, level: 0 },

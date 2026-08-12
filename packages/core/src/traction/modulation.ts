@@ -2,6 +2,7 @@ import { clamp, firstOrderLag, PiecewiseLinear } from '../math/scalar.ts';
 import type { Hertz, RadiansPerSecond } from '../units.ts';
 import { radPerSecToRpm } from '../units.ts';
 import type { InverterSpec, VvvfTractionSpec } from '../vehicle/spec.ts';
+import type { DriveRotationState } from './driveState.ts';
 
 /**
  * すべり周波数指令の応答時定数 [s]。
@@ -14,14 +15,16 @@ const SLIP_RESPONSE_TIME = 0.03;
 /** 変調モード */
 export type ModulationMode = 'off' | 'async' | 'sync' | 'onePulse';
 
-/** インバータの変調状態（表示・音響用） */
-export interface InverterState {
+/**
+ * インバータの変調状態（表示・音響用）。
+ *
+ * `DriveState` union の VVVF 枝そのものなので、`DriveRotationState` の 4 つ
+ * （角速度・回転数・かみ合い周波数・トルク比）を含んでいる。
+ */
+export interface InverterState extends DriveRotationState {
+  readonly kind: 'vvvf';
   /** 変調モード */
   mode: ModulationMode;
-  /** 電動機の回転角速度 [rad/s]（大きさ） */
-  motorAngularVelocity: RadiansPerSecond;
-  /** 電動機の回転数 [rpm] */
-  motorRpm: number;
   /** 回転子周波数 [Hz] = 極対数 × 回転数 / 60 */
   rotorFrequency: Hertz;
   /** すべり周波数 [Hz]（正 = 力行、負 = 回生） */
@@ -36,14 +39,11 @@ export interface InverterState {
   carrierFrequency: Hertz;
   /** 回転子スロット高調波の周波数 [Hz] */
   slotFrequency: Hertz;
-  /** 歯車のかみ合い周波数 [Hz] */
-  gearMeshFrequency: Hertz;
-  /** 定格トルクに対する電動機トルクの比（正 = 力行、負 = 電気ブレーキ） */
-  torqueRatio: number;
 }
 
 export function createInverterState(): InverterState {
   return {
+    kind: 'vvvf',
     mode: 'off',
     motorAngularVelocity: 0,
     motorRpm: 0,

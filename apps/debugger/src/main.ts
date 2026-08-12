@@ -61,6 +61,7 @@ let scenarioId = library.scenarioIds[0]!;
 let scenario: Scenario = library.scenario(scenarioId);
 let sim = new Simulation(scenario);
 let scene = new TrackScene(scenario.route, sim);
+charts.setDriveKind(sim.traction.driveState.kind);
 let recorder = new InputRecorder();
 let paused = false;
 let rateIndex = RATES.indexOf(1);
@@ -147,6 +148,8 @@ function restart(id = scenarioId): void {
   replaying = null;
   sampleTimer = 0;
   desk.reset();
+  // 制御方式で主回路のグラフの系列が入れ替わる
+  charts.setDriveKind(sim.traction.driveState.kind);
   charts.clear();
   gmeter.clear();
   audio.reset();

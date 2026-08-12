@@ -1,8 +1,14 @@
 import {
   DEFAULT_NOISE_MIX,
+  SILENT_CHOPPER,
+  SILENT_INVERTER,
+  SILENT_RESISTOR,
   VOICE_COUNT,
+  type ChopperVoiceParams,
+  type InverterVoiceParams,
   type JointImpact,
   type NoiseMix,
+  type ResistorVoiceParams,
   type TrainNoiseParams,
   type TurnoutImpact,
 } from '@railsim/audio';
@@ -27,6 +33,20 @@ const TURNOUT_REFERENCE_SPEED = 18;
  * この距離だけ離れると音量が半分になる。
  */
 const DISTANCE_HALF = 25;
+
+/**
+ * 起動抵抗のうなりを正規化する基準電力 [W]。
+ *
+ * 抵抗制御では起動直後に電動機の入力とほぼ同じだけの電力を抵抗で熱にしている
+ * （だから直列初段の効率は 5 割を切る）。編成の公称出力と同じ桁を基準にしておくと、
+ * 起動でうなりが最大、進段するほど下がり、全短絡で消えるという関係になる。
+ */
+const RESISTOR_GRID_REFERENCE_POWER = 800_000;
+
+/** 0..1 に丸める */
+function clamp01(x: number): number {
+  return x < 0 ? 0 : x > 1 ? 1 : x;
+}
 
 /**
  * 左右の空気ばねの間隔の半分 [m]。
@@ -71,6 +91,9 @@ export class TrainAudio {
   private readonly offsetScratch: number[] = [];
   private readonly joints: JointImpact[] = [];
   private readonly turnouts: TurnoutImpact[] = [];
+  /** 進段・組替えのカウンタ（増分を撃力の回数として鳴らす） */
+  private lastStepEvents = 0;
+  private lastGroupEvents = 0;
 
   get available(): boolean {
     return !this.failed;
@@ -198,24 +221,104 @@ export class TrainAudio {
     send.gain.setTargetAtTime(ratio * TUNNEL_WET, context.currentTime, TUNNEL_FADE);
   }
 
+  /**
+   * 制御方式に応じて主回路の音源を選ぶ。
+   *
+   * 鳴らない方式には無音のパラメータを渡す。方式は走行中に変わらないので、
+   * 使われない音源は毎フレームそのまま素通りするだけで負荷にならない。
+   */
+  private mainCircuitParams(
+    drive: ReturnType<Simulation['snapshot']>['drive'],
+    running: boolean,
+    motorGain: number,
+    load: number,
+  ): {
+    inverter: InverterVoiceParams;
+    resistor: ResistorVoiceParams;
+    chopper: ChopperVoiceParams;
+  } {
+    const mix = this.mixValues;
+    const silent = {
+      inverter: SILENT_INVERTER,
+      resistor: SILENT_RESISTOR,
+      chopper: SILENT_CHOPPER,
+    };
+
+    switch (drive.kind) {
+      case 'vvvf': {
+        // 主回路が切れていれば（惰行・ノッチ切）ゲートが閉じる。音量を 0 にするのでは
+        // なく合成器へゲートの状態を渡し、相電圧を 0 にして磁束を自然に減衰させる。
+        const gate = drive.mode !== 'off' && running;
+        // V/f 一定で磁束が保たれるので、実機の磁気音は負荷でそれほど変わらない。
+        // どれだけ追従させるかは耳で決められるようミキサのつまみにしてある。
+        const inverterLoad = 1 - mix.inverterLoadTracking + mix.inverterLoadTracking * load;
+        return {
+          ...silent,
+          inverter: {
+            gate,
+            // ゲートが閉じているあいだも回転子の周波数を渡し続ける。0 へ落とすと、
+            // 磁束が積分であるために消えぎわで利得が跳ね上がって掃引音が出る。
+            fundamental: gate ? drive.fundamentalFrequency : drive.rotorFrequency,
+            carrier: drive.carrierFrequency,
+            modulation: drive.modulationIndex,
+            pulses: drive.pulses,
+            slotFrequency: drive.slotFrequency,
+            level: inverterLoad * motorGain * mix.inverter,
+          },
+        };
+      }
+      case 'resistor': {
+        // 進段は 1 秒に数回までなので、フレーム精度で鳴らせば足りる
+        // （継目や分岐器のようなサンプル精度の予約は要らない）。
+        const steps = running ? Math.max(0, drive.stepEvents - this.lastStepEvents) : 0;
+        const groupChanges = running ? Math.max(0, drive.groupEvents - this.lastGroupEvents) : 0;
+        this.lastStepEvents = drive.stepEvents;
+        this.lastGroupEvents = drive.groupEvents;
+        return {
+          ...silent,
+          resistor: {
+            gate: (drive.gate || drive.dynamicBraking) && running,
+            current: Math.abs(drive.torqueRatio),
+            commutatorFrequency: running ? drive.commutatorFrequency : 0,
+            // 起動抵抗で捨てている電力を、編成の公称出力で正規化して渡す。
+            // 段が進んで抵抗が短絡されるほど 0 に近づき、うなりが消える。
+            resistorPower: clamp01(drive.resistorPower / RESISTOR_GRID_REFERENCE_POWER),
+            steps,
+            groupChanges,
+            level: motorGain * mix.resistor,
+          },
+        };
+      }
+      case 'chopper':
+        return {
+          ...silent,
+          chopper: {
+            gate: drive.gate && running,
+            current: Math.abs(drive.torqueRatio),
+            duty: drive.duty,
+            chopFrequency: drive.chopFrequency,
+            commutatorFrequency: running ? drive.commutatorFrequency : 0,
+            level: motorGain * mix.chopper,
+          },
+        };
+      case 'none':
+        return silent;
+    }
+  }
+
   private buildParams(
     sim: Simulation,
     snap: ReturnType<Simulation['snapshot']>,
     running: boolean,
   ): TrainNoiseParams {
-    const inv = snap.inverter;
+    const drive = snap.drive;
     const indication = snap.safety.indication;
     const mix = this.mixValues;
     const speed = running ? Math.abs(snap.speed) : 0;
     const spec = sim.scenario.consist.vehicles.find((v) => v.traction)?.traction ?? null;
 
-    // 主回路が切れていれば（惰行・ノッチ切）ゲートが閉じる。音量を 0 にするのでは
-    // なく合成器へゲートの状態を渡し、相電圧を 0 にして磁束を自然に減衰させる。
-    const gate = inv.mode !== 'off' && running;
-    const load = Math.min(1, Math.abs(inv.torqueRatio));
-    // V/f 一定で磁束が保たれるので、実機の磁気音は負荷でそれほど変わらない。
-    // どれだけ追従させるかは耳で決められるようミキサのつまみにしてある。
-    const inverterLoad = 1 - mix.inverterLoadTracking + mix.inverterLoadTracking * load;
+    // 負荷率はどの方式でも「定格に対するトルク比」で表せる。歯車の音はこれで駆動する。
+    const load = Math.min(1, Math.abs(drive.torqueRatio));
     // 電動機は M 車の床下にある。この編成は Tc 先頭なので、運転士には
     // 数十メートル後方から聞こえることになる。
     const motorGain = this.motorDistanceGain(sim);
@@ -227,20 +330,12 @@ export class TrainAudio {
     const pressureRate = this.cylinderRate(snap.cylinderPressure, sim);
 
     return {
-      inverter: {
-        gate,
-        // ゲートが閉じているあいだも回転子の周波数を渡し続ける。0 へ落とすと、
-        // 磁束が積分であるために消えぎわで利得が跳ね上がって掃引音が出る。
-        fundamental: gate ? inv.fundamentalFrequency : inv.rotorFrequency,
-        carrier: inv.carrierFrequency,
-        modulation: inv.modulationIndex,
-        pulses: inv.pulses,
-        slotFrequency: inv.slotFrequency,
-        level: inverterLoad * motorGain * mix.inverter,
-      },
+      ...this.mainCircuitParams(drive, running, motorGain, load),
       gear: {
-        meshFrequency: running ? inv.gearMeshFrequency : 0,
-        shaftFrequency: running ? inv.motorRpm / 60 : 0,
+        // 歯車のかみ合いは主回路が何であろうと同じように鳴るので、
+        // 制御方式に依らない共通の回転量から作る。
+        meshFrequency: running ? drive.gearMeshFrequency : 0,
+        shaftFrequency: running ? drive.motorRpm / 60 : 0,
         load: 1 - mix.gearLoadTracking + mix.gearLoadTracking * load,
         // 歯車箱は M 車の床下にしか無いので、電動機と同じだけ遠い
         level: motorGain * mix.gear,
@@ -388,6 +483,8 @@ export class TrainAudio {
     this.previousPositions.length = 0;
     this.lastCylinder = 0;
     this.lastCylinderTime = 0;
+    this.lastStepEvents = 0;
+    this.lastGroupEvents = 0;
     this.worklet?.port.postMessage({ reset: true });
   }
 

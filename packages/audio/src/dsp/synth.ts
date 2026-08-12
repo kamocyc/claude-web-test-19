@@ -3,7 +3,9 @@ import { AirSpringVoice, type AirSpringParams } from './airSpring.ts';
 import { AuxiliaryVoice, type AuxiliaryParams } from './auxiliary.ts';
 import { AlarmVoice, HornVoice, type AlarmParams, type HornParams } from './cab.ts';
 import { BrakeVoice, type BrakeParams } from './brake.ts';
+import { ChopperVoice, type ChopperVoiceParams } from './chopperVoice.ts';
 import { InverterVoice, type InverterVoiceParams } from './inverterVoice.ts';
+import { ResistorVoice, type ResistorVoiceParams } from './resistorVoice.ts';
 import { RailJointVoice, type JointImpact } from './railJointVoice.ts';
 import { TurnoutVoice, type TurnoutImpact } from './turnoutVoice.ts';
 import {
@@ -17,7 +19,14 @@ import {
 
 /** 走行音全体を決める量。シミュレーションのスナップショットから素直に写せる。 */
 export interface TrainNoiseParams {
+  /**
+   * 主回路の音は制御方式ごとに別の音源が受け持つ。動いていない方式には無音の
+   * パラメータ（`SILENT_INVERTER` など）を渡す — 方式が走行中に変わることは
+   * 無いので、鳴らない音源は毎回そのまま素通りする。
+   */
   readonly inverter: InverterVoiceParams;
+  readonly resistor: ResistorVoiceParams;
+  readonly chopper: ChopperVoiceParams;
   readonly gear: GearParams;
   readonly rolling: RollingParams;
   readonly wind: WindParams;
@@ -42,6 +51,8 @@ export interface TrainNoiseParams {
  */
 export class TrainNoiseSynth {
   readonly inverter: InverterVoice;
+  readonly resistor: ResistorVoice;
+  readonly chopper: ChopperVoice;
   readonly gear: GearVoice;
   readonly rolling: RollingVoice;
   readonly wind: WindVoice;
@@ -60,6 +71,8 @@ export class TrainNoiseSynth {
 
   constructor(readonly sampleRate: number) {
     this.inverter = new InverterVoice(sampleRate);
+    this.resistor = new ResistorVoice(sampleRate);
+    this.chopper = new ChopperVoice(sampleRate);
     this.gear = new GearVoice(sampleRate);
     this.rolling = new RollingVoice(sampleRate);
     this.wind = new WindVoice(sampleRate);
@@ -74,6 +87,8 @@ export class TrainNoiseSynth {
 
   setParams(params: TrainNoiseParams): void {
     this.inverter.setParams(params.inverter);
+    this.resistor.setParams(params.resistor);
+    this.chopper.setParams(params.chopper);
     this.gear.setParams(params.gear);
     this.rolling.setParams(params.rolling);
     this.wind.setParams(params.wind);
@@ -101,6 +116,8 @@ export class TrainNoiseSynth {
     if (this.scratch.length !== out.length) this.scratch = new Float32Array(out.length);
     out.fill(0);
     this.mix(out, VOICE.inverter, (b) => this.inverter.render(b));
+    this.mix(out, VOICE.resistor, (b) => this.resistor.render(b));
+    this.mix(out, VOICE.chopper, (b) => this.chopper.render(b));
     this.mix(out, VOICE.gear, (b) => this.gear.render(b));
     this.mix(out, VOICE.rolling, (b) => this.rolling.render(b));
     this.mix(out, VOICE.wind, (b) => this.wind.render(b));
@@ -146,6 +163,8 @@ export class TrainNoiseSynth {
 
   reset(): void {
     this.inverter.reset();
+    this.resistor.reset();
+    this.chopper.reset();
     this.gear.reset();
     this.rolling.reset();
     this.wind.reset();
