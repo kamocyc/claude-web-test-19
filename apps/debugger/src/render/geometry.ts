@@ -37,6 +37,12 @@ export interface SweepOptions {
  * 断面の点は `[右方向, 上方向]` の 2 次元で書く。各ステーションで軌道の基準座標系
  * （カント込みの `cantRight` / `up`、または水平の `right` と鉛直）に載せ替え、
  * 隣り合うステーションどうしを四角形で張る。
+ *
+ * UV は **m 単位**で入れる。u が線路方向の距離、v が断面に沿った距離になるので、
+ * テクスチャ側で `repeat = 1 / 実寸` を掛けるだけで模様の大きさが実物に合う
+ * （バラストの砕石が 40mm、覆工の打継目が 10.5m、という具合に）。
+ * 閉じた断面では最後の 1 面だけ v が 0 へ戻るので、繰り返し模様の継ぎ目が
+ * そこに来る。中実断面（レール）は無地で使うため問題にならない。
  */
 export function sweepSection(
   stations: readonly SweepStation[],
@@ -47,11 +53,22 @@ export function sweepSection(
   const m = section.length;
   const n = stations.length;
   const positions = new Float32Array(n * m * 3);
+  const uvs = new Float32Array(n * m * 2);
+
+  // 断面に沿った累積距離（v 座標）
+  const v = new Float32Array(m);
+  for (let j = 1; j < m; j++) {
+    const [lat0, up0] = section[j - 1]!;
+    const [lat1, up1] = section[j]!;
+    v[j] = v[j - 1]! + Math.hypot(lat1 - lat0, up1 - up0);
+  }
 
   const p = new THREE.Vector3();
+  let u = 0;
   for (let i = 0; i < n; i++) {
     const st = stations[i]!;
     const f = st.frame;
+    if (i > 0) u += f.position.distanceTo(stations[i - 1]!.frame.position);
     const right = options.vertical ? f.right : f.cantRight;
     const up = options.vertical ? UP : f.up;
     const dLat = st.lateral ?? 0;
@@ -65,6 +82,9 @@ export function sweepSection(
       positions[k] = p.x;
       positions[k + 1] = p.y;
       positions[k + 2] = p.z;
+      const t = (i * m + j) * 2;
+      uvs[t] = u;
+      uvs[t + 1] = v[j]!;
     }
   }
 
@@ -80,9 +100,60 @@ export function sweepSection(
 
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
   geometry.setIndex(indices);
   geometry.computeVertexNormals();
   return geometry;
+}
+
+/**
+ * UV を m 単位にした板。
+ *
+ * `PlaneGeometry` の UV は 0..1 なので、そのままテクスチャを貼ると板の大きさに
+ * 応じて模様が伸び縮みしてしまう。UV を実寸に直しておけば、どんな大きさの板でも
+ * 同じ大きさの模様（タイル 300mm、砕石 40mm）が並ぶ。
+ */
+export function meterPlane(width: number, height: number): THREE.PlaneGeometry {
+  const geometry = new THREE.PlaneGeometry(width, height);
+  const uv = geometry.attributes.uv!;
+  for (let i = 0; i < uv.count; i++) {
+    uv.setXY(i, uv.getX(i) * width, uv.getY(i) * height);
+  }
+  return geometry;
+}
+
+/** UV を m 単位にした直方体。面ごとにその面の実寸で UV を入れる */
+export function meterBox(width: number, height: number, depth: number): THREE.BoxGeometry {
+  const geometry = new THREE.BoxGeometry(width, height, depth);
+  const uv = geometry.attributes.uv!;
+  // BoxGeometry の面の順序は +X, -X, +Y, -Y, +Z, -Z。各面 4 頂点
+  const faceSize: Array<[number, number]> = [
+    [depth, height],
+    [depth, height],
+    [width, depth],
+    [width, depth],
+    [width, height],
+    [width, height],
+  ];
+  for (let face = 0; face < 6; face++) {
+    const [su, sv] = faceSize[face]!;
+    for (let k = 0; k < 4; k++) {
+      const i = face * 4 + k;
+      uv.setXY(i, uv.getX(i) * su, uv.getY(i) * sv);
+    }
+  }
+  return geometry;
+}
+
+/** 断面に沿った長さ [m]。掃引形状に貼るテクスチャの縦方向の実寸になる */
+export function sectionLength(section: readonly SectionPoint[]): number {
+  let total = 0;
+  for (let j = 1; j < section.length; j++) {
+    const [lat0, up0] = section[j - 1]!;
+    const [lat1, up1] = section[j]!;
+    total += Math.hypot(lat1 - lat0, up1 - up0);
+  }
+  return total;
 }
 
 const UP = new THREE.Vector3(0, 1, 0);

@@ -74,7 +74,8 @@ function panel(
 ): THREE.Mesh {
   const mesh = new THREE.Mesh(
     new THREE.BoxGeometry(width, height, depth),
-    new THREE.MeshLambertMaterial({ color }),
+    // 運転台の内装はつや消しの塗装と樹脂。粗さを高くして映り込みを抑える
+    new THREE.MeshStandardMaterial({ color, roughness: 0.82, metalness: 0.05 }),
   );
   mesh.position.set(x, y, z);
   return mesh;
@@ -157,7 +158,7 @@ class Gauge {
   constructor(radius: number, max: number, step: number, unit: string, redlineFrom?: number) {
     const bezel = new THREE.Mesh(
       new THREE.CylinderGeometry(radius * 1.09, radius * 1.09, 0.03, 24),
-      new THREE.MeshLambertMaterial({ color: 0x14171b }),
+      new THREE.MeshStandardMaterial({ color: 0x14171b, roughness: 0.55, metalness: 0.3 }),
     );
     bezel.rotation.x = Math.PI / 2;
     this.group.add(bezel);
@@ -171,7 +172,7 @@ class Gauge {
 
     const cap = new THREE.Mesh(
       new THREE.CylinderGeometry(radius * 0.09, radius * 0.09, 0.012, 12),
-      new THREE.MeshLambertMaterial({ color: 0x24282d }),
+      new THREE.MeshStandardMaterial({ color: 0x24282d, roughness: 0.5, metalness: 0.4 }),
     );
     cap.rotation.x = Math.PI / 2;
     cap.position.z = 0.026;
@@ -233,16 +234,16 @@ function buildHandle(x: number, y: number, z: number, grip: number, color: numbe
   const pivot = new THREE.Group();
   const hub = new THREE.Mesh(
     new THREE.CylinderGeometry(0.075, 0.085, 0.055, 16),
-    new THREE.MeshLambertMaterial({ color: 0x22262b }),
+    new THREE.MeshStandardMaterial({ color: 0x22262b, roughness: 0.7, metalness: 0.2 }),
   );
   const arm = new THREE.Mesh(
     new THREE.BoxGeometry(0.035, 0.03, grip),
-    new THREE.MeshLambertMaterial({ color: 0x8f959c }),
+    new THREE.MeshStandardMaterial({ color: 0x8f959c, roughness: 0.4, metalness: 0.7 }),
   );
   arm.position.set(0, 0.045, grip / 2);
   const knob = new THREE.Mesh(
     new THREE.CylinderGeometry(0.032, 0.038, 0.1, 12),
-    new THREE.MeshLambertMaterial({ color }),
+    new THREE.MeshStandardMaterial({ color, roughness: 0.6, metalness: 0.2 }),
   );
   knob.position.set(0, 0.09, grip);
   pivot.add(hub, arm, knob);
@@ -297,7 +298,7 @@ export function createCabInterior(): CabInterior {
   for (const x of [0.05, 1.4]) {
     const wiper = new THREE.Mesh(
       new THREE.BoxGeometry(0.6, 0.016, 0.016),
-      new THREE.MeshLambertMaterial({ color: 0x1b1e22 }),
+      new THREE.MeshStandardMaterial({ color: 0x1b1e22, roughness: 0.8, metalness: 0.05 }),
     );
     wiper.position.set(x, CAB.windowBottom + 0.05, z - 0.06);
     wiper.rotation.z = 0.16;
@@ -471,7 +472,7 @@ export function createCabInterior(): CabInterior {
   for (const x of [-0.42, 0.52]) {
     const plate = new THREE.Mesh(
       new THREE.CylinderGeometry(0.19, 0.19, 0.02, 20),
-      new THREE.MeshLambertMaterial({ color: 0x1c2025 }),
+      new THREE.MeshStandardMaterial({ color: 0x1c2025, roughness: 0.8, metalness: 0.05 }),
     );
     plate.position.set(x, CAB.deskY + 0.02, handleZ);
     group.add(plate);

@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import type { VehicleSpec } from '@railsim/core';
 import { CAR, CATENARY } from './dimensions.ts';
+import { glowTexture } from './textures.ts';
 
 /**
  * 20m 級 4 扉通勤形電車の車体。
@@ -37,6 +38,30 @@ const WHEEL_COLOR = 0x53585e;
  * 頭部幅の半分だけ出る。車輪はそのレールの真上に載る。
  */
 const WHEEL_OFFSET = (1.067 + 0.065) / 2;
+
+/**
+ * 車両の材質。
+ *
+ * 車両はほぼ全体が金属でできている。ステンレスの外板、塗装した屋根、
+ * 錆止めを塗った台車、磨かれた車輪の踏面 — どれも金属度と粗さが違うので、
+ * 同じ灰色でも光の当たり方が変わる。映り込みの元になる環境マップは
+ * シーン側で与えているので、ここでは金属度と粗さだけを指定する。
+ */
+const metal = (color: number, roughness = 0.45, metalness = 0.7): THREE.MeshStandardMaterial =>
+  new THREE.MeshStandardMaterial({ color, roughness, metalness });
+
+/** 塗装・樹脂・ゴムの面（映り込みが弱い） */
+const painted = (color: number, roughness = 0.6): THREE.MeshStandardMaterial =>
+  new THREE.MeshStandardMaterial({ color, roughness, metalness: 0.1 });
+
+/** 窓ガラス（空を映して黒く光る） */
+const glass = (): THREE.MeshStandardMaterial =>
+  new THREE.MeshStandardMaterial({
+    color: GLASS_COLOR,
+    roughness: 0.06,
+    metalness: 0.9,
+    side: THREE.DoubleSide,
+  });
 
 /**
  * 車体断面の輪郭（右半分）。`[半幅, レール面からの高さ]`。
@@ -148,7 +173,8 @@ function buildBody(bodyLength: number): THREE.Mesh {
   // 押し出し方向（Z）を車両の前後方向（X）へ向ける
   geometry.rotateY(Math.PI / 2);
   geometry.computeVertexNormals();
-  return new THREE.Mesh(geometry, new THREE.MeshLambertMaterial({ color: BODY_COLOR }));
+  // ステンレスの外板。粗さを低めにすると、腰から上の平らな面が空を映して光る
+  return new THREE.Mesh(geometry, metal(BODY_COLOR, 0.32, 0.62));
 }
 
 /**
@@ -189,7 +215,16 @@ function sidePanel(
   geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
   geometry.setIndex(indices);
   geometry.computeVertexNormals();
-  return new THREE.Mesh(geometry, new THREE.MeshLambertMaterial({ color, side: THREE.DoubleSide }));
+  const material =
+    color === GLASS_COLOR
+      ? glass()
+      : new THREE.MeshStandardMaterial({
+          color,
+          roughness: 0.34,
+          metalness: 0.55,
+          side: THREE.DoubleSide,
+        });
+  return new THREE.Mesh(geometry, material);
 }
 
 /**
@@ -309,21 +344,18 @@ function buildRoof(bodyLength: number, powered: boolean): THREE.Group {
   // 屋根板（肩の丸みの上に載る平らな部分）
   const roof = new THREE.Mesh(
     new THREE.BoxGeometry(bodyLength - 0.2, 0.04, (CAR.bodyWidth - CAR.roofRadius * 2) * 0.98),
-    new THREE.MeshLambertMaterial({ color: ROOF_COLOR }),
+    painted(ROOF_COLOR, 0.75),
   );
   roof.position.y = roofY + 0.01;
   group.add(roof);
 
   // 集中式冷房装置（AU726 相当。1 両に 1 台、屋根の中央）
-  const cooler = new THREE.Mesh(
-    new THREE.BoxGeometry(2.2, 0.42, 1.6),
-    new THREE.MeshLambertMaterial({ color: 0xb6bcc2 }),
-  );
+  const cooler = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.42, 1.6), metal(0xb6bcc2, 0.5, 0.6));
   cooler.position.y = roofY + 0.23;
   group.add(cooler);
   const coolerLid = new THREE.Mesh(
     new THREE.BoxGeometry(1.9, 0.06, 1.3),
-    new THREE.MeshLambertMaterial({ color: 0x8d949b }),
+    metal(0x8d949b, 0.55, 0.6),
   );
   coolerLid.position.y = roofY + 0.46;
   group.add(coolerLid);
@@ -332,7 +364,7 @@ function buildRoof(bodyLength: number, powered: boolean): THREE.Group {
   for (const z of [-0.75, 0.75]) {
     const board = new THREE.Mesh(
       new THREE.BoxGeometry(bodyLength - 1.2, 0.05, 0.22),
-      new THREE.MeshLambertMaterial({ color: 0x9aa1a8 }),
+      metal(0x9aa1a8, 0.5, 0.6),
     );
     board.position.set(0, roofY + 0.05, z);
     group.add(board);
@@ -351,15 +383,15 @@ function buildRoof(bodyLength: number, powered: boolean): THREE.Group {
  */
 function buildPantograph(x: number, roofY: number): THREE.Group {
   const group = new THREE.Group();
-  const metal = new THREE.MeshLambertMaterial({ color: 0x8b9298 });
-  const dark = new THREE.MeshLambertMaterial({ color: 0x3c4147 });
+  const frameMetal = metal(0x8b9298, 0.35, 0.8);
+  const dark = painted(0x3c4147, 0.55);
 
   // 碍子 4 個と台枠
   for (const dx of [-0.7, 0.7]) {
     for (const dz of [-0.8, 0.8]) {
       const insulator = new THREE.Mesh(
         new THREE.CylinderGeometry(0.07, 0.07, 0.24, 8),
-        new THREE.MeshLambertMaterial({ color: 0x6d5b52 }),
+        painted(0x6d5b52, 0.4),
       );
       insulator.position.set(dx, roofY + 0.12, dz);
       group.add(insulator);
@@ -387,7 +419,7 @@ function buildPantograph(x: number, roofY: number): THREE.Group {
     const dir = new THREE.Vector3().subVectors(to, from);
     const mesh = new THREE.Mesh(
       new THREE.CylinderGeometry(radius, radius * 1.3, dir.length(), 6),
-      metal,
+      frameMetal,
     );
     mesh.position.copy(from).addScaledVector(dir, 0.5);
     mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
@@ -406,11 +438,11 @@ function buildPantograph(x: number, roofY: number): THREE.Group {
     shoe.position.set(0.32 + dx, headY - 0.03, 0);
     group.add(shoe);
   }
-  const cradle = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.05, 1.7), metal);
+  const cradle = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.05, 1.7), frameMetal);
   cradle.position.set(0.32, headY - 0.1, 0);
   group.add(cradle);
   for (const dz of [-1, 1]) {
-    const horn = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, 0.3, 6), metal);
+    const horn = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, 0.3, 6), frameMetal);
     horn.rotation.x = dz * 0.9;
     horn.position.set(0.32, headY - 0.12, dz * 1.05);
     group.add(horn);
@@ -429,12 +461,12 @@ function buildPantograph(x: number, roofY: number): THREE.Group {
  */
 function buildUnderframe(spec: VehicleSpec, bodyLength: number, powered: boolean): THREE.Group {
   const group = new THREE.Group();
-  const material = new THREE.MeshLambertMaterial({ color: UNDER_COLOR });
+  const material = painted(UNDER_COLOR, 0.75);
 
   // 台枠
   const underframe = new THREE.Mesh(
     new THREE.BoxGeometry(bodyLength - 0.4, 0.16, CAR.skirtWidth - 0.2),
-    new THREE.MeshLambertMaterial({ color: 0x4a4f55 }),
+    metal(0x4a4f55, 0.6, 0.5),
   );
   underframe.position.y = CAR.underframeHeight - 0.08;
   group.add(underframe);
@@ -471,8 +503,9 @@ function buildUnderframe(spec: VehicleSpec, bodyLength: number, powered: boolean
  */
 function buildBogie(spec: VehicleSpec, x: number, powered: boolean): THREE.Group {
   const group = new THREE.Group();
-  const frameMaterial = new THREE.MeshLambertMaterial({ color: BOGIE_COLOR });
-  const wheelMaterial = new THREE.MeshLambertMaterial({ color: WHEEL_COLOR });
+  const frameMaterial = painted(BOGIE_COLOR, 0.72);
+  // 踏面は毎日レールに磨かれるので、台車枠よりずっと光る
+  const wheelMaterial = metal(WHEEL_COLOR, 0.32, 0.85);
   const radius = spec.wheelDiameter / 2;
   const halfBase = spec.bogieWheelbase / 2;
 
@@ -520,7 +553,7 @@ function buildBogie(spec: VehicleSpec, x: number, powered: boolean): THREE.Group
       // 軸ばね（コイルばね）
       const spring = new THREE.Mesh(
         new THREE.CylinderGeometry(0.09, 0.09, 0.18, 8),
-        new THREE.MeshLambertMaterial({ color: 0x6b7076 }),
+        metal(0x6b7076, 0.5, 0.6),
       );
       spring.position.set(dx, radius + 0.2, z);
       group.add(spring);
@@ -531,7 +564,7 @@ function buildBogie(spec: VehicleSpec, x: number, powered: boolean): THREE.Group
   for (const z of [-0.95, 0.95]) {
     const airSpring = new THREE.Mesh(
       new THREE.CylinderGeometry(0.28, 0.26, 0.24, 12),
-      new THREE.MeshLambertMaterial({ color: 0x2b2f34 }),
+      painted(0x2b2f34, 0.85),
     );
     airSpring.position.set(0, radius + 0.38, z);
     group.add(airSpring);
@@ -542,14 +575,14 @@ function buildBogie(spec: VehicleSpec, x: number, powered: boolean): THREE.Group
     for (const dx of [-halfBase, halfBase]) {
       const motor = new THREE.Mesh(
         new THREE.CylinderGeometry(0.19, 0.19, 0.62, 10),
-        new THREE.MeshLambertMaterial({ color: 0x40454b }),
+        metal(0x40454b, 0.55, 0.6),
       );
       motor.rotation.x = Math.PI / 2;
       motor.position.set(dx + Math.sign(dx) * 0.36, radius, 0.25);
       group.add(motor);
       const gearbox = new THREE.Mesh(
         new THREE.BoxGeometry(0.34, 0.34, 0.26),
-        new THREE.MeshLambertMaterial({ color: 0x4a4f55 }),
+        metal(0x4a4f55, 0.55, 0.6),
       );
       gearbox.position.set(dx, radius - 0.02, -0.15);
       group.add(gearbox);
@@ -559,10 +592,7 @@ function buildBogie(spec: VehicleSpec, x: number, powered: boolean): THREE.Group
   // 基礎ブレーキ（ユニットブレーキ）
   for (const dx of [-halfBase, halfBase]) {
     for (const z of [-0.7, 0.7]) {
-      const unit = new THREE.Mesh(
-        new THREE.BoxGeometry(0.2, 0.2, 0.14),
-        new THREE.MeshLambertMaterial({ color: 0x585d63 }),
-      );
+      const unit = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.2, 0.14), metal(0x585d63, 0.6, 0.5));
       unit.position.set(dx + Math.sign(dx) * 0.28, radius + 0.05, z);
       group.add(unit);
     }
@@ -595,7 +625,7 @@ function buildFrontEnd(bodyLength: number, front: boolean): THREE.Group {
   ): THREE.Mesh => {
     const mesh = new THREE.Mesh(
       new THREE.BoxGeometry(0.04, height, width),
-      new THREE.MeshLambertMaterial({ color }),
+      color === GLASS_COLOR ? glass() : metal(color, 0.36, 0.5),
     );
     mesh.position.set(x + outward * dx, y, z);
     return mesh;
@@ -621,6 +651,21 @@ function buildFrontEnd(bodyLength: number, front: boolean): THREE.Group {
     head.position.set(x + outward * 0.04, CAR.floorHeight + 0.42, dz * 1.05);
     group.add(head);
 
+    // 前照灯のにじみ。灯具そのものより一回り大きく光って見える
+    const halo = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.6, 0.6),
+      new THREE.MeshBasicMaterial({
+        map: glowTexture(),
+        color: 0xfff2cf,
+        transparent: true,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      }),
+    );
+    halo.rotation.y = outward > 0 ? Math.PI / 2 : -Math.PI / 2;
+    halo.position.set(x + outward * 0.08, CAR.floorHeight + 0.42, dz * 1.05);
+    group.add(halo);
+
     const tail = new THREE.Mesh(
       new THREE.CylinderGeometry(0.07, 0.07, 0.05, 10),
       new THREE.MeshBasicMaterial({ color: 0x5a1512 }),
@@ -631,10 +676,7 @@ function buildFrontEnd(bodyLength: number, front: boolean): THREE.Group {
   }
 
   // 排障器（スカート）
-  const skirt = new THREE.Mesh(
-    new THREE.BoxGeometry(0.12, 0.62, 2.5),
-    new THREE.MeshLambertMaterial({ color: 0x4b5158 }),
-  );
+  const skirt = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.62, 2.5), painted(0x4b5158, 0.6));
   skirt.position.set(x + outward * 0.05, CAR.underframeHeight - 0.34, 0);
   group.add(skirt);
 
@@ -648,7 +690,7 @@ function buildFrontEnd(bodyLength: number, front: boolean): THREE.Group {
  */
 function buildCouplers(length: number, lead: boolean, front: boolean): THREE.Group {
   const group = new THREE.Group();
-  const material = new THREE.MeshLambertMaterial({ color: 0x3a3f45 });
+  const material = metal(0x3a3f45, 0.6, 0.6);
   const bodyLength = length - (CAR.couplerLength - CAR.bodyLength);
 
   for (const sign of [-1, 1] as const) {
@@ -665,7 +707,7 @@ function buildCouplers(length: number, lead: boolean, front: boolean): THREE.Gro
       // 幌（連結面の隙間を塞ぐ蛇腹）
       const bellows = new THREE.Mesh(
         new THREE.BoxGeometry(0.26, 2.0, 1.5),
-        new THREE.MeshLambertMaterial({ color: 0x23272b }),
+        painted(0x23272b, 0.95),
       );
       bellows.position.set(x + sign * 0.13, CAR.floorHeight + 1.05, 0);
       group.add(bellows);

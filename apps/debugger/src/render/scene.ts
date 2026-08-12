@@ -3,7 +3,7 @@ import type { CompiledRoute, Simulation } from '@railsim/core';
 import { buildCatenary } from './catenary.ts';
 import { makeFrameAt, type TrackFrame } from './frame.ts';
 import { buildScenery, buildTunnels } from './scenery.ts';
-import { createDaylight, createSky } from './sky.ts';
+import { createDaylight, createSky, SUN_DIRECTION } from './sky.ts';
 import { buildTrack, buildTurnouts } from './track.ts';
 import { buildCar } from './vehicle.ts';
 import {
@@ -15,8 +15,9 @@ import {
   type SignalHandle,
 } from './wayside.ts';
 import { CAR } from './dimensions.ts';
+import { createEnvironment, grassSurface } from './textures.ts';
 
-const GROUND_COLOR = 0x5e7a4a;
+const GROUND_COLOR = 0x87a06a;
 
 /**
  * 運転席の位置（先頭車の前端からの距離・中心からの左右・レール面からの高さ）。
@@ -49,38 +50,73 @@ export class TrackScene {
   private readonly signalHandles: Map<string, SignalHandle>;
   private readonly route: CompiledRoute;
   private readonly frameAt: (s: number) => TrackFrame;
+  private readonly sun: THREE.DirectionalLight;
   /** 運転席視点の位置と姿勢（update() で更新される） */
   readonly cabPosition = new THREE.Vector3();
   readonly cabQuaternion = new THREE.Quaternion();
 
-  constructor(route: CompiledRoute, sim: Simulation) {
+  /**
+   * @param renderer 環境マップを焼くのに使う。渡すと金属が空を映すようになる
+   */
+  constructor(route: CompiledRoute, sim: Simulation, renderer?: THREE.WebGLRenderer) {
     this.route = route;
     this.frameAt = makeFrameAt(route);
     this.scene.background = new THREE.Color(0xa9c8e4);
     this.scene.fog = new THREE.Fog(0xbcd4ea, 900, 4200);
 
     this.scene.add(createSky());
-    for (const light of createDaylight()) this.scene.add(light);
+    const { sun, ambient } = createDaylight();
+    this.sun = sun;
+    this.scene.add(sun, sun.target, ambient);
+    // 金属の映り込みの元。レールの頭頂面・ステンレスの車体・架線金具は、
+    // これが無いと「映すものが無い金属」になって黒く沈む。
+    if (renderer) {
+      this.scene.environment = createEnvironment(renderer);
+      // 映り込みの元としては十分で、かつ影の中を照らしすぎない強さ
+      this.scene.environmentIntensity = 0.75;
+    }
 
     const inTunnel = (s: number): boolean => route.tunnels.at(s).length > 0;
 
+    // 影を落とす側は絞る。トンネルの覆工（中は日が差さない）、地上子、分岐器の
+    // 細かい金物まで影の地図に描いても、手間のわりに絵は変わらない。
     this.buildGround();
-    for (const o of buildTrack(route, this.frameAt)) this.scene.add(o);
-    for (const o of buildTurnouts(route, this.frameAt)) this.scene.add(o);
-    for (const o of buildDistancePosts(route, this.frameAt)) this.scene.add(o);
-    for (const o of buildGradePosts(route, this.frameAt)) this.scene.add(o);
-    for (const o of buildStations(route, this.frameAt)) this.scene.add(o);
-    for (const o of buildBeacons(route, this.frameAt)) this.scene.add(o);
-    for (const o of buildTunnels(route, this.frameAt)) this.scene.add(o);
-    for (const o of buildCatenary(route, this.frameAt, inTunnel)) this.scene.add(o);
-    for (const o of buildScenery(route, this.frameAt)) this.scene.add(o);
+    this.add(buildTrack(route, this.frameAt), true);
+    this.add(buildTurnouts(route, this.frameAt), false);
+    this.add(buildDistancePosts(route, this.frameAt), true);
+    this.add(buildGradePosts(route, this.frameAt), true);
+    this.add(buildStations(route, this.frameAt), true);
+    this.add(buildBeacons(route, this.frameAt), false);
+    this.add(buildTunnels(route, this.frameAt), false);
+    this.add(buildCatenary(route, this.frameAt, inTunnel), true);
+    this.add(buildScenery(route, this.frameAt), true);
 
     const signals = buildSignals(route, this.frameAt);
-    for (const o of signals.objects) this.scene.add(o);
+    this.add(signals.objects, true);
     this.signalHandles = signals.handles;
 
     this.buildTrain(sim);
     this.update(sim);
+  }
+
+  /**
+   * 構造物をシーンに入れ、影の扱いを決める。
+   *
+   * 影を受けるのはすべての面。落とすのは `cast` を立てたものだけ。
+   * 自ら光っている面（信号の灯火・トンネル照明・光のにじみ）は、影を
+   * 落とすと光源が黒い板に見えてしまうので外す。
+   */
+  private add(objects: readonly THREE.Object3D[], cast: boolean): void {
+    for (const object of objects) {
+      object.traverse((node) => {
+        if (!(node instanceof THREE.Mesh) && !(node instanceof THREE.InstancedMesh)) return;
+        const material = node.material as THREE.Material;
+        if (material instanceof THREE.MeshBasicMaterial) return;
+        node.receiveShadow = true;
+        node.castShadow = cast;
+      });
+      this.scene.add(object);
+    }
   }
 
   /**
@@ -93,15 +129,23 @@ export class TrackScene {
     const n = Math.floor(this.route.length / step);
     const halfWidth = 260;
     const positions: number[] = [];
+    const uvs: number[] = [];
+    let u = 0;
+    let previous: THREE.Vector3 | null = null;
     for (let i = 0; i <= n; i++) {
       const s = Math.min(i * step, this.route.length);
       const f = this.frameAt(s);
+      if (previous) u += f.position.distanceTo(previous);
+      previous = f.position.clone();
       const l = f.position.clone().addScaledVector(f.right, -halfWidth);
       const r = f.position.clone().addScaledVector(f.right, halfWidth);
       positions.push(l.x, l.y - 1.2, l.z, r.x, r.y - 1.2, r.z);
+      // UV は m 単位。草の模様が線路の近くでも遠くでも同じ大きさになる
+      uvs.push(u, -halfWidth, u, halfWidth);
     }
     const geom = new THREE.BufferGeometry();
     geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geom.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
     const indices: number[] = [];
     for (let i = 0; i < n; i++) {
       const a = i * 2;
@@ -109,12 +153,21 @@ export class TrackScene {
     }
     geom.setIndex(indices);
     geom.computeVertexNormals();
-    this.scene.add(
-      new THREE.Mesh(
-        geom,
-        new THREE.MeshLambertMaterial({ color: GROUND_COLOR, side: THREE.DoubleSide }),
-      ),
+    const ground = new THREE.Mesh(
+      geom,
+      new THREE.MeshStandardMaterial({
+        color: GROUND_COLOR,
+        ...grassSurface().maps(18),
+        // 地面は 1 枚を何十回も繰り返すので、凹凸を強くすると繰り返しが目に付く
+        normalScale: new THREE.Vector2(0.25, 0.25),
+        roughness: 1,
+        side: THREE.DoubleSide,
+      }),
     );
+    // 地表は影を受けるだけ。線路の周り数百 m を覆う 1 枚の板なので、
+    // これ自身に影を落とさせると自分の裏側を陰にして縞が出る。
+    ground.receiveShadow = true;
+    this.scene.add(ground);
   }
 
   /**
@@ -129,7 +182,7 @@ export class TrackScene {
       const veh = cars[i]!;
       const lead = i === 0 || i === cars.length - 1;
       const { group } = buildCar(veh.spec, lead, i === 0);
-      this.scene.add(group);
+      this.add([group], true);
       this.vehicleMeshes.push(group);
     }
   }
@@ -178,6 +231,14 @@ export class TrackScene {
 
     for (const s of sim.signalling.snapshot()) {
       this.signalHandles.get(s.id)?.setAspect(s.aspect);
+    }
+
+    // 影を焼く範囲を列車に追従させる。路線全体を 1 枚の影の地図に収めることは
+    // できないので、列車の周り 100m ほどだけを高い解像度で焼く。
+    const lead = this.vehicleMeshes[0];
+    if (lead) {
+      this.sun.target.position.copy(lead.position);
+      this.sun.position.copy(lead.position).addScaledVector(SUN_DIRECTION, 300);
     }
   }
 

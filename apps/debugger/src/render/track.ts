@@ -9,14 +9,33 @@ import {
   type SectionPoint,
   type SweepStation,
 } from './geometry.ts';
+import { ballastSurface, rustedSteelSurface, sleeperSurface } from './textures.ts';
 
 const RAIL_COLOR = 0x8b9198;
 /** 頭頂面だけは車輪に磨かれて光る */
 const RAILHEAD_COLOR = 0xd7dade;
-const SLEEPER_COLOR = 0xa8a49c;
-const BALLAST_COLOR = 0x7d786e;
-const FORMATION_COLOR = 0x6d6a5c;
-const FITTING_COLOR = 0x4a4f55;
+const SLEEPER_COLOR = 0xb0aba2;
+const BALLAST_COLOR = 0xa39d92;
+const FORMATION_COLOR = 0x7b7360;
+const FITTING_COLOR = 0x6a6e73;
+
+/**
+ * レールの材質。
+ *
+ * 腹部と底部は錆と油で黒ずんだ鋼、頭頂面だけが車輪に磨かれた鏡面になる。
+ * 金属らしさは環境マップの映り込みで出るので、材質は金属度と粗さで指定する。
+ */
+function railMaterial(): THREE.MeshStandardMaterial {
+  const { map, normalMap } = rustedSteelSurface().maps(1.2, 0.35);
+  return new THREE.MeshStandardMaterial({
+    color: RAIL_COLOR,
+    map,
+    normalMap,
+    normalScale: new THREE.Vector2(0.4, 0.4),
+    metalness: 0.72,
+    roughness: 0.58,
+  });
+}
 
 /**
  * 50kgN レールの断面（JIS E 1101）。
@@ -97,16 +116,21 @@ export function buildTrack(
 
   // --- レール ---
   const railStations = stationsAlong(route.length, 3, frameAt);
-  const railMaterial = new THREE.MeshLambertMaterial({ color: RAIL_COLOR });
+  const rail = railMaterial();
+  // 頭頂面（走行面）。車輪に磨かれた鏡面なので、空を映して銀色に光る
+  const railhead = new THREE.MeshStandardMaterial({
+    color: RAILHEAD_COLOR,
+    metalness: 1,
+    roughness: 0.14,
+  });
   for (const side of [-1, 1] as const) {
     const geom = sweepSection(
       railStations.map((st) => ({ ...st, lateral: side * offset })),
       RAIL_SECTION,
       { closed: true },
     );
-    out.push(new THREE.Mesh(geom, railMaterial));
+    out.push(new THREE.Mesh(geom, rail));
 
-    // 頭頂面（走行面）。車輪に磨かれて銀色に光る細い帯
     const headGeom = sweepSection(
       railStations.map((st) => ({ ...st, lateral: side * offset, vertical: 0.002 })),
       [
@@ -114,30 +138,41 @@ export function buildTrack(
         [RAIL.headWidth / 2 - 0.006, 0],
       ],
     );
-    out.push(new THREE.Mesh(headGeom, new THREE.MeshBasicMaterial({ color: RAILHEAD_COLOR })));
+    out.push(new THREE.Mesh(headGeom, railhead));
   }
 
   // --- 道床・路盤 ---
   const bed = stationsAlong(route.length, 5, frameAt);
   const section = ballastSection();
   // 道床（まくらぎ端から肩まで）と、その外の路盤・盛土のり面を別の材質にして
-  // バラストと土の境目が見えるようにする
+  // バラストと土の境目が見えるようにする。砕石は 1 粒 40mm 前後になるよう
+  // テクスチャ 1 枚を 1.2m で貼る。
+  const ballastFaces = section.slice(1, section.length - 1);
   out.push(
     new THREE.Mesh(
-      sweepSection(bed, section.slice(1, section.length - 1)),
-      new THREE.MeshLambertMaterial({ color: BALLAST_COLOR, side: THREE.DoubleSide }),
+      sweepSection(bed, ballastFaces),
+      new THREE.MeshStandardMaterial({
+        color: BALLAST_COLOR,
+        ...ballastSurface().maps(1.2),
+        normalScale: new THREE.Vector2(1.5, 1.5),
+        roughness: 1,
+        side: THREE.DoubleSide,
+      }),
     ),
   );
-  out.push(
-    new THREE.Mesh(
-      sweepSection(bed, [section[0]!, section[1]!]),
-      new THREE.MeshLambertMaterial({ color: FORMATION_COLOR, side: THREE.DoubleSide }),
-    ),
-  );
+  // 盛土のり面は同じ砕石を土の色で使う（実物ものり面には細かい砕石が撒かれている）
+  const slope = new THREE.MeshStandardMaterial({
+    color: FORMATION_COLOR,
+    ...ballastSurface().maps(1.8),
+    normalScale: new THREE.Vector2(0.8, 0.8),
+    roughness: 1,
+    side: THREE.DoubleSide,
+  });
+  out.push(new THREE.Mesh(sweepSection(bed, [section[0]!, section[1]!]), slope));
   out.push(
     new THREE.Mesh(
       sweepSection(bed, [section[section.length - 2]!, section[section.length - 1]!]),
-      new THREE.MeshLambertMaterial({ color: FORMATION_COLOR, side: THREE.DoubleSide }),
+      slope,
     ),
   );
 
@@ -182,13 +217,23 @@ function buildSleepers(
 
   const sleeper = new THREE.InstancedMesh(
     taperedBoxGeometry(SLEEPER.topWidth, SLEEPER.bottomWidth, SLEEPER.height, SLEEPER.length),
-    new THREE.MeshLambertMaterial({ color: SLEEPER_COLOR }),
+    new THREE.MeshStandardMaterial({
+      color: SLEEPER_COLOR,
+      ...sleeperSurface().maps(0.9),
+      normalScale: new THREE.Vector2(0.7, 0.7),
+      roughness: 0.92,
+    }),
     count,
   );
   // 締結装置（レール締結ばねと軌道パッド）。まくらぎ 1 本につき左右 2 個
   const fastening = new THREE.InstancedMesh(
     new THREE.BoxGeometry(0.2, 0.03, 0.19),
-    new THREE.MeshLambertMaterial({ color: FITTING_COLOR }),
+    new THREE.MeshStandardMaterial({
+      color: FITTING_COLOR,
+      ...rustedSteelSurface().maps(0.25),
+      metalness: 0.7,
+      roughness: 0.6,
+    }),
     count * 2,
   );
 
@@ -242,7 +287,12 @@ function buildRailJoints(
 
   const plate = new THREE.InstancedMesh(
     new THREE.BoxGeometry(0.6, 0.1, 0.03),
-    new THREE.MeshLambertMaterial({ color: FITTING_COLOR }),
+    new THREE.MeshStandardMaterial({
+      color: FITTING_COLOR,
+      ...rustedSteelSurface().maps(0.6),
+      metalness: 0.6,
+      roughness: 0.7,
+    }),
     positions.length * 2,
   );
   const m = new THREE.Matrix4();
@@ -266,6 +316,9 @@ function buildRailJoints(
 /**
  * 上面と底面で幅が違う直方体。
  * まくらぎは型枠から抜くために側面がわずかに開いているので、真四角にはならない。
+ *
+ * UV は m 単位で入れる（面ごとに実寸の平面投影）。まくらぎの上面と側面で
+ * コンクリートの模様の大きさが揃うので、継ぎ目が目立たない。
  */
 function taperedBoxGeometry(
   topWidth: number,
@@ -288,26 +341,31 @@ function taperedBoxGeometry(
     [b, -hy, hz],
     [-b, -hy, hz],
   ];
-  const faces = [
-    [0, 1, 2, 3], // 上
-    [7, 6, 5, 4], // 下
-    [4, 5, 1, 0], // 手前（線路方向 -）
-    [3, 2, 6, 7], // 奥
-    [0, 3, 7, 4], // 端
-    [5, 6, 2, 1], // 端
+  const faces: Array<{ readonly idx: readonly number[]; readonly uv: 'xz' | 'xy' | 'zy' }> = [
+    { idx: [0, 1, 2, 3], uv: 'xz' }, // 上
+    { idx: [7, 6, 5, 4], uv: 'xz' }, // 下
+    { idx: [4, 5, 1, 0], uv: 'xy' }, // 手前（線路方向 -）
+    { idx: [3, 2, 6, 7], uv: 'xy' }, // 奥
+    { idx: [0, 3, 7, 4], uv: 'zy' }, // 端
+    { idx: [5, 6, 2, 1], uv: 'zy' }, // 端
   ];
   const positions: number[] = [];
+  const uvs: number[] = [];
   const indices: number[] = [];
   for (const face of faces) {
     const base = positions.length / 3;
-    for (const idx of face) {
+    for (const idx of face.idx) {
       const [x, y, z] = v[idx!]!;
       positions.push(x!, y!, z!);
+      if (face.uv === 'xz') uvs.push(z!, x!);
+      else if (face.uv === 'xy') uvs.push(z!, y!);
+      else uvs.push(x!, y!);
     }
     indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
   }
   const geom = new THREE.BufferGeometry();
   geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geom.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
   geom.setIndex(indices);
   geom.computeVertexNormals();
   return geom;
@@ -344,7 +402,13 @@ export function buildTurnouts(
 ): THREE.Object3D[] {
   const out: THREE.Object3D[] = [];
   const offset = RAIL_CENTRE_OFFSET(route.alignment.gauge);
-  const railMaterial = new THREE.MeshLambertMaterial({ color: RAIL_COLOR });
+  const rail = railMaterial();
+  // トングレールとクロッシングは車輪に叩かれて磨かれるので、レール本体より光る
+  const polished = new THREE.MeshStandardMaterial({
+    color: RAILHEAD_COLOR,
+    metalness: 0.95,
+    roughness: 0.28,
+  });
 
   for (const turnout of route.turnouts.turnouts) {
     // 分岐側を走っているときは、分かれていくのは本線（反対側へ離れる）
@@ -377,7 +441,7 @@ export function buildTurnouts(
             RAIL_SECTION,
             { closed: true },
           ),
-          railMaterial,
+          rail,
         ),
       );
     }
@@ -389,20 +453,12 @@ export function buildTurnouts(
       tongue.push({ frame: frameAt(start + d), lateral: branchOffset(d) - away * offset });
     }
     if (tongue.length >= 2) {
-      out.push(
-        new THREE.Mesh(
-          tongueGeometry(tongue, away, tongueLength),
-          new THREE.MeshLambertMaterial({ color: RAILHEAD_COLOR }),
-        ),
-      );
+      out.push(new THREE.Mesh(tongueGeometry(tongue, away, tongueLength), polished));
     }
 
     // クロッシング（ノーズ）とウイングレール
     const crossingFrame = frameAt(Math.min(route.length, turnout.crossingPosition));
-    const nose = new THREE.Mesh(
-      new THREE.BoxGeometry(3.2, RAIL.height, 0.22),
-      new THREE.MeshLambertMaterial({ color: RAILHEAD_COLOR }),
-    );
+    const nose = new THREE.Mesh(new THREE.BoxGeometry(3.2, RAIL.height, 0.22), polished);
     nose.quaternion.copy(frameQuaternion(crossingFrame));
     nose.position
       .copy(crossingFrame.position)
@@ -428,7 +484,7 @@ export function buildTurnouts(
           ],
           { closed: true },
         ),
-        railMaterial,
+        rail,
       ),
     );
 
@@ -438,14 +494,16 @@ export function buildTurnouts(
     const machine = new THREE.Group();
     const box = new THREE.Mesh(
       new THREE.BoxGeometry(POINT_MACHINE.length, POINT_MACHINE.height, POINT_MACHINE.width),
-      new THREE.MeshLambertMaterial({
+      new THREE.MeshStandardMaterial({
         color: turnout.route === 'diverging' ? 0xd8a12c : 0x9aa1a8,
+        metalness: 0.5,
+        roughness: 0.55,
       }),
     );
     box.position.y = POINT_MACHINE.height / 2;
     const rod = new THREE.Mesh(
       new THREE.BoxGeometry(0.08, 0.06, POINT_MACHINE.offset - offset),
-      new THREE.MeshLambertMaterial({ color: FITTING_COLOR }),
+      new THREE.MeshStandardMaterial({ color: FITTING_COLOR, metalness: 0.7, roughness: 0.55 }),
     );
     rod.position.set(0.2, 0.1, (-away * (POINT_MACHINE.offset - offset)) / 2);
     machine.add(box, rod);
