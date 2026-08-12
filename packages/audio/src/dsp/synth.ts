@@ -5,6 +5,7 @@ import { AlarmVoice, HornVoice, type AlarmParams, type HornParams } from './cab.
 import { BrakeVoice, type BrakeParams } from './brake.ts';
 import { InverterVoice, type InverterVoiceParams } from './inverterVoice.ts';
 import { RailJointVoice, type JointImpact } from './railJointVoice.ts';
+import { TurnoutVoice, type TurnoutImpact } from './turnoutVoice.ts';
 import {
   GearVoice,
   RollingVoice,
@@ -33,8 +34,8 @@ export interface TrainNoiseParams {
  * すべての音源をここで足し合わせる。Web Audio のノードグラフを組まずに 1 つの
  * ワークレットで完結させているのは、どの音源も**同じシミュレーション状態から
  * 連続的に駆動される**ためで、ノードに分けても配線が増えるだけで得が無い。
- * 唯一の例外はレール継目で、これは離散的な打撃なのでサンプル位置を指定して
- * 予約する形にしてある。
+ * 唯一の例外はレール継目と分岐器で、これらは離散的な打撃なのでサンプル位置を
+ * 指定して予約する形にしてある。
  *
  * このクラスは Web Audio に一切触れないので、node でオフラインレンダして
  * スペクトルや音量の関係を検定できる。
@@ -47,6 +48,7 @@ export class TrainNoiseSynth {
   readonly brake: BrakeVoice;
   readonly auxiliary: AuxiliaryVoice;
   readonly railJoint: RailJointVoice;
+  readonly turnout: TurnoutVoice;
   readonly airSpring: AirSpringVoice;
   readonly alarm: AlarmVoice;
   readonly horn: HornVoice;
@@ -64,6 +66,7 @@ export class TrainNoiseSynth {
     this.brake = new BrakeVoice(sampleRate);
     this.auxiliary = new AuxiliaryVoice(sampleRate);
     this.railJoint = new RailJointVoice(sampleRate);
+    this.turnout = new TurnoutVoice(sampleRate);
     this.airSpring = new AirSpringVoice(sampleRate);
     this.alarm = new AlarmVoice(sampleRate);
     this.horn = new HornVoice(sampleRate);
@@ -86,6 +89,11 @@ export class TrainNoiseSynth {
     this.railJoint.trigger(impact);
   }
 
+  /** 分岐器の衝撃を予約する（同じくサンプル精度） */
+  triggerTurnout(impact: TurnoutImpact): void {
+    this.turnout.trigger(impact);
+  }
+
   render(out: Float32Array): void {
     // 音源をいったん別のバッファへ出してから足す。混ざったあとでは各音源が
     // どれだけ鳴っているか分からないので、バランスを調整する UI のために
@@ -99,6 +107,7 @@ export class TrainNoiseSynth {
     this.mix(out, VOICE.brake, (b) => this.brake.render(b));
     this.mix(out, VOICE.auxiliary, (b) => this.auxiliary.render(b));
     this.mix(out, VOICE.railJoint, (b) => this.railJoint.render(b));
+    this.mix(out, VOICE.turnout, (b) => this.turnout.render(b));
     this.mix(out, VOICE.airSpring, (b) => this.airSpring.render(b));
     this.mix(out, VOICE.alarm, (b) => this.alarm.render(b));
     this.mix(out, VOICE.horn, (b) => this.horn.render(b));
@@ -143,6 +152,7 @@ export class TrainNoiseSynth {
     this.brake.reset();
     this.auxiliary.reset();
     this.railJoint.reset();
+    this.turnout.reset();
     this.airSpring.reset();
     this.alarm.reset();
     this.horn.reset();

@@ -137,15 +137,49 @@ export const suspensionSchema = z.object({
   yawDamping: z.number().positive().default(0.3),
 });
 
-/** 乗客（吊り革）の振られ方 */
+/**
+ * 車内の乗客。
+ *
+ * 吊り革は物なので減衰振り子でよいが、立っている乗客は人なので、足首を支点とした
+ * 倒立振子に**むだ時間を持つ姿勢制御**を載せたものとして扱う。既定値は姿勢制御の
+ * 生理学で使われる代表値による。
+ */
 export const passengerSchema = z.object({
-  /** 振り子の長さ [m]。固有周期 T = 2π√(L/g) が 1.4〜1.7 秒になる 0.5〜0.7m 程度。 */
-  pendulumLength: z.number().positive().default(0.6),
+  /** 吊り革の長さ [m]。固有周期 T = 2π√(L/g) が 1.4〜1.7 秒になる 0.5〜0.7m 程度。 */
+  strapLength: z.number().positive().default(0.6),
   /**
-   * 減衰比（0 = 減衰なし、1 = 臨界減衰）。
+   * 吊り革の減衰比（0 = 減衰なし、1 = 臨界減衰）。
    * 吊り革の減衰は弱く、急停車では前へ振られたぶんの半分ほど後ろへ戻る。
    */
-  dampingRatio: z.number().positive().default(0.2),
+  strapDamping: z.number().positive().default(0.2),
+  /** 立っている乗客の重心高さ [m] */
+  comHeight: z.number().positive().default(0.95),
+  /** 支持基底面: くるぶしから爪先まで [m] */
+  footForward: z.number().positive().default(0.12),
+  /** 支持基底面: くるぶしから踵まで [m]（爪先側より狭いので後ろへは倒れやすい） */
+  footBackward: z.number().positive().default(0.07),
+  /** 支持基底面: 左右 [m] */
+  footLateral: z.number().positive().default(0.085),
+  /** 吊り革・手すりで増える支持余裕 [m]（0 = どこにもつかまっていない） */
+  handSupport: z.number().nonnegative().default(0.05),
+  /** 姿勢制御のむだ時間 [s]。よろけるかどうかを決めるいちばん効く量。 */
+  reactionDelay: z.number().nonnegative().default(0.14),
+  /** 筋張力の立ち上がり時定数 [s] */
+  muscleTimeConstant: z.number().positive().default(0.06),
+  /** 姿勢の比例ゲイン（重心高さに対する比）。1 以下では立っていられない。 */
+  stiffnessRatio: z.number().positive().default(1.35),
+  /** 姿勢の微分ゲイン [m/(rad/s)]。むだ時間のぶん、遅れの無い系より大きく要る。 */
+  dampingGain: z.number().nonnegative().default(0.45),
+  /** 倒れたと見なす傾き [rad] */
+  maxLean: z.number().positive().default(0.5),
+  /** 片足支持のあいだの支持基底面の縮小率 */
+  singleSupportFactor: z.number().positive().default(0.45),
+  /** 一歩の最大長さ [m] */
+  stepLength: z.number().positive().default(0.22),
+  /** 踏み出しから着地までの時間 [s] */
+  stepDuration: z.number().positive().default(0.35),
+  /** 着地で角速度が減る割合 */
+  stepDissipation: z.number().nonnegative().default(0.35),
 });
 
 export const carSchema = z.object({

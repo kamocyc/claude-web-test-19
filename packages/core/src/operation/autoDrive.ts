@@ -266,7 +266,9 @@ interface StopPoint {
  * 対する指令は a(v)·D(v)/d でよい。ちょうど良い位置（d = D(v)）ならそのまま a(v) が出て、
  * ずれていれば比例して補正される。これは一定減速度の必要減速度 a = v²/2d の自然な
  * 拡張であり、**停止位置の精度を落とさずに**止まる瞬間の減速度だけを a_final まで
- * 落とせる。ノッチは B6 → B4 → B3 → B2 と自然に緩んでいく。
+ * 落とせる。ノッチは B5 → B4 → B3 → B2 → B1 と自然に緩んでいく。
+ *
+ * 到達点 a_final は最弱ノッチ B1 の減速度に採る（`finalDeceleration()`）。
  */
 export class AutoDriver {
   readonly params: AutoDriveParameters;

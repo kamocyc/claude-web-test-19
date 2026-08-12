@@ -48,6 +48,7 @@ export class TrackScene {
 
     this.buildGround();
     this.buildTrack();
+    this.buildTurnouts();
     this.buildDistancePosts();
     this.buildStations();
     this.buildSignals();
@@ -178,6 +179,69 @@ export class TrackScene {
     }
     sleeper.instanceMatrix.needsUpdate = true;
     this.scene.add(sleeper);
+  }
+
+  /**
+   * 分岐器。
+   *
+   * 列車が通る側は本線の軌道としてすでに描かれているので、ここでは**通らない側**の
+   * 線路を分かれていく枝として描く。直進側を走っていれば分岐側が、分岐側を走って
+   * いれば本線が、それぞれ反対側へ離れていく。
+   *
+   * 枝の中心線は、トングレール先端からの距離 `d` に対して
+   *
+   * ```
+   * 横のずれ = d² / 2R            （リード曲線のあいだ）
+   *          = L²/2R + (d−L) sinα （クロッシングから先は直線）
+   * ```
+   *
+   * で置く。円弧の近似式だが、離れていく枝を数十メートル描くだけなので十分である。
+   */
+  private buildTurnouts(): void {
+    const half = this.route.alignment.gauge / 2;
+    const material = new THREE.LineBasicMaterial({ color: RAIL_COLOR });
+    for (const turnout of this.route.turnouts.turnouts) {
+      // 分岐側を走っているときは、分かれていくのは本線（反対側へ離れる）
+      const away = (turnout.side === 'right' ? 1 : -1) * (turnout.route === 'through' ? 1 : -1);
+      const start = turnout.pointsPosition;
+      const end = Math.min(this.route.length, start + turnout.length + 60);
+      const sinA = Math.sin(turnout.crossingAngle);
+      const lead = turnout.leadLength;
+
+      const left: THREE.Vector3[] = [];
+      const right: THREE.Vector3[] = [];
+      for (let s = start; s <= end; s += 2) {
+        const d = s - start;
+        const offset =
+          away *
+          (d <= lead
+            ? (d * d) / (2 * turnout.radius)
+            : (lead * lead) / (2 * turnout.radius) + (d - lead) * sinA);
+        const f = this.frameAt(s);
+        const centre = f.position.clone().addScaledVector(f.cantRight, offset);
+        left.push(centre.clone().addScaledVector(f.cantRight, -half));
+        right.push(centre.clone().addScaledVector(f.cantRight, half));
+      }
+      this.scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(left), material));
+      this.scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(right), material));
+
+      // 転てつ機（トングレール先端の脇の箱）。開通方向で色を変える。
+      const f = this.frameAt(start);
+      const machine = new THREE.Mesh(
+        new THREE.BoxGeometry(1.6, 0.5, 0.8),
+        new THREE.MeshLambertMaterial({
+          color: turnout.route === 'diverging' ? 0xe0a52c : 0x8d939a,
+        }),
+      );
+      machine.quaternion.setFromRotationMatrix(
+        new THREE.Matrix4().makeBasis(f.forward, f.up, f.cantRight),
+      );
+      machine.position
+        .copy(f.position)
+        .addScaledVector(f.cantRight, away * 2.6)
+        .addScaledVector(f.up, 0.25);
+      this.scene.add(machine);
+    }
   }
 
   private buildStations(): void {

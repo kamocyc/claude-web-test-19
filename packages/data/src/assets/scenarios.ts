@@ -56,4 +56,39 @@ export const testLineAtsSn: ScenarioDefinition = {
   safetySystems: ['ats-sn'],
 };
 
-export const scenarios = [testLineLocal, testLineSnow, testLineFollowing, testLineAtsSn] as const;
+/**
+ * 分岐器（直進）シナリオ: 中原から発車し、6300m の #12 分岐器を直進側で通過する。
+ *
+ * 直進側に制限速度は無いので、110km/h のままクロッシングの欠線を踏める。
+ * 「ガタン」が 1 両あたり 2 拍ずつ、編成のぶんだけ続く。
+ */
+export const testLineTurnoutThrough: ScenarioDefinition = {
+  ...testLineLocal,
+  id: 'test-line-turnout',
+  name: '試験線 分岐器（直進）',
+  startTime: '10:03:50',
+  startPosition: 3500,
+};
+
+/**
+ * 分岐器（分岐側）シナリオ: 同じ分岐器を分岐側へ渡り、分岐線の終端へ向かう。
+ *
+ * リード曲線（R350・緩和曲線もカントも無し）に 45km/h の制限が付くので、
+ * 手前で速度を落として渡ることになる。落とし切れずに突っ込めば、横 G が階段状に
+ * 立ち上がって立っている乗客はよろける。
+ */
+export const testLineTurnoutDiverging: ScenarioDefinition = {
+  ...testLineTurnoutThrough,
+  id: 'test-line-turnout-diverging',
+  name: '試験線 分岐器（分岐側へ）',
+  routeId: 'test-line-branch',
+};
+
+export const scenarios = [
+  testLineLocal,
+  testLineSnow,
+  testLineFollowing,
+  testLineAtsSn,
+  testLineTurnoutThrough,
+  testLineTurnoutDiverging,
+] as const;

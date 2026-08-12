@@ -432,6 +432,172 @@ describe('駅の取り扱いと運転評価', () => {
     // 電気ブレーキで回生電力が発生している
     expect(sim.metrics.energy.regenerated).toBeGreaterThan(0);
   });
+
+  /**
+   * 乗客のよろけは加速度の**大きさ**ではなく**変え方**で決まる。
+   *
+   * 発車がいちばん分かりやすい。フルノッチで起動すると引張力が 1 秒足らずで
+   * 立ち上がるので、立っている乗客は取り残されて足を出す。同じ加速度でも
+   * 1 ノッチずつ入れれば、加速度がゆっくり育つので踏み出さずに済む。
+   */
+  it('フルノッチで発車すると乗客が足を出し、刻んで発車すれば出さない', () => {
+    const depart = (notches: readonly number[], hold: number) => {
+      const sim = new Simulation(scenarioOf('test-line-local'));
+      let maxStagger = 0;
+      const watch = (s: Simulation) => {
+        maxStagger = Math.max(maxStagger, s.dynamics.vehicles[0]!.body.passenger.stance.stagger);
+      };
+      for (const notch of notches) {
+        sim.input = input({ powerNotch: notch });
+        run(sim, hold, watch, 0.01);
+      }
+      run(sim, 10, watch, 0.01);
+      return { steps: sim.metrics.ride.passengerSteps, maxStagger, speed: sim.speed };
+    };
+
+    const sudden = depart([4], 12);
+    const gradual = depart([1, 2, 3, 4], 3);
+
+    // 同じところまで加速している
+    expect(gradual.speed).toBeGreaterThan(sudden.speed * 0.85);
+    expect(sudden.steps).toBeGreaterThan(0);
+    expect(gradual.steps).toBe(0);
+    expect(sudden.maxStagger).toBeGreaterThan(1);
+    expect(gradual.maxStagger).toBeLessThan(1);
+  });
+
+  /**
+   * ブレーキは事情が違う。BC 圧にはむだ時間と込め時定数があるため、ノッチを一気に
+   * 入れても**減速度の立ち上がりは装置の側で鈍らされる**。それでも一気に入れれば
+   * よろけ方は大きくなるが、足が出るところまでは行かない。
+   * 乗客を放り出すのは、ブレーキの応答より速い変化のほうである。
+   */
+  it('ブレーキを一気に入れると乗客がよろけ、刻めばよろけない', () => {
+    const brake = (notches: readonly number[], hold: number) => {
+      const sim = new Simulation(scenarioOf('test-line-local'));
+      sim.input = input({ powerNotch: 4 });
+      run(sim, 40);
+      sim.input = input();
+      run(sim, 5);
+      // 発車の衝動は評価に入れない（見たいのはブレーキの入れ方の違い）
+      const before = sim.metrics.ride.passengerSteps;
+      let maxStagger = 0;
+      const watch = (s: Simulation) => {
+        maxStagger = Math.max(maxStagger, s.dynamics.vehicles[0]!.body.passenger.stance.stagger);
+      };
+      for (const notch of notches) {
+        sim.input = input({ brakeNotch: notch });
+        run(sim, hold, watch, 0.01);
+      }
+      run(sim, 10, watch, 0.01);
+      return {
+        steps: sim.metrics.ride.passengerSteps - before,
+        maxStagger,
+        ride: sim.metrics.ride,
+      };
+    };
+
+    const sudden = brake([8], 12);
+    const gradual = brake([2, 4, 6, 8], 3);
+
+    // 到達する減速度はほぼ同じ
+    expect(gradual.ride.maxDeceleration).toBeGreaterThan(sudden.ride.maxDeceleration * 0.9);
+    // 込め時定数のおかげでどちらも足は出ない。それでも踏ん張りの深さは違う。
+    expect(sudden.steps).toBe(0);
+    expect(gradual.steps).toBe(0);
+    expect(sudden.maxStagger).toBeGreaterThan(gradual.maxStagger * 1.3);
+  });
+});
+
+describe('分岐器の通過', () => {
+  const turnoutOf = (id: string) => {
+    const scenario = scenarioOf(id);
+    return scenario.route.turnouts.turnouts[0]!;
+  };
+
+  /**
+   * 分岐器の 250m 手前から、指定の速度で**惰行のまま**入って通過する。
+   *
+   * ノッチを動かすとその衝動が乗客に効いてしまうので、分岐器そのものの影響だけを
+   * 見るために惰行で渡る。保安装置も切ってある（分岐制限に ATS-P のパターンが
+   * 掛かると、制限超過で渡るという条件そのものが成立しない）。
+   */
+  const cross = (id: string, kmh: number) => {
+    const base = scenarioOf(id);
+    const turnout = turnoutOf(id);
+    const sim = new Simulation({
+      ...base,
+      safetySystems: [],
+      startPosition: turnout.position - 250,
+      startSpeed: kmhToMps(kmh),
+    });
+    sim.input = input();
+    // 走り出しの過渡（惰行抵抗が立ち上がるぶん）が収まってから測り始める
+    runUntil(sim, (s) => s.position > turnout.position - 60, 60, undefined, 0.005);
+    const before = { steps: sim.metrics.ride.passengerSteps, speed: sim.speed };
+    let maxRoll = 0;
+    let maxStagger = 0;
+    let maxLateral = 0;
+    runUntil(
+      sim,
+      (s) => s.position > turnout.position + turnout.length + 20,
+      60,
+      (s) => {
+        const body = s.dynamics.vehicles[0]!.body;
+        maxRoll = Math.max(maxRoll, Math.abs(body.roll));
+        maxStagger = Math.max(maxStagger, body.passenger.stance.stagger);
+        maxLateral = Math.max(maxLateral, Math.abs(body.feltLateral));
+      },
+      0.005,
+    );
+    const steps = sim.metrics.ride.passengerSteps - before.steps;
+    return { sim, turnout, before, maxRoll, maxStagger, maxLateral, steps };
+  };
+
+  /**
+   * 直進側に制限は無いので線路最高速度のまま渡れる。それでもクロッシングの欠線は
+   * 踏むので、車体は揺れる（欠線は片方のレールにしかないのでロールになる）。
+   */
+  it('直進側でも分岐器を通れば車体が揺れる', () => {
+    const crossing = cross('test-line-turnout', 100);
+    expect(mpsToKmh(crossing.before.speed)).toBeGreaterThan(90);
+    expect(crossing.maxRoll).toBeGreaterThan(0.0004);
+    // 揺れはするが、よろけるほどではない
+    expect(crossing.maxStagger).toBeLessThan(1);
+    expect(crossing.steps).toBe(0);
+  });
+
+  /**
+   * 分岐側は緩和曲線もカントも無い R350 へ入ることになる。制限（45km/h）を
+   * 無視して渡れば横 G が階段状に立ち上がり、立っている乗客は足を出す。
+   */
+  it('分岐側を制限速度超過で渡ると乗客がよろける', () => {
+    const fast = cross('test-line-turnout-diverging', 90);
+    expect(mpsToKmh(fast.before.speed)).toBeGreaterThan(80);
+    // R350 を 90km/h → v²/R = 1.8 m/s²。許容カント不足の範囲をはるかに超える。
+    expect(fast.maxLateral).toBeGreaterThan(1.5);
+    expect(fast.maxStagger).toBeGreaterThan(1);
+    expect(fast.steps).toBeGreaterThan(0);
+  });
+
+  /** 制限速度まで落として渡れば、同じ分岐器でも横 G は乗り心地の範囲に収まる */
+  it('制限速度まで落として渡ればよろけない', () => {
+    const slow = cross('test-line-turnout-diverging', 45);
+    // R350 を 45km/h → 0.45 m/s²。カント不足に直せば 48mm で、許容値の内側。
+    expect(slow.maxLateral).toBeLessThan(0.7);
+    expect(slow.maxStagger).toBeLessThan(1);
+    expect(slow.steps).toBe(0);
+  });
+
+  /** 分岐器の位置と開通方向はスナップショットから読める（HUD の表示に使う） */
+  it('次の分岐器がスナップショットに出る', () => {
+    const sim = new Simulation(scenarioOf('test-line-turnout-diverging'));
+    const snap = sim.snapshot();
+    expect(snap.nextTurnout).not.toBeNull();
+    expect(snap.nextTurnout!.turnout.route).toBe('diverging');
+    expect(snap.nextTurnout!.distance).toBeGreaterThan(0);
+    expect(mpsToKmh(snap.nextTurnout!.turnout.divergingSpeed)).toBeCloseTo(45, 6);
+  });
 });
 
 describe('決定論とリプレイ', () => {
