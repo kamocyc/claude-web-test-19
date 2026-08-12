@@ -1,27 +1,43 @@
 import * as THREE from 'three';
 import type { CompiledRoute, Simulation } from '@railsim/core';
+import { buildCatenary } from './catenary.ts';
 import { makeFrameAt, type TrackFrame } from './frame.ts';
 import { buildScenery, buildTunnels } from './scenery.ts';
 import { createDaylight, createSky } from './sky.ts';
+import { buildTrack, buildTurnouts } from './track.ts';
+import { buildCar } from './vehicle.ts';
+import {
+  buildBeacons,
+  buildDistancePosts,
+  buildGradePosts,
+  buildSignals,
+  buildStations,
+  type SignalHandle,
+} from './wayside.ts';
+import { CAR } from './dimensions.ts';
 
-const RAIL_COLOR = 0xb0b6bd;
-const SLEEPER_COLOR = 0x6b5f50;
-const BALLAST_COLOR = 0x8a8478;
 const GROUND_COLOR = 0x5e7a4a;
 
-const ASPECT_COLOR: Record<string, number> = {
-  R: 0xff2d20,
-  YY: 0xffa000,
-  Y: 0xffd23f,
-  YG: 0x9be15d,
-  G: 0x18d94a,
+/**
+ * 運転席の位置（先頭車の前端からの距離・中心からの左右・レール面からの高さ）。
+ *
+ * 実物の 20m 級通勤形の運転室にならい、前端から 1550mm 後ろ・車体中心から
+ * 左へ 700mm、床面（レール面上 1130mm）から 1200mm の高さに目を置く。
+ * 運転台の内装（`cab.ts`）もこの目の位置を原点として組んである。
+ */
+const CAB_OFFSET = {
+  back: 1.55,
+  left: CAR.driverOffset,
+  height: CAR.floorHeight + CAR.eyeHeight,
 };
-
-/** 運転席の位置（先頭車の前端からの距離・中心からの左右・レール面からの高さ） */
-const CAB_OFFSET = { back: 1.35, left: 0.72, height: 2.05 };
 
 /**
  * 軌道・列車・信号・駅・沿線の景観を描画するシーン。
+ *
+ * 構造物はどれも実物の寸法（`dimensions.ts`）から組み立てる。レールは 50kgN の
+ * 断面を掃引した立体、まくらぎは PC まくらぎを 25m あたり 44 本、架線は
+ * シンプルカテナリを偏位とたるみ込みで、というように、形が「それらしさ」ではなく
+ * 実際の寸法で決まるようにしてある。
  *
  * 車両は軌道の座標系に置いたうえで、車体動揺（ロール・ピッチ・ヨー・左右・上下）を
  * 局所回転として重ねる。運転席視点のカメラも同じ変換から作るため、
@@ -30,7 +46,7 @@ const CAB_OFFSET = { back: 1.35, left: 0.72, height: 2.05 };
 export class TrackScene {
   readonly scene = new THREE.Scene();
   private readonly vehicleMeshes: THREE.Object3D[] = [];
-  private readonly signalLights = new Map<string, THREE.Mesh>();
+  private readonly signalHandles: Map<string, SignalHandle>;
   private readonly route: CompiledRoute;
   private readonly frameAt: (s: number) => TrackFrame;
   /** 運転席視点の位置と姿勢（update() で更新される） */
@@ -46,15 +62,23 @@ export class TrackScene {
     this.scene.add(createSky());
     for (const light of createDaylight()) this.scene.add(light);
 
+    const inTunnel = (s: number): boolean => route.tunnels.at(s).length > 0;
+
     this.buildGround();
-    this.buildTrack();
-    this.buildTurnouts();
-    this.buildDistancePosts();
-    this.buildStations();
-    this.buildSignals();
-    this.buildBeacons();
+    for (const o of buildTrack(route, this.frameAt)) this.scene.add(o);
+    for (const o of buildTurnouts(route, this.frameAt)) this.scene.add(o);
+    for (const o of buildDistancePosts(route, this.frameAt)) this.scene.add(o);
+    for (const o of buildGradePosts(route, this.frameAt)) this.scene.add(o);
+    for (const o of buildStations(route, this.frameAt)) this.scene.add(o);
+    for (const o of buildBeacons(route, this.frameAt)) this.scene.add(o);
     for (const o of buildTunnels(route, this.frameAt)) this.scene.add(o);
+    for (const o of buildCatenary(route, this.frameAt, inTunnel)) this.scene.add(o);
     for (const o of buildScenery(route, this.frameAt)) this.scene.add(o);
+
+    const signals = buildSignals(route, this.frameAt);
+    for (const o of signals.objects) this.scene.add(o);
+    this.signalHandles = signals.handles;
+
     this.buildTrain(sim);
     this.update(sim);
   }
@@ -62,6 +86,7 @@ export class TrackScene {
   /**
    * 線路の両側の地表。
    * 平坦な板を置くと勾配区間で線路が地面に潜るため、軌道中心線に沿って高さを追従させる。
+   * 盛土のり尻がちょうどこの面に接するよう、道床の断面と同じ -1.2m に置く。
    */
   private buildGround(): void {
     const step = 20;
@@ -92,297 +117,18 @@ export class TrackScene {
     );
   }
 
-  /** 100m ごとの距離標 */
-  private buildDistancePosts(): void {
-    const step = 100;
-    const count = Math.floor(this.route.length / step);
-    const mesh = new THREE.InstancedMesh(
-      new THREE.BoxGeometry(0.18, 1.6, 0.7),
-      new THREE.MeshLambertMaterial({ color: 0xf0f2f4 }),
-      count,
-    );
-    const m = new THREE.Matrix4();
-    for (let i = 0; i < count; i++) {
-      const f = this.frameAt(i * step);
-      const p = f.position
-        .clone()
-        .addScaledVector(f.right, -4.5)
-        .add(new THREE.Vector3(0, 0.8, 0));
-      m.makeTranslation(p.x, p.y, p.z);
-      mesh.setMatrixAt(i, m);
-    }
-    mesh.instanceMatrix.needsUpdate = true;
-    this.scene.add(mesh);
-  }
-
-  /** レール 2 本・道床・まくらぎ */
-  private buildTrack(): void {
-    const step = 4;
-    const n = Math.floor(this.route.length / step);
-    const half = this.route.alignment.gauge / 2;
-
-    const leftPoints: THREE.Vector3[] = [];
-    const rightPoints: THREE.Vector3[] = [];
-    const ballastPositions: number[] = [];
-
-    for (let i = 0; i <= n; i++) {
-      const s = Math.min(i * step, this.route.length);
-      const f = this.frameAt(s);
-      // レールも道床もカントで傾いた軌道面（f.cantRight / f.up）の上に載せる。
-      // 高さを個別に足し込むのではなく共通の基準座標系から作ることで、
-      // 車体・まくらぎとレールが逆向きに傾くような食い違いが起きない。
-      leftPoints.push(f.position.clone().addScaledVector(f.cantRight, -half));
-      rightPoints.push(f.position.clone().addScaledVector(f.cantRight, half));
-      const bl = f.position.clone().addScaledVector(f.cantRight, -3.6).addScaledVector(f.up, -0.4);
-      const br = f.position.clone().addScaledVector(f.cantRight, 3.6).addScaledVector(f.up, -0.4);
-      ballastPositions.push(bl.x, bl.y, bl.z, br.x, br.y, br.z);
-    }
-
-    const railMaterial = new THREE.LineBasicMaterial({ color: RAIL_COLOR });
-    this.scene.add(
-      new THREE.Line(new THREE.BufferGeometry().setFromPoints(leftPoints), railMaterial),
-    );
-    this.scene.add(
-      new THREE.Line(new THREE.BufferGeometry().setFromPoints(rightPoints), railMaterial),
-    );
-
-    const ballastGeom = new THREE.BufferGeometry();
-    ballastGeom.setAttribute('position', new THREE.Float32BufferAttribute(ballastPositions, 3));
-    const indices: number[] = [];
-    for (let i = 0; i < n; i++) {
-      const a = i * 2;
-      indices.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
-    }
-    ballastGeom.setIndex(indices);
-    ballastGeom.computeVertexNormals();
-    this.scene.add(
-      new THREE.Mesh(
-        ballastGeom,
-        new THREE.MeshLambertMaterial({ color: BALLAST_COLOR, side: THREE.DoubleSide }),
-      ),
-    );
-
-    const sleeperStep = 6;
-    const count = Math.floor(this.route.length / sleeperStep);
-    const sleeper = new THREE.InstancedMesh(
-      new THREE.BoxGeometry(0.24, 0.16, 2.4),
-      new THREE.MeshLambertMaterial({ color: SLEEPER_COLOR }),
-      count,
-    );
-    const m = new THREE.Matrix4();
-    const q = new THREE.Quaternion();
-    for (let i = 0; i < count; i++) {
-      const f = this.frameAt(i * sleeperStep);
-      q.setFromRotationMatrix(new THREE.Matrix4().makeBasis(f.forward, f.up, f.cantRight));
-      m.compose(f.position.clone().addScaledVector(f.up, -0.1), q, new THREE.Vector3(1, 1, 1));
-      sleeper.setMatrixAt(i, m);
-    }
-    sleeper.instanceMatrix.needsUpdate = true;
-    this.scene.add(sleeper);
-  }
-
   /**
-   * 分岐器。
+   * 編成を組む。
    *
-   * 列車が通る側は本線の軌道としてすでに描かれているので、ここでは**通らない側**の
-   * 線路を分かれていく枝として描く。直進側を走っていれば分岐側が、分岐側を走って
-   * いれば本線が、それぞれ反対側へ離れていく。
-   *
-   * 枝の中心線は、トングレール先端からの距離 `d` に対して
-   *
-   * ```
-   * 横のずれ = d² / 2R            （リード曲線のあいだ）
-   *          = L²/2R + (d−L) sinα （クロッシングから先は直線）
-   * ```
-   *
-   * で置く。円弧の近似式だが、離れていく枝を数十メートル描くだけなので十分である。
+   * 両端の車が先頭車（運転室と前面を持つ）、中間は貫通の中間車。
+   * 動力車かどうかは塗り分けではなく、屋根のパンタグラフと床下の主回路箱で示す。
    */
-  private buildTurnouts(): void {
-    const half = this.route.alignment.gauge / 2;
-    const material = new THREE.LineBasicMaterial({ color: RAIL_COLOR });
-    for (const turnout of this.route.turnouts.turnouts) {
-      // 分岐側を走っているときは、分かれていくのは本線（反対側へ離れる）
-      const away = (turnout.side === 'right' ? 1 : -1) * (turnout.route === 'through' ? 1 : -1);
-      const start = turnout.pointsPosition;
-      const end = Math.min(this.route.length, start + turnout.length + 60);
-      const sinA = Math.sin(turnout.crossingAngle);
-      const lead = turnout.leadLength;
-
-      const left: THREE.Vector3[] = [];
-      const right: THREE.Vector3[] = [];
-      for (let s = start; s <= end; s += 2) {
-        const d = s - start;
-        const offset =
-          away *
-          (d <= lead
-            ? (d * d) / (2 * turnout.radius)
-            : (lead * lead) / (2 * turnout.radius) + (d - lead) * sinA);
-        const f = this.frameAt(s);
-        const centre = f.position.clone().addScaledVector(f.cantRight, offset);
-        left.push(centre.clone().addScaledVector(f.cantRight, -half));
-        right.push(centre.clone().addScaledVector(f.cantRight, half));
-      }
-      this.scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(left), material));
-      this.scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(right), material));
-
-      // 転てつ機（トングレール先端の脇の箱）。開通方向で色を変える。
-      const f = this.frameAt(start);
-      const machine = new THREE.Mesh(
-        new THREE.BoxGeometry(1.6, 0.5, 0.8),
-        new THREE.MeshLambertMaterial({
-          color: turnout.route === 'diverging' ? 0xe0a52c : 0x8d939a,
-        }),
-      );
-      machine.quaternion.setFromRotationMatrix(
-        new THREE.Matrix4().makeBasis(f.forward, f.up, f.cantRight),
-      );
-      machine.position
-        .copy(f.position)
-        .addScaledVector(f.cantRight, away * 2.6)
-        .addScaledVector(f.up, 0.25);
-      this.scene.add(machine);
-    }
-  }
-
-  private buildStations(): void {
-    for (const station of this.route.stations) {
-      const length = station.platformEnd - station.platformStart;
-      const mid = (station.platformEnd + station.platformStart) / 2;
-      const f = this.frameAt(mid);
-      const basis = new THREE.Matrix4().makeBasis(f.forward, new THREE.Vector3(0, 1, 0), f.right);
-
-      const platform = new THREE.Mesh(
-        new THREE.BoxGeometry(length, 1.1, 6),
-        new THREE.MeshLambertMaterial({ color: 0xb9b3a8 }),
-      );
-      platform.quaternion.setFromRotationMatrix(basis);
-      platform.position
-        .copy(f.position)
-        .addScaledVector(f.right, 5.2)
-        .add(new THREE.Vector3(0, 0.55, 0));
-      this.scene.add(platform);
-
-      // 上屋
-      const roof = new THREE.Mesh(
-        new THREE.BoxGeometry(length * 0.8, 0.18, 5.4),
-        new THREE.MeshLambertMaterial({ color: 0x8d939a }),
-      );
-      roof.quaternion.setFromRotationMatrix(basis);
-      roof.position
-        .copy(f.position)
-        .addScaledVector(f.right, 5.4)
-        .add(new THREE.Vector3(0, 4.4, 0));
-      this.scene.add(roof);
-
-      // 停止位置目標
-      const marker = new THREE.Mesh(
-        new THREE.BoxGeometry(0.16, 2.4, 0.7),
-        new THREE.MeshBasicMaterial({ color: 0xffffff }),
-      );
-      const fs = this.frameAt(station.stopPosition);
-      marker.position
-        .copy(fs.position)
-        .addScaledVector(fs.right, 3.2)
-        .add(new THREE.Vector3(0, 1.3, 0));
-      this.scene.add(marker);
-    }
-  }
-
-  private buildSignals(): void {
-    for (const signal of this.route.signals) {
-      const f = this.frameAt(signal.position);
-      const pole = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.12, 0.12, 5),
-        new THREE.MeshLambertMaterial({ color: 0x59606a }),
-      );
-      pole.position
-        .copy(f.position)
-        .addScaledVector(f.right, 3.4)
-        .add(new THREE.Vector3(0, 2.5, 0));
-      this.scene.add(pole);
-
-      const hood = new THREE.Mesh(
-        new THREE.BoxGeometry(0.35, 1.3, 1.0),
-        new THREE.MeshLambertMaterial({ color: 0x2a2f36 }),
-      );
-      hood.position.copy(pole.position).add(new THREE.Vector3(0, 2.4, 0));
-      this.scene.add(hood);
-
-      const light = new THREE.Mesh(
-        new THREE.SphereGeometry(0.34, 16, 12),
-        new THREE.MeshBasicMaterial({ color: ASPECT_COLOR.R }),
-      );
-      light.position.copy(hood.position).addScaledVector(f.forward, -0.25);
-      this.scene.add(light);
-      this.signalLights.set(signal.id, light);
-    }
-  }
-
-  private buildBeacons(): void {
-    const entries = this.route.beacons.all;
-    if (entries.length === 0) return;
-    const mesh = new THREE.InstancedMesh(
-      new THREE.BoxGeometry(0.5, 0.18, 1.0),
-      new THREE.MeshBasicMaterial({ color: 0xe0a52c }),
-      entries.length,
-    );
-    const m = new THREE.Matrix4();
-    for (let i = 0; i < entries.length; i++) {
-      const f = this.frameAt(entries[i]!.s);
-      m.makeTranslation(f.position.x, f.position.y + 0.05, f.position.z);
-      mesh.setMatrixAt(i, m);
-    }
-    mesh.instanceMatrix.needsUpdate = true;
-    this.scene.add(mesh);
-  }
-
   private buildTrain(sim: Simulation): void {
-    for (const veh of sim.dynamics.vehicles) {
-      const driven = veh.spec.drivenAxleCount > 0;
-      const group = new THREE.Group();
-      const bodyLength = veh.spec.length - 0.7;
-
-      const body = new THREE.Mesh(
-        new THREE.BoxGeometry(bodyLength, 3.3, 2.9),
-        new THREE.MeshLambertMaterial({ color: driven ? 0xdedfe2 : 0xd6d8dc }),
-      );
-      body.position.y = 2.0;
-      group.add(body);
-
-      // 帯（動力車と付随車で色を変えて見分けられるようにする）
-      const stripe = new THREE.Mesh(
-        new THREE.BoxGeometry(bodyLength + 0.02, 0.42, 2.94),
-        new THREE.MeshLambertMaterial({ color: driven ? 0x2f6fb5 : 0x6b7280 }),
-      );
-      stripe.position.y = 2.55;
-      group.add(stripe);
-
-      // 側窓
-      const windows = new THREE.Mesh(
-        new THREE.BoxGeometry(bodyLength * 0.86, 0.9, 2.95),
-        new THREE.MeshLambertMaterial({ color: 0x1e2b38 }),
-      );
-      windows.position.y = 3.0;
-      group.add(windows);
-
-      // 屋根
-      const roof = new THREE.Mesh(
-        new THREE.BoxGeometry(bodyLength * 0.98, 0.22, 2.6),
-        new THREE.MeshLambertMaterial({ color: 0x9aa1a8 }),
-      );
-      roof.position.y = 3.75;
-      group.add(roof);
-
-      // 台車
-      for (const sign of [-1, 1]) {
-        const bogie = new THREE.Mesh(
-          new THREE.BoxGeometry(2.6, 0.8, 2.4),
-          new THREE.MeshLambertMaterial({ color: 0x3a3f45 }),
-        );
-        bogie.position.set((sign * veh.spec.bogieSpacing) / 2, 0.75, 0);
-        group.add(bogie);
-      }
-
+    const cars = sim.dynamics.vehicles;
+    for (let i = 0; i < cars.length; i++) {
+      const veh = cars[i]!;
+      const lead = i === 0 || i === cars.length - 1;
+      const { group } = buildCar(veh.spec, lead, i === 0);
       this.scene.add(group);
       this.vehicleMeshes.push(group);
     }
@@ -431,12 +177,7 @@ export class TrackScene {
     }
 
     for (const s of sim.signalling.snapshot()) {
-      const light = this.signalLights.get(s.id);
-      if (light) {
-        (light.material as THREE.MeshBasicMaterial).color.setHex(
-          ASPECT_COLOR[s.aspect] ?? 0xffffff,
-        );
-      }
+      this.signalHandles.get(s.id)?.setAspect(s.aspect);
     }
   }
 

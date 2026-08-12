@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import { Rng, type CompiledRoute } from '@railsim/core';
+import { TUNNEL } from './dimensions.ts';
 import type { TrackFrame } from './frame.ts';
+import { frameQuaternion, sweepSection, type SectionPoint, type SweepStation } from './geometry.ts';
 
 /** 建物の色のバリエーション（住宅・ビル・倉庫） */
 const BUILDING_COLORS = [0xd8d3c8, 0xc9c2b4, 0xb9c2c8, 0xd6c8b0, 0xa8b0b6, 0xcfd6cf];
@@ -14,7 +16,7 @@ export interface SceneryOptions {
 }
 
 /**
- * 沿線の景観（樹木・建物・架線柱・架線）を生成する。
+ * 沿線の景観（樹木・建物）を生成する。
  *
  * 位置はシード付き乱数から決めるので、同じ路線・同じシードなら常に同じ景色になる。
  * すべてインスタンス描画にまとめ、数百個置いてもドローコールが増えないようにしている。
@@ -142,127 +144,107 @@ export function buildScenery(
     objects.push(body, roof);
   }
 
-  objects.push(...buildCatenary(route, frameAt, inTunnel));
   return objects;
 }
 
 /**
- * 架線柱と架線。
- * 電化区間の見た目を決める要素であり、等間隔に並ぶので速度感を出すのにも効く。
- */
-function buildCatenary(
-  route: CompiledRoute,
-  frameAt: (s: number) => TrackFrame,
-  inTunnel: (s: number) => boolean,
-): THREE.Object3D[] {
-  const spacing = 45;
-  const positions: number[] = [];
-  for (let s = 0; s <= route.length; s += spacing) {
-    if (!inTunnel(s)) positions.push(s);
-  }
-  if (positions.length === 0) return [];
-
-  const poleGeom = new THREE.CylinderGeometry(0.11, 0.15, 8, 6);
-  poleGeom.translate(0, 4, 0);
-  const pole = new THREE.InstancedMesh(
-    poleGeom,
-    new THREE.MeshLambertMaterial({ color: 0x8a9099 }),
-    positions.length,
-  );
-  const armGeom = new THREE.BoxGeometry(0.12, 0.12, 3.4);
-  armGeom.translate(0, 7.3, -1.7);
-  const arm = new THREE.InstancedMesh(
-    armGeom,
-    new THREE.MeshLambertMaterial({ color: 0x8a9099 }),
-    positions.length,
-  );
-
-  const m = new THREE.Matrix4();
-  const q = new THREE.Quaternion();
-  const one = new THREE.Vector3(1, 1, 1);
-  for (let i = 0; i < positions.length; i++) {
-    const f = frameAt(positions[i]!);
-    q.setFromRotationMatrix(
-      new THREE.Matrix4().makeBasis(f.forward, new THREE.Vector3(0, 1, 0), f.right),
-    );
-    const p = f.position.clone().addScaledVector(f.right, 3.9);
-    m.compose(p, q, one);
-    pole.setMatrixAt(i, m);
-    arm.setMatrixAt(i, m);
-  }
-  pole.instanceMatrix.needsUpdate = true;
-  arm.instanceMatrix.needsUpdate = true;
-
-  // トロリ線（軌道中心の上を通る 1 本の線）
-  const wirePoints: THREE.Vector3[] = [];
-  for (let s = 0; s <= route.length; s += 5) {
-    const f = frameAt(s);
-    wirePoints.push(f.position.clone().add(new THREE.Vector3(0, 5.2, 0)));
-  }
-  const wire = new THREE.Line(
-    new THREE.BufferGeometry().setFromPoints(wirePoints),
-    new THREE.LineBasicMaterial({ color: 0x6a6f74 }),
-  );
-
-  return [pole, arm, wire];
-}
-
-/**
  * トンネルの覆工。
- * 軌道に沿ってアーチ断面を掃引する。内側から見るので両面描画にする。
+ *
+ * 在来線の**電化単線トンネル**の内空断面に合わせる。側壁は起拱線（レール面上
+ * 2900mm）まで垂直で、その上は半径 2500mm のアーチ。天端はレール面上 5400mm
+ * になり、トロリ線（5000mm）と剛体電車線がぎりぎり収まる。明かり区間の
+ * シンプルカテナリ（ちょう架線まで 5960mm）が入らないのはこの断面のためで、
+ * トンネルの中だけ架線の形が変わる理由でもある。
+ *
+ * 覆工のほかに、50m ごとの待避坑（保守作業員が列車をやり過ごす窪み）と、
+ * 20m ごとのトンネル照明を置く。内側から見るので両面描画にする。
+ *
+ * 覆工にはわずかな自発光を持たせてある。太陽光も空からの環境光も届かないため、
+ * そのままでは真っ黒になり、断面の形も奥行きも読めなくなるからである。
+ * 実物のトンネルも照明で薄明るく、天端と側壁の境目がぼんやり見える。
  */
 export function buildTunnels(
   route: CompiledRoute,
   frameAt: (s: number) => TrackFrame,
 ): THREE.Object3D[] {
   const out: THREE.Object3D[] = [];
-  // アーチ断面（車両限界の外側）: 側壁 → 円弧 → 側壁
-  const section: Array<[number, number]> = [];
-  const radius = 3.6;
-  const springLine = 1.6;
-  section.push([-radius, -0.6]);
-  for (let i = 0; i <= 10; i++) {
-    const a = Math.PI - (Math.PI * i) / 10;
-    section.push([radius * Math.cos(a), springLine + radius * Math.sin(a)]);
+  const lining = new THREE.MeshLambertMaterial({
+    color: 0x77726a,
+    emissive: 0x2b2621,
+    side: THREE.DoubleSide,
+  });
+
+  // 内空断面: 側壁 → アーチ → 側壁。掃引は軌道座標系ではなく鉛直で行う
+  // （トンネルはカントに合わせて傾かず、鉛直に掘られる）。
+  const section: SectionPoint[] = [[-TUNNEL.arcRadius, TUNNEL.invert]];
+  for (let i = 0; i <= 12; i++) {
+    const a = Math.PI - (Math.PI * i) / 12;
+    section.push([
+      TUNNEL.arcRadius * Math.cos(a),
+      TUNNEL.springLine + TUNNEL.arcRadius * Math.sin(a),
+    ]);
   }
-  section.push([radius, -0.6]);
+  section.push([TUNNEL.arcRadius, TUNNEL.invert]);
 
   for (const span of route.tunnels.all) {
-    const start = span.start;
-    const end = span.end;
-    const step = 6;
-    const n = Math.max(2, Math.ceil((end - start) / step));
-    const positions: number[] = [];
-    const indices: number[] = [];
+    const step = 5;
+    const n = Math.max(2, Math.ceil((span.end - span.start) / step));
+    const stations: SweepStation[] = [];
     for (let i = 0; i <= n; i++) {
-      const s = start + ((end - start) * i) / n;
+      stations.push({ frame: frameAt(span.start + ((span.end - span.start) * i) / n) });
+    }
+    out.push(new THREE.Mesh(sweepSection(stations, section, { vertical: true }), lining));
+
+    // 坑門（入口の壁）。断面の縁を額縁のように囲う
+    for (const s of [span.start, span.end]) {
       const f = frameAt(s);
-      for (const [lat, up] of section) {
+      const portal = new THREE.Mesh(
+        new THREE.BoxGeometry(0.6, 1.4, TUNNEL.arcRadius * 2 + TUNNEL.liningThickness * 2),
+        new THREE.MeshLambertMaterial({ color: 0x8a857c }),
+      );
+      portal.quaternion.copy(frameQuaternion(f, false));
+      portal.position
+        .copy(f.position)
+        .add(new THREE.Vector3(0, TUNNEL.springLine + TUNNEL.arcRadius + 0.5, 0));
+      out.push(portal);
+    }
+
+    // 待避坑（側壁のくぼみ）。壁の内側すれすれに置いて、掘り込まれた穴に見せる
+    const refugeMaterial = new THREE.MeshLambertMaterial({ color: 0x191715 });
+    for (let s = span.start + TUNNEL.refugePitch; s < span.end; s += TUNNEL.refugePitch) {
+      const f = frameAt(s);
+      const refuge = new THREE.Mesh(new THREE.BoxGeometry(1.4, 2.0, 0.14), refugeMaterial);
+      refuge.quaternion.copy(frameQuaternion(f, false));
+      refuge.position
+        .copy(f.position)
+        .addScaledVector(f.right, -(TUNNEL.arcRadius - 0.07))
+        .add(new THREE.Vector3(0, TUNNEL.invert + 1.0, 0));
+      out.push(refuge);
+    }
+
+    // トンネル照明（側壁の上寄りに並ぶ蛍光灯）。
+    // 等間隔に流れていく光の列が、トンネルの中でいちばん速度感を出す。
+    const lampMaterial = new THREE.MeshBasicMaterial({ color: 0xffe6ad });
+    const lampCount = Math.floor((span.end - span.start) / 20);
+    if (lampCount > 0) {
+      const lamps = new THREE.InstancedMesh(
+        new THREE.BoxGeometry(1.1, 0.09, 0.06),
+        lampMaterial,
+        lampCount,
+      );
+      const m = new THREE.Matrix4();
+      const one = new THREE.Vector3(1, 1, 1);
+      for (let i = 0; i < lampCount; i++) {
+        const f = frameAt(span.start + 10 + i * 20);
         const p = f.position
           .clone()
-          .addScaledVector(f.right, lat)
-          .add(new THREE.Vector3(0, up, 0));
-        positions.push(p.x, p.y, p.z);
+          .addScaledVector(f.right, -(TUNNEL.arcRadius - 0.12))
+          .add(new THREE.Vector3(0, TUNNEL.springLine + 0.35, 0));
+        lamps.setMatrixAt(i, m.compose(p, frameQuaternion(f, false), one));
       }
+      lamps.instanceMatrix.needsUpdate = true;
+      out.push(lamps);
     }
-    const m = section.length;
-    for (let i = 0; i < n; i++) {
-      for (let j = 0; j < m - 1; j++) {
-        const a = i * m + j;
-        const b = a + m;
-        indices.push(a, b, a + 1, a + 1, b, b + 1);
-      }
-    }
-    const geom = new THREE.BufferGeometry();
-    geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-    geom.setIndex(indices);
-    geom.computeVertexNormals();
-    out.push(
-      new THREE.Mesh(
-        geom,
-        new THREE.MeshLambertMaterial({ color: 0x6e6a63, side: THREE.DoubleSide }),
-      ),
-    );
   }
   return out;
 }

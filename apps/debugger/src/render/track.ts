@@ -1,0 +1,506 @@
+import * as THREE from 'three';
+import type { CompiledRoute } from '@railsim/core';
+import { BALLAST, POINT_MACHINE, RAIL, SLEEPER } from './dimensions.ts';
+import type { TrackFrame } from './frame.ts';
+import {
+  frameQuaternion,
+  mirrorSection,
+  sweepSection,
+  type SectionPoint,
+  type SweepStation,
+} from './geometry.ts';
+
+const RAIL_COLOR = 0x8b9198;
+/** 頭頂面だけは車輪に磨かれて光る */
+const RAILHEAD_COLOR = 0xd7dade;
+const SLEEPER_COLOR = 0xa8a49c;
+const BALLAST_COLOR = 0x7d786e;
+const FORMATION_COLOR = 0x6d6a5c;
+const FITTING_COLOR = 0x4a4f55;
+
+/**
+ * 50kgN レールの断面（JIS E 1101）。
+ *
+ * 高さ 153mm・底部幅 127mm・頭部幅 65mm・腹部厚 15mm。右半分だけを
+ * 底面の中心から頭頂まで書き、`mirrorSection()` で左右に開いて閉じた輪郭にする。
+ * 原点はレール**頭頂面**なので、高さはすべて負の値になる（`TrackFrame` の
+ * 基準面が走行面であるため）。
+ */
+const RAIL_SECTION: SectionPoint[] = mirrorSection(
+  (
+    [
+      [0, 0],
+      [0.0635, 0],
+      [0.0635, 0.011],
+      [0.03, 0.028],
+      [0.0075, 0.045],
+      [0.0075, 0.105],
+      [0.019, 0.117],
+      [0.0325, 0.128],
+      [0.0325, 0.142],
+      [0.026, 0.151],
+      [0.013, 0.153],
+      [0, 0.153],
+    ] as SectionPoint[]
+  ).map(([lat, up]) => [lat, up - RAIL.height] as SectionPoint),
+);
+
+/**
+ * 道床と路盤の断面。
+ *
+ * まくらぎ下 250mm・肩幅 400mm・のり面 1:1.5 の道床を、路盤肩 600mm と
+ * 盛土のり面で受ける。地表（`-1.2`）でのり尻が接するので、線路が地面に
+ * 浮いても潜ってもいない形になる。
+ */
+function ballastSection(): SectionPoint[] {
+  const sleeperBottom = -RAIL.height - SLEEPER.height;
+  const crown = -RAIL.height - 0.05;
+  const ballastBottom = sleeperBottom - BALLAST.depth;
+  const crest = SLEEPER.length / 2 + BALLAST.shoulder;
+  const toe = crest + (crown - ballastBottom) * BALLAST.slope;
+  const formation = toe + BALLAST.formationShoulder;
+  const ground = -1.2;
+  const foot = formation + (ballastBottom - ground) * BALLAST.embankmentSlope;
+  const half: SectionPoint[] = [
+    [0, crown],
+    [crest, crown],
+    [toe, ballastBottom],
+    [formation, ballastBottom],
+    [foot, ground],
+  ];
+  // 開いた帯なので、左端から右端まで一続きに並べる
+  return [
+    ...half
+      .slice(1)
+      .reverse()
+      .map(([lat, up]) => [-lat, up] as SectionPoint),
+    ...half,
+  ];
+}
+
+/** レール中心線の軌道中心からの距離。軌間は頭部内面間の寸法なので頭部幅の半分だけ外へ出る */
+const RAIL_CENTRE_OFFSET = (gauge: number): number => (gauge + RAIL.headWidth) / 2;
+
+/**
+ * 軌道（レール・まくらぎ・道床）を作る。
+ *
+ * レールは線として描くのではなく、実物の断面を線形に沿って掃引した立体にする。
+ * 頭頂面が別の材質で光り、腹部の陰が出るので、遠くのレールでも 2 本の帯として
+ * 読み取れるようになる。
+ */
+export function buildTrack(
+  route: CompiledRoute,
+  frameAt: (s: number) => TrackFrame,
+): THREE.Object3D[] {
+  const out: THREE.Object3D[] = [];
+  const offset = RAIL_CENTRE_OFFSET(route.alignment.gauge);
+
+  // --- レール ---
+  const railStations = stationsAlong(route.length, 3, frameAt);
+  const railMaterial = new THREE.MeshLambertMaterial({ color: RAIL_COLOR });
+  for (const side of [-1, 1] as const) {
+    const geom = sweepSection(
+      railStations.map((st) => ({ ...st, lateral: side * offset })),
+      RAIL_SECTION,
+      { closed: true },
+    );
+    out.push(new THREE.Mesh(geom, railMaterial));
+
+    // 頭頂面（走行面）。車輪に磨かれて銀色に光る細い帯
+    const headGeom = sweepSection(
+      railStations.map((st) => ({ ...st, lateral: side * offset, vertical: 0.002 })),
+      [
+        [-RAIL.headWidth / 2 + 0.006, 0],
+        [RAIL.headWidth / 2 - 0.006, 0],
+      ],
+    );
+    out.push(new THREE.Mesh(headGeom, new THREE.MeshBasicMaterial({ color: RAILHEAD_COLOR })));
+  }
+
+  // --- 道床・路盤 ---
+  const bed = stationsAlong(route.length, 5, frameAt);
+  const section = ballastSection();
+  // 道床（まくらぎ端から肩まで）と、その外の路盤・盛土のり面を別の材質にして
+  // バラストと土の境目が見えるようにする
+  out.push(
+    new THREE.Mesh(
+      sweepSection(bed, section.slice(1, section.length - 1)),
+      new THREE.MeshLambertMaterial({ color: BALLAST_COLOR, side: THREE.DoubleSide }),
+    ),
+  );
+  out.push(
+    new THREE.Mesh(
+      sweepSection(bed, [section[0]!, section[1]!]),
+      new THREE.MeshLambertMaterial({ color: FORMATION_COLOR, side: THREE.DoubleSide }),
+    ),
+  );
+  out.push(
+    new THREE.Mesh(
+      sweepSection(bed, [section[section.length - 2]!, section[section.length - 1]!]),
+      new THREE.MeshLambertMaterial({ color: FORMATION_COLOR, side: THREE.DoubleSide }),
+    ),
+  );
+
+  // --- まくらぎ ---
+  out.push(buildSleepers(route, frameAt, offset));
+
+  // --- レール継目（定尺レール区間のみ。音が鳴る位置と同じところに置く） ---
+  out.push(...buildRailJoints(route, frameAt, offset));
+
+  return out;
+}
+
+/** 一定間隔のステーションを作る。終端はかならず含める */
+function stationsAlong(
+  length: number,
+  step: number,
+  frameAt: (s: number) => TrackFrame,
+): SweepStation[] {
+  const n = Math.max(1, Math.ceil(length / step));
+  const out: SweepStation[] = [];
+  for (let i = 0; i <= n; i++) {
+    out.push({ frame: frameAt(Math.min((i * length) / n, length)) });
+  }
+  return out;
+}
+
+/**
+ * PC まくらぎ。
+ *
+ * 長さ 2000mm・高さ 190mm、上面より底面がわずかに広い台形断面。本線 1 級線の
+ * 敷設間隔 25m あたり 44 本（≒ 568mm）で並べる。レール座には締結装置を模した
+ * 小さな金具を置き、レールが宙に浮いて見えないようにする。
+ */
+function buildSleepers(
+  route: CompiledRoute,
+  frameAt: (s: number) => TrackFrame,
+  railOffset: number,
+): THREE.Group {
+  const group = new THREE.Group();
+  const count = Math.floor(route.length / SLEEPER.spacing);
+  const top = -RAIL.height;
+
+  const sleeper = new THREE.InstancedMesh(
+    taperedBoxGeometry(SLEEPER.topWidth, SLEEPER.bottomWidth, SLEEPER.height, SLEEPER.length),
+    new THREE.MeshLambertMaterial({ color: SLEEPER_COLOR }),
+    count,
+  );
+  // 締結装置（レール締結ばねと軌道パッド）。まくらぎ 1 本につき左右 2 個
+  const fastening = new THREE.InstancedMesh(
+    new THREE.BoxGeometry(0.2, 0.03, 0.19),
+    new THREE.MeshLambertMaterial({ color: FITTING_COLOR }),
+    count * 2,
+  );
+
+  const m = new THREE.Matrix4();
+  const p = new THREE.Vector3();
+  const one = new THREE.Vector3(1, 1, 1);
+  for (let i = 0; i < count; i++) {
+    const f = frameAt(i * SLEEPER.spacing);
+    const q = frameQuaternion(f);
+    p.copy(f.position).addScaledVector(f.up, top - SLEEPER.height / 2);
+    sleeper.setMatrixAt(i, m.compose(p, q, one));
+    for (let k = 0; k < 2; k++) {
+      p.copy(f.position)
+        .addScaledVector(f.cantRight, (k === 0 ? -1 : 1) * railOffset)
+        .addScaledVector(f.up, top - 0.015);
+      fastening.setMatrixAt(i * 2 + k, m.compose(p, q, one));
+    }
+  }
+  sleeper.instanceMatrix.needsUpdate = true;
+  fastening.instanceMatrix.needsUpdate = true;
+  group.add(sleeper, fastening);
+  return group;
+}
+
+/**
+ * レール継目板（継目板とボルト）。
+ *
+ * 位置は路線データの継目間隔をそのまま読むので、**「ガタン ゴトン」が鳴る場所と
+ * 目に見える継目が一致する**。ロングレール区間には置かれない。
+ */
+function buildRailJoints(
+  route: CompiledRoute,
+  frameAt: (s: number) => TrackFrame,
+  railOffset: number,
+): THREE.Object3D[] {
+  const positions: number[] = [];
+  let s = 0;
+  while (s < route.length) {
+    const spacing = route.railJointSpacing.at(s);
+    if (spacing <= 0) {
+      // ロングレール区間。次の切替点まで飛ばす
+      const next = route.railJointSpacing.boundaries.find((b) => b > s);
+      if (next === undefined) break;
+      s = next;
+      continue;
+    }
+    s += spacing;
+    if (s < route.length) positions.push(s);
+  }
+  if (positions.length === 0) return [];
+
+  const plate = new THREE.InstancedMesh(
+    new THREE.BoxGeometry(0.6, 0.1, 0.03),
+    new THREE.MeshLambertMaterial({ color: FITTING_COLOR }),
+    positions.length * 2,
+  );
+  const m = new THREE.Matrix4();
+  const p = new THREE.Vector3();
+  const one = new THREE.Vector3(1, 1, 1);
+  for (let i = 0; i < positions.length; i++) {
+    const f = frameAt(positions[i]!);
+    const q = frameQuaternion(f);
+    for (let k = 0; k < 2; k++) {
+      const side = k === 0 ? -1 : 1;
+      p.copy(f.position)
+        .addScaledVector(f.cantRight, side * (railOffset + 0.04))
+        .addScaledVector(f.up, -RAIL.height / 2 - 0.01);
+      plate.setMatrixAt(i * 2 + k, m.compose(p, q, one));
+    }
+  }
+  plate.instanceMatrix.needsUpdate = true;
+  return [plate];
+}
+
+/**
+ * 上面と底面で幅が違う直方体。
+ * まくらぎは型枠から抜くために側面がわずかに開いているので、真四角にはならない。
+ */
+function taperedBoxGeometry(
+  topWidth: number,
+  bottomWidth: number,
+  height: number,
+  length: number,
+): THREE.BufferGeometry {
+  const hz = length / 2;
+  const hy = height / 2;
+  const t = topWidth / 2;
+  const b = bottomWidth / 2;
+  // x = 線路方向（まくらぎの幅）、y = 上下、z = まくらぎの長手方向
+  const v: Array<[number, number, number]> = [
+    [-t, hy, -hz],
+    [t, hy, -hz],
+    [t, hy, hz],
+    [-t, hy, hz],
+    [-b, -hy, -hz],
+    [b, -hy, -hz],
+    [b, -hy, hz],
+    [-b, -hy, hz],
+  ];
+  const faces = [
+    [0, 1, 2, 3], // 上
+    [7, 6, 5, 4], // 下
+    [4, 5, 1, 0], // 手前（線路方向 -）
+    [3, 2, 6, 7], // 奥
+    [0, 3, 7, 4], // 端
+    [5, 6, 2, 1], // 端
+  ];
+  const positions: number[] = [];
+  const indices: number[] = [];
+  for (const face of faces) {
+    const base = positions.length / 3;
+    for (const idx of face) {
+      const [x, y, z] = v[idx!]!;
+      positions.push(x!, y!, z!);
+    }
+    indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
+  }
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geom.setIndex(indices);
+  geom.computeVertexNormals();
+  return geom;
+}
+
+/**
+ * 分岐器。
+ *
+ * 列車が通る側は本線の軌道としてすでに描かれているので、ここでは
+ * **通らない側**の線路を分かれていく枝として描く。実物の分岐器を構成する
+ * 部材のうち、外から見て形がはっきりわかるものを置く:
+ *
+ *  - **トングレール** — 先端が基本レールに密着し、そこから厚みを増していく。
+ *    先端側を細く絞ることで「刃物のように尖った可動レール」の形になる。
+ *  - **リードレール** — トングレールの後端からクロッシングまでの曲線レール。
+ *  - **クロッシング**（ノーズ・ウイングレール）— 番数 N の角度 α = atan(1/N) で
+ *    2 本のレールが交差する部分。ここに欠線があり、衝撃音の出どころになる。
+ *  - **護輪軌条（ガードレール）** — クロッシングの反対側の基本レールに沿えて、
+ *    輪軸がノーズを叩かないよう案内する。
+ *  - **電気転てつ機** — トングレール先端の脇。開通方向で色を変える。
+ *
+ * 枝の中心線は、トングレール先端からの距離 `d` に対して
+ *
+ * ```
+ * 横のずれ = d² / 2R            （リード曲線のあいだ）
+ *          = L²/2R + (d−L) sinα （クロッシングから先は直線）
+ * ```
+ *
+ * で置く。円弧の近似式だが、離れていく枝を数十メートル描くだけなので十分である。
+ */
+export function buildTurnouts(
+  route: CompiledRoute,
+  frameAt: (s: number) => TrackFrame,
+): THREE.Object3D[] {
+  const out: THREE.Object3D[] = [];
+  const offset = RAIL_CENTRE_OFFSET(route.alignment.gauge);
+  const railMaterial = new THREE.MeshLambertMaterial({ color: RAIL_COLOR });
+
+  for (const turnout of route.turnouts.turnouts) {
+    // 分岐側を走っているときは、分かれていくのは本線（反対側へ離れる）
+    const away = (turnout.side === 'right' ? 1 : -1) * (turnout.route === 'through' ? 1 : -1);
+    const start = turnout.pointsPosition;
+    const end = Math.min(route.length, start + turnout.length + 60);
+    const sinA = Math.sin(turnout.crossingAngle);
+    const lead = turnout.leadLength;
+
+    /** トングレール先端からの距離 d における、枝の中心線の横のずれ */
+    const branchOffset = (d: number): number =>
+      away *
+      (d <= lead
+        ? (d * d) / (2 * turnout.radius)
+        : (lead * lead) / (2 * turnout.radius) + (d - lead) * sinA);
+
+    const stations: SweepStation[] = [];
+    for (let s = start; s <= end; s += 2) {
+      stations.push({ frame: frameAt(s), lateral: branchOffset(s - start) });
+    }
+    if (stations.length < 2) continue;
+
+    // 枝の 2 本のレール。基本レールから離れていく側は途中からしか要らないが、
+    // 先端まで描いても密着したトングレールとして自然に見える
+    for (const side of [-1, 1] as const) {
+      out.push(
+        new THREE.Mesh(
+          sweepSection(
+            stations.map((st) => ({ ...st, lateral: (st.lateral ?? 0) + side * offset })),
+            RAIL_SECTION,
+            { closed: true },
+          ),
+          railMaterial,
+        ),
+      );
+    }
+
+    // トングレール: 先端 0 → 後端でレール断面と同じ厚さになる細い刃
+    const tongueLength = Math.min(lead * 0.45, 12);
+    const tongue: SweepStation[] = [];
+    for (let d = 0; d <= tongueLength; d += 1) {
+      tongue.push({ frame: frameAt(start + d), lateral: branchOffset(d) - away * offset });
+    }
+    if (tongue.length >= 2) {
+      out.push(
+        new THREE.Mesh(
+          tongueGeometry(tongue, away, tongueLength),
+          new THREE.MeshLambertMaterial({ color: RAILHEAD_COLOR }),
+        ),
+      );
+    }
+
+    // クロッシング（ノーズ）とウイングレール
+    const crossingFrame = frameAt(Math.min(route.length, turnout.crossingPosition));
+    const nose = new THREE.Mesh(
+      new THREE.BoxGeometry(3.2, RAIL.height, 0.22),
+      new THREE.MeshLambertMaterial({ color: RAILHEAD_COLOR }),
+    );
+    nose.quaternion.copy(frameQuaternion(crossingFrame));
+    nose.position
+      .copy(crossingFrame.position)
+      .addScaledVector(crossingFrame.cantRight, branchOffset(turnout.crossingPosition - start) / 2)
+      .addScaledVector(crossingFrame.up, -RAIL.height / 2);
+    out.push(nose);
+
+    // 護輪軌条（クロッシングの反対側のレールに沿える）
+    const guard: SweepStation[] = [];
+    for (let d = -4; d <= 4; d += 1) {
+      const s = Math.max(0, Math.min(route.length, turnout.crossingPosition + d));
+      guard.push({ frame: frameAt(s), lateral: -away * (offset - 0.09) });
+    }
+    out.push(
+      new THREE.Mesh(
+        sweepSection(
+          guard,
+          [
+            [-0.03, -RAIL.height],
+            [-0.03, -0.02],
+            [0.03, -0.02],
+            [0.03, -RAIL.height],
+          ],
+          { closed: true },
+        ),
+        railMaterial,
+      ),
+    );
+
+    // 電気転てつ機（NS 形相当）と転換かんぬき
+    const f = frameAt(start);
+    const q = frameQuaternion(f);
+    const machine = new THREE.Group();
+    const box = new THREE.Mesh(
+      new THREE.BoxGeometry(POINT_MACHINE.length, POINT_MACHINE.height, POINT_MACHINE.width),
+      new THREE.MeshLambertMaterial({
+        color: turnout.route === 'diverging' ? 0xd8a12c : 0x9aa1a8,
+      }),
+    );
+    box.position.y = POINT_MACHINE.height / 2;
+    const rod = new THREE.Mesh(
+      new THREE.BoxGeometry(0.08, 0.06, POINT_MACHINE.offset - offset),
+      new THREE.MeshLambertMaterial({ color: FITTING_COLOR }),
+    );
+    rod.position.set(0.2, 0.1, (-away * (POINT_MACHINE.offset - offset)) / 2);
+    machine.add(box, rod);
+    machine.quaternion.copy(q);
+    machine.position
+      .copy(f.position)
+      .addScaledVector(f.cantRight, away * POINT_MACHINE.offset)
+      .addScaledVector(f.up, -RAIL.height - SLEEPER.height);
+    out.push(machine);
+  }
+  return out;
+}
+
+/**
+ * トングレールの立体。
+ * 先端でほぼ厚さ 0、後端でレール頭部の厚さになる楔形にする。
+ */
+function tongueGeometry(
+  stations: readonly SweepStation[],
+  away: number,
+  length: number,
+): THREE.BufferGeometry {
+  const n = stations.length;
+  const positions: number[] = [];
+  const indices: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const st = stations[i]!;
+    const t = length > 0 ? i / (n - 1) : 0;
+    const thickness = 0.008 + t * (RAIL.headWidth - 0.008);
+    const f = st.frame;
+    const lat = st.lateral ?? 0;
+    for (const [dl, du] of [
+      [0, -RAIL.height * 0.55],
+      [away * thickness, -RAIL.height * 0.55],
+      [away * thickness, -0.004],
+      [0, -0.004],
+    ] as const) {
+      const p = f.position
+        .clone()
+        .addScaledVector(f.cantRight, lat + dl)
+        .addScaledVector(f.up, du);
+      positions.push(p.x, p.y, p.z);
+    }
+    if (i > 0) {
+      const a = (i - 1) * 4;
+      const b = i * 4;
+      for (let j = 0; j < 4; j++) {
+        const j2 = (j + 1) % 4;
+        indices.push(a + j, b + j, a + j2, a + j2, b + j, b + j2);
+      }
+    }
+  }
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geom.setIndex(indices);
+  geom.computeVertexNormals();
+  return geom;
+}
