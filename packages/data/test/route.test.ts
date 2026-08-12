@@ -5,7 +5,7 @@ import {
   compileRoute,
   compileVehicle,
   createDefaultLibrary,
-  testLineBranchRoute,
+  testLineLoopRoute,
   testLineRoute,
 } from '@railsim/data';
 
@@ -144,54 +144,62 @@ describe('車両のコンパイル', () => {
 });
 
 describe('分岐器のコンパイル', () => {
-  const through = compileRoute(testLineRoute);
-  const branch = compileRoute(testLineBranchRoute);
-  const toThrough = through.turnouts.turnouts[0]!;
-  const toBranch = branch.turnouts.turnouts[0]!;
+  const main = compileRoute(testLineRoute);
+  const loop = compileRoute(testLineLoopRoute);
+  /** 起点駅（交換可能駅）の出口の背向分岐器 */
+  const exitMain = main.turnouts.get('to-2')!;
+  const exitLoop = loop.turnouts.get('to-2')!;
+  /** 6300m の側線への分岐器（対向・本線側へ開通） */
+  const siding = main.turnouts.get('to-3')!;
 
   it('番数から寸法が決まる', () => {
-    expect(through.turnouts.length).toBe(1);
-    expect(toThrough.number).toBe(12);
-    expect(toThrough.radius).toBeCloseTo(350, 6);
+    // 交換設備の 2 基（対向・背向）と、側線への 1 基
+    expect(main.turnouts.length).toBe(3);
+    expect(siding.number).toBe(12);
+    expect(siding.radius).toBeCloseTo(350, 6);
     // リード長 = R α、全長はその 1.4 倍
-    expect(toThrough.leadLength).toBeCloseTo(350 * Math.atan(1 / 12), 9);
-    expect(toThrough.crossingPosition - toThrough.pointsPosition).toBeCloseTo(
-      toThrough.leadLength,
-      9,
-    );
-    expect(toThrough.length).toBeCloseTo(toThrough.leadLength * 1.4, 9);
+    expect(siding.leadLength).toBeCloseTo(350 * Math.atan(1 / 12), 9);
+    expect(siding.crossingPosition - siding.pointsPosition).toBeCloseTo(siding.leadLength, 9);
+    expect(siding.length).toBeCloseTo(siding.leadLength * 1.4, 9);
   });
 
-  /** 同じ分岐器が、本線データでは直進側、分岐線データでは分岐側に開通している */
-  it('本線と分岐線で開通方向だけが違う', () => {
-    expect(toThrough.route).toBe('through');
-    expect(toBranch.route).toBe('diverging');
-    expect(toBranch.position).toBe(toThrough.position);
-    expect(toBranch.length).toBeCloseTo(toThrough.length, 9);
+  /** 背向はクロッシング側から進入するので、トングレールとの前後関係が逆になる */
+  it('背向分岐器はクロッシングから入ってトングレールで出る', () => {
+    expect(exitLoop.orientation).toBe('trailing');
+    expect(exitLoop.crossingPosition).toBe(exitLoop.position);
+    expect(exitLoop.pointsPosition - exitLoop.crossingPosition).toBeCloseTo(exitLoop.leadLength, 9);
+  });
+
+  /** 同じ分岐器が、1 番線のデータでは直進側、2 番線のデータでは分岐側に開通している */
+  it('1 番線と 2 番線で開通方向だけが違う', () => {
+    expect(exitMain.route).toBe('through');
+    expect(exitLoop.route).toBe('diverging');
+    expect(exitLoop.position).toBe(exitMain.position);
+    expect(exitLoop.length).toBeCloseTo(exitMain.length, 9);
   });
 
   it('分岐側にだけ制限速度が付く（#12 → 45km/h）', () => {
-    // 直進側は本線と同じ速度で通過できる
-    expect(mpsToKmh(through.speedLimits.at(toThrough.position + 10))).toBeCloseTo(110, 6);
-    expect(mpsToKmh(toBranch.divergingSpeed)).toBeCloseTo(45, 6);
-    expect(mpsToKmh(branch.speedLimits.at(toBranch.position + 10))).toBeCloseTo(45, 6);
+    // 1 番線は本線と同じ速度で通過できる
+    expect(mpsToKmh(main.speedLimits.at(exitMain.position + 10))).toBeCloseTo(110, 6);
+    expect(mpsToKmh(exitLoop.divergingSpeed)).toBeCloseTo(45, 6);
+    expect(mpsToKmh(loop.speedLimits.at(exitLoop.position + 10))).toBeCloseTo(45, 6);
     // 分岐器を抜ければ制限は解ける
-    expect(mpsToKmh(branch.speedLimits.at(toBranch.position + toBranch.length + 10))).toBeCloseTo(
+    expect(mpsToKmh(loop.speedLimits.at(exitLoop.position + exitLoop.length + 10))).toBeCloseTo(
       110,
       6,
     );
-    const entry = branch.speedLimitEntries.find((e) => e.reason === 'turnout');
-    expect(entry?.start).toBe(toBranch.position);
+    const entry = loop.speedLimitEntries.find((e) => e.id === `turnout-${exitLoop.id}`);
+    expect(entry?.start).toBeCloseTo(exitLoop.position, 6);
   });
 
   /** 分岐制限は速度制限の 1 つなので、ATS-P の地上子も自動で置かれる */
   it('分岐制限に ATS-P の地上子が置かれる', () => {
-    const beacons = branch.beacons.all.filter(
-      (b) => b.value.kind === 'ats-p-limit' && b.value.limitId.startsWith('turnout-'),
+    const beacons = loop.beacons.all.filter(
+      (b) => b.value.kind === 'ats-p-limit' && b.value.limitId === `turnout-${exitLoop.id}`,
     );
-    expect(beacons.length).toBeGreaterThan(0);
-    expect(beacons.map((b) => Math.round(toBranch.position - b.s)).sort((a, b) => a - b)).toEqual([
-      50, 150, 300, 500,
+    // 500m 手前は起点より前になるので置けない
+    expect(beacons.map((b) => Math.round(exitLoop.position - b.s)).sort((a, b) => a - b)).toEqual([
+      50, 150, 300,
     ]);
   });
 
@@ -199,32 +207,53 @@ describe('分岐器のコンパイル', () => {
    * リード曲線には**緩和曲線もカントも無い**。曲率が一段で立ち上がるのが、
    * 分岐側を渡るときに横 G が階段状に来る理由そのものである。
    */
-  it('分岐線のリード曲線は緩和曲線もカントも持たない', () => {
-    const s = toBranch.position + 1;
-    expect(branch.alignment.radiusAt(s)).toBeCloseTo(350, 3);
-    expect(branch.alignment.curvatureAt(s)).toBeLessThan(0); // 右へ曲がる
-    expect(branch.alignment.cantAt(s)).toBe(0);
+  it('リード曲線は緩和曲線もカントも持たない', () => {
+    const entry = loop.turnouts.get('to-1')!;
+    const s = entry.position + 1;
+    expect(loop.alignment.radiusAt(s)).toBeCloseTo(350, 3);
+    expect(loop.alignment.curvatureAt(s)).toBeLessThan(0); // 右へ曲がる
+    expect(loop.alignment.cantAt(s)).toBe(0);
     // 分岐器の直前は直線のまま
-    expect(branch.alignment.radiusAt(toBranch.position - 1)).toBe(Infinity);
+    expect(loop.alignment.radiusAt(entry.position - 1)).toBe(Infinity);
     // リード曲線を抜けると、ちょうどクロッシング角ぶん向きが変わっている
     const turned =
-      branch.alignment.headingAt(toBranch.position) -
-      branch.alignment.headingAt(toBranch.crossingPosition);
-    expect(turned).toBeCloseTo(toBranch.crossingAngle, 6);
+      loop.alignment.headingAt(entry.position) - loop.alignment.headingAt(entry.crossingPosition);
+    expect(turned).toBeCloseTo(entry.crossingAngle, 6);
   });
 
-  it('分岐線は本線と別の終点へ向かう', () => {
-    expect(branch.stations.at(-1)!.name).toBe('分岐終端');
-    expect(through.stations.at(-1)!.name).toBe('終端');
-    // 分岐器より手前は同じ線形
-    expect(branch.alignment.positionAt(3000).x).toBeCloseTo(
-      through.alignment.positionAt(3000).x,
-      6,
+  /**
+   * 交換可能駅なので、2 番線は本線と平行に離れてまた戻る。線路中心間隔は
+   * リード曲線と戻し曲線の組で決まり、`2R(1 − cos α) + 護輪軌条部 sin α` になる。
+   */
+  it('2 番線は本線から 3.38m 離れて平行に走り、出口で本線へ戻る', () => {
+    const offsetAt = (s: number): number => {
+      const a = main.alignment.positionAt(s);
+      const b = loop.alignment.positionAt(s);
+      return Math.hypot(a.x - b.x, a.z - b.z);
+    };
+    const spacing =
+      2 * 350 * (1 - Math.cos(Math.atan(1 / 12))) +
+      350 * Math.atan(1 / 12) * 0.4 * Math.sin(Math.atan(1 / 12));
+    expect(spacing).toBeCloseTo(3.38, 2);
+    // ホーム（180〜320m）では本線と平行に離れている
+    expect(offsetAt(250)).toBeCloseTo(spacing, 2);
+    expect(loop.alignment.radiusAt(250)).toBe(Infinity);
+    expect(loop.alignment.headingAt(250)).toBeCloseTo(main.alignment.headingAt(250), 9);
+    // 出口を抜ければ本線に戻っていて、以降は同じ線形
+    expect(offsetAt(600)).toBeLessThan(0.3);
+    expect(loop.alignment.headingAt(600)).toBeCloseTo(main.alignment.headingAt(600), 9);
+    expect(loop.alignment.radiusAt(4500)).toBeCloseTo(main.alignment.radiusAt(4500), 6);
+  });
+
+  /** 行き先も距離程も変わらないので、駅も信号機もそのまま使える */
+  it('2 番線を通っても駅と信号機は 1 番線と同じ', () => {
+    expect(loop.length).toBe(main.length);
+    expect(loop.stations.map((s) => `${s.id}@${s.stopPosition}`)).toEqual(
+      main.stations.map((s) => `${s.id}@${s.stopPosition}`),
     );
-    // 分岐器より先は横へ離れていく
-    const bp = branch.alignment.positionAt(7000);
-    const tp = through.alignment.positionAt(7000);
-    expect(Math.hypot(bp.x - tp.x, bp.z - tp.z)).toBeGreaterThan(20);
+    expect(loop.signals.map((s) => `${s.id}@${s.position}`)).toEqual(
+      main.signals.map((s) => `${s.id}@${s.position}`),
+    );
   });
 });
 

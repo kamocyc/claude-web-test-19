@@ -27,25 +27,28 @@ export const testLineSnow: ScenarioDefinition = {
 };
 
 /**
- * 先行列車シナリオ: 前を走る列車に追いつき、信号現示が段階的に変化する。
- * 先行列車は 10:00:00 に 1000m 地点から発車し、ゆっくり終点へ向かう。
+ * 先行列車。10:00 前に 1000m 地点から発車し、ゆっくり終点へ向かう。
+ * 追いつくと信号が段階的に現示ダウンする。
  */
+export const precedingTrain = [
+  {
+    id: 'preceding',
+    length: 80,
+    waypoints: [
+      { time: '9:59:00', position: 1000 },
+      { time: '10:02:00', position: 2400 },
+      { time: '10:06:00', position: 4400 },
+      { time: '10:12:00', position: 8000 },
+    ],
+  },
+];
+
+/** 先行列車シナリオ: 前を走る列車に追いつき、信号現示が段階的に変化する。 */
 export const testLineFollowing: ScenarioDefinition = {
   ...testLineLocal,
   id: 'test-line-following',
   name: '試験線 先行列車あり',
-  scheduledTrains: [
-    {
-      id: 'preceding',
-      length: 80,
-      waypoints: [
-        { time: '9:59:00', position: 1000 },
-        { time: '10:02:00', position: 2400 },
-        { time: '10:06:00', position: 4400 },
-        { time: '10:12:00', position: 8000 },
-      ],
-    },
-  ],
+  scheduledTrains: precedingTrain,
 };
 
 /** ATS-SN シナリオ: 確認扱いを要する旧型の保安装置で運転する */
@@ -57,10 +60,10 @@ export const testLineAtsSn: ScenarioDefinition = {
 };
 
 /**
- * 分岐器（直進）シナリオ: 中原から発車し、6300m の #12 分岐器を直進側で通過する。
+ * 側線分岐器シナリオ: 中原から発車し、6300m の #12 分岐器を直進側で通過する。
  *
- * 直進側に制限速度は無いので、110km/h のままクロッシングの欠線を踏める。
- * 「ガタン」が 1 両あたり 2 拍ずつ、編成のぶんだけ続く。
+ * 側線への分岐器は本線側へ開通したままなので制限速度が無く、110km/h のまま
+ * クロッシングの欠線を踏める。「ガタン」が 1 両あたり 2 拍ずつ、編成のぶんだけ続く。
  */
 export const testLineTurnoutThrough: ScenarioDefinition = {
   ...testLineLocal,
@@ -71,17 +74,19 @@ export const testLineTurnoutThrough: ScenarioDefinition = {
 };
 
 /**
- * 分岐器（分岐側）シナリオ: 同じ分岐器を分岐側へ渡り、分岐線の終端へ向かう。
+ * 2 番線発車シナリオ: 起点駅（交換可能駅）の副本線から発車する。
  *
- * リード曲線（R350・緩和曲線もカントも無し）に 45km/h の制限が付くので、
- * 手前で速度を落として渡ることになる。落とし切れずに突っ込めば、横 G が階段状に
- * 立ち上がって立っている乗客はよろける。
+ * 出口の背向分岐器を分岐側で渡るので、45km/h の制限を受けたまま出ることになる。
+ * リード曲線には緩和曲線もカントも無く、しかも戻し曲線で逆へ折り返すので、
+ * 横 G が階段状に正負へ振れる。制限を守らずに出れば立っている乗客はよろける。
+ *
+ * 行き先は 1 番線から出た場合とまったく同じで、距離程も駅も信号機も変わらない。
  */
-export const testLineTurnoutDiverging: ScenarioDefinition = {
-  ...testLineTurnoutThrough,
-  id: 'test-line-turnout-diverging',
-  name: '試験線 分岐器（分岐側へ）',
-  routeId: 'test-line-branch',
+export const testLineLoop: ScenarioDefinition = {
+  ...testLineLocal,
+  id: 'test-line-loop',
+  name: '試験線 各駅停車（2 番線発車）',
+  routeId: 'test-line-loop',
 };
 
 /**
@@ -148,7 +153,7 @@ export const scenarios = [
   testLineFollowing,
   testLineAtsSn,
   testLineTurnoutThrough,
-  testLineTurnoutDiverging,
+  testLineLoop,
   testLineResistor,
   testLineResistorSnow,
   testLineChopper,

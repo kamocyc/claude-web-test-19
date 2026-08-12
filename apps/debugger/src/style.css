@@ -125,6 +125,7 @@ body {
   min-height: 0;
 }
 
+#conditions,
 #controls {
   display: flex;
   flex-wrap: wrap;
@@ -134,6 +135,45 @@ body {
   border-bottom: 1px solid var(--line);
 }
 
+/* 走行条件（車両・天気・保安装置・先行列車・番線） */
+#conditions {
+  gap: 6px 12px;
+  font-size: 12px;
+  color: var(--muted);
+  padding-bottom: 8px;
+}
+
+#conditions .pick,
+#conditions .toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+#conditions .toggle {
+  color: var(--text);
+  cursor: pointer;
+}
+
+#conditions .radios {
+  display: inline-flex;
+  gap: 8px;
+}
+
+#conditions .radios label {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+#conditions input {
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+#conditions select,
 #controls select,
 #controls button,
 #controls .file {

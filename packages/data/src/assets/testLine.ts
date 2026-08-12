@@ -1,7 +1,5 @@
 import type { RouteDefinition } from '../schema/route.ts';
 
-/** 分岐器（下り出発方）の始端の距離程 [m] */
-const TURNOUT_AT = 6300;
 /** 分岐器の番数。#12 → リード R350・分岐制限 45km/h */
 const TURNOUT_NUMBER = 12;
 /** リード曲線の半径 [m]（#12 の標準値） */
@@ -10,13 +8,25 @@ const TURNOUT_RADIUS = 350;
  * リード長 [m] = R α。分岐器の寸法はコンパイラが番数から求めるが、分岐側の線形は
  * 路線データの側で書くので、同じ寸法をここでも組み立てる。
  */
-const LEAD_LENGTH = TURNOUT_RADIUS * Math.atan(1 / TURNOUT_NUMBER);
-/** 分岐器の全長 [m]（`turnoutLengthOf()` と同じ 1.4 倍） */
-const TURNOUT_LENGTH = LEAD_LENGTH * 1.4;
-/** 分岐器の終端の距離程 [m] */
-const TURNOUT_END = TURNOUT_AT + TURNOUT_LENGTH;
-/** 分岐線の終端駅までの距離 [m] */
-const BRANCH_TAIL = 900;
+const LEAD = TURNOUT_RADIUS * Math.atan(1 / TURNOUT_NUMBER);
+/**
+ * リード曲線より先の部分の長さ [m]。
+ * 分岐器の全長は `turnoutLengthOf()` でリード長の 1.4 倍になるので、その残り。
+ * クロッシングの翼レールと護輪軌条が続く区間で、線形としては直線である。
+ */
+const TAIL = LEAD * 0.4;
+
+/** 交換設備の入口（対向分岐器のトングレール先端）の距離程 [m] */
+const LOOP_ENTRY = 40;
+/** 交換設備の出口（背向分岐器のクロッシング）の距離程 [m] */
+const LOOP_EXIT = 420;
+/** 2 番線（副本線）のホーム部分の長さ [m]。入口の戻し曲線から出口の戻し曲線まで。 */
+const PLATFORM_TRACK = LOOP_EXIT - LEAD - (LOOP_ENTRY + LEAD + TAIL + LEAD);
+/** 交換設備の終わり（本線へ戻る点）の距離程 [m] */
+const LOOP_END = LOOP_EXIT + TAIL + LEAD;
+
+/** 側線への分岐器（下り出発方）の始端の距離程 [m] */
+const SIDING_TURNOUT_AT = 6300;
 
 /**
  * 架空の試験線「試験線（南武試験線）」。
@@ -28,57 +38,69 @@ const BRANCH_TAIL = 900;
  *  - トンネル 1 区間（下り勾配の途中）
  *  - 駅 3 つ（起点駅・中間駅・終点駅）とダイヤ
  *  - 閉塞信号機 8 基（約 1km 間隔）。ATS-P / ATS-SN の地上子は自動配置される。
- *  - 6300m に #12 片開き分岐器（右分岐）。**本線と分岐線で別の路線データになる。**
+ *  - 起点駅（試験台）は**交換可能駅**。#12 分岐器 2 基で 1 番線と 2 番線に分かれる。
+ *  - 6300m に側線への #12 片開き分岐器（本線側へ開通）
  *
  * 曲線の制限速度は許容カント不足 60mm から自動計算される
  * （R600/C75 → 95km/h、R400/C90 → 80km/h）。
  *
- * @param branch 分岐器を分岐側へ開通させ、その先を分岐線として書くか
+ * @param loop 起点駅で 2 番線（分岐側）を通るか
  */
-function buildTestLine(branch: boolean): RouteDefinition {
+function buildTestLine(loop: boolean): RouteDefinition {
   /**
-   * 分岐側のリード曲線。
+   * 2 番線（副本線）の線形。
+   *
+   * 交換可能駅は、対向分岐器で本線から分かれ、本線と平行に走り、背向分岐器で
+   * 戻る。分かれるときも戻るときも**リード曲線とその戻し曲線の 2 つで一組**に
+   * なっていて、これで進行方向を変えずに横へ 3.4m ずれる（＝線路中心間隔）:
+   *
+   *   R(1 − cos α) + 護輪軌条部 sin α + R(1 − cos α) = 1.21 + 0.97 + 1.21 = 3.38m
    *
    * **緩和曲線もカントも無い**のがこの線形の要点である。分岐器のリード曲線は
-   * 曲率が 0 から 1/R へ一段で立ち上がるので、横加速度が階段状に入る。
-   * 本線の曲線（80〜100m の緩和曲線つき）とは、同じ横 G でも体への来方がまるで違う。
+   * 曲率が 0 から 1/R へ一段で立ち上がるので、横加速度が階段状に入る。本線の曲線
+   * （80〜100m の緩和曲線つき）とは、同じ横 G でも体への来方がまるで違う。しかも
+   * 戻し曲線で逆向きへ折り返すので、2 番線の出入りでは横 G が正負に振れる。
+   *
+   * 入口と出口で長さが揃っているので、**2 番線を通っても距離程は変わらない**。
+   * 駅も信号機も勾配も 1 番線とまったく同じものが使える。
    */
-  const branchHorizontal = [
-    // トングレール先端 → クロッシング。曲率が一段で立ち上がり、α = atan(1/N) だけ振れる
-    { length: LEAD_LENGTH, radius: -TURNOUT_RADIUS, transition: 0 },
-    // クロッシングから分岐器の終端まではもう直線
-    { length: TURNOUT_LENGTH - LEAD_LENGTH },
-    { length: BRANCH_TAIL },
+  const loopHorizontal = [
+    { length: LOOP_ENTRY },
+    // 入口の対向分岐器。リード曲線で右へ α だけ振れ、そのあと護輪軌条部は直線
+    { length: LEAD, radius: -TURNOUT_RADIUS, transition: 0 },
+    { length: TAIL },
+    // 戻し曲線。ここで本線と平行になる
+    { length: LEAD, radius: TURNOUT_RADIUS, transition: 0 },
+    // 2 番線のホーム（本線から 3.4m 横）
+    { length: PLATFORM_TRACK },
+    // 出口。本線へ向き直してから、背向分岐器の護輪軌条部 → リード曲線で合流する
+    { length: LEAD, radius: TURNOUT_RADIUS, transition: 0 },
+    { length: TAIL },
+    { length: LEAD, radius: -TURNOUT_RADIUS, transition: 0 },
+    { length: 1500 - LOOP_END },
   ];
+
   const horizontal = [
-    { length: 1500 },
+    ...(loop ? loopHorizontal : [{ length: 1500 }]),
     { length: 800, radius: 600, transition: 80, cant: 75 },
     { length: 700, transition: 80 },
     { length: 1200 },
     { length: 800, radius: -400, transition: 100, cant: 90 },
     { length: 600, transition: 100 },
-    // 分岐器の始端で区間を切っておく（分岐側はここから別の線形になる）
-    { length: TURNOUT_AT - 5600 },
-    ...(branch ? branchHorizontal : [{ length: 8000 - TURNOUT_AT }]),
+    { length: 2400 },
   ];
-  const length = branch ? TURNOUT_END + BRANCH_TAIL : 8000;
 
   const vertical = [
     { length: 2000, grade: 0 },
     { length: 1200, grade: 25, verticalCurve: 200 },
     { length: 1400, grade: 0, verticalCurve: 200 },
     { length: 1400, grade: -33, verticalCurve: 200 },
-    { length: length - 6000, grade: 0, verticalCurve: 200 },
+    { length: 2000, grade: 0, verticalCurve: 200 },
   ];
 
-  /** 終端駅（本線は 7200m、分岐線はリード曲線の先） */
-  const terminus = branch
-    ? { id: 'stn-d', name: '分岐終端', stopPosition: TURNOUT_END + 780 }
-    : { id: 'stn-c', name: '終端', stopPosition: 7200 };
-
   return {
-    id: branch ? 'test-line-branch' : 'test-line',
-    name: branch ? '試験線（分岐線）' : '試験線',
+    id: loop ? 'test-line-loop' : 'test-line',
+    name: loop ? '試験線（2 番線経由）' : '試験線',
     gauge: 1067,
     maxSpeed: 110,
     sampleStep: 2,
@@ -89,21 +111,46 @@ function buildTestLine(branch: boolean): RouteDefinition {
     tunnels: [{ id: 'tunnel-1', start: 4700, end: 5900 }],
 
     /**
-     * 6300m の片開き分岐器（右分岐・対向）。
+     * 分岐器 3 基。
      *
-     * 本線は直進側へ、分岐線は分岐側へ開通している。分岐器そのものは**どちらの
-     * 路線でも同じ場所に同じ寸法である**ため、直進でもトングレールとクロッシングの
-     * 衝撃は出る。違うのは、分岐側では欠線を踏むレールが反対側になること、
-     * トングレールで輪軸が曲げられること、そしてリード曲線の横 G が加わることである。
+     * `to-1` / `to-2` は起点駅の交換設備で、開通方向が 1 番線と 2 番線を分ける。
+     * **どちらの番線を通っても分岐器そのものは同じ場所に同じ寸法である**ため、
+     * 1 番線でもトングレールとクロッシングの衝撃は出る。違うのは、分岐側では
+     * 欠線を踏むレールが反対側になること、トングレールで輪軸が曲げられること、
+     * そしてリード曲線の横 G が加わることである。
+     *
+     * `to-2` を `side: 'left'` としているのは背向だからである。分岐器の向きは
+     * その分岐器を**対向で見たとき**に分岐側がどちらへ出るかで決まり、背向で
+     * 進入する列車から見ると左右が入れ替わる。2 番線から本線へ戻る列車は左へ
+     * 寄るので、トングレールでのふらつきも左向きになる。
+     *
+     * `to-3` は側線への分岐器で、本線側へ開通したままにしてある。分岐側の進路が
+     * 無い（＝速度制限も無い）ので、線路最高速度のまま欠線を踏むことになる。
      */
     turnouts: [
       {
         id: 'to-1',
-        at: TURNOUT_AT,
+        at: LOOP_ENTRY,
         number: TURNOUT_NUMBER,
         side: 'right',
         orientation: 'facing',
-        route: branch ? 'diverging' : 'through',
+        route: loop ? 'diverging' : 'through',
+      },
+      {
+        id: 'to-2',
+        at: LOOP_EXIT,
+        number: TURNOUT_NUMBER,
+        side: 'left',
+        orientation: 'trailing',
+        route: loop ? 'diverging' : 'through',
+      },
+      {
+        id: 'to-3',
+        at: SIDING_TURNOUT_AT,
+        number: TURNOUT_NUMBER,
+        side: 'right',
+        orientation: 'facing',
+        route: 'through',
       },
     ],
 
@@ -128,9 +175,11 @@ function buildTestLine(branch: boolean): RouteDefinition {
         departureTime: '10:03:50',
       },
       {
-        ...terminus,
-        platformStart: terminus.stopPosition - 120,
-        platformEnd: terminus.stopPosition + 20,
+        id: 'stn-c',
+        name: '終端',
+        stopPosition: 7200,
+        platformStart: 7080,
+        platformEnd: 7220,
         dwellTime: 60,
         arrivalTime: '10:07:10',
       },
@@ -143,9 +192,9 @@ function buildTestLine(branch: boolean): RouteDefinition {
       { id: 'sig-4', at: 3200, kind: 'home' },
       { id: 'sig-5', at: 4200, kind: 'starting' },
       { id: 'sig-6', at: 5200 },
-      // 分岐器を防護する信号機は分岐器の手前に置く（進路はここから先で分かれる）
-      { id: 'sig-7', at: TURNOUT_AT - 250 },
-      { id: 'sig-8', at: terminus.stopPosition - 100, kind: 'home' },
+      // 側線への分岐器を防護する信号機は分岐器の手前に置く
+      { id: 'sig-7', at: SIDING_TURNOUT_AT - 250 },
+      { id: 'sig-8', at: 7100, kind: 'home' },
     ],
 
     aspectSpeeds: { R: 0, YY: 25, Y: 45, YG: 75, G: 110 },
@@ -179,14 +228,15 @@ function buildTestLine(branch: boolean): RouteDefinition {
   };
 }
 
-/** 試験線（分岐器は直進側へ開通。8km） */
+/** 試験線（起点駅は 1 番線＝本線側。8km） */
 export const testLineRoute: RouteDefinition = buildTestLine(false);
 
 /**
- * 試験線 分岐線（6300m の分岐器を分岐側へ）。
+ * 試験線（起点駅の 2 番線＝副本線を通る）。
  *
- * 中原から先は本線と同じで、分岐器で右へ折れて分岐終端へ向かう。同じ運転を
- * 直進側と分岐側で走り比べれば、リード曲線の横 G と、欠線を踏む側が入れ替わる
- * ことによる揺れの違いがそのまま出る。
+ * 交換可能駅なので、2 番線へ入っても行き先は変わらない。**分かれてすぐ戻る**ため
+ * 距離程も駅も信号機も 1 番線と同じで、違うのは 40〜460m の線形だけである。
+ * 発車のたびに #12 分岐器の分岐側（45km/h 制限）を渡ることになるので、制限を
+ * 守って出るか、渡りきるまで加速を待つか、という運転そのものが変わる。
  */
-export const testLineBranchRoute: RouteDefinition = buildTestLine(true);
+export const testLineLoopRoute: RouteDefinition = buildTestLine(true);

@@ -4,7 +4,8 @@ import { commuter4ChopperVehicle } from './assets/commuter4Chopper.ts';
 import { commuter4ResistorVehicle } from './assets/commuter4Resistor.ts';
 import { commuter4ScaleVehicle } from './assets/commuter4Scale.ts';
 import { scenarios } from './assets/scenarios.ts';
-import { testLineBranchRoute, testLineRoute } from './assets/testLine.ts';
+import { testLineLoopRoute, testLineRoute } from './assets/testLine.ts';
+import { parseRunScenarioId, runScenarioDefinition, type RunOptions } from './run.ts';
 import { compileRoute } from './compile/route.ts';
 import { compileScenario } from './compile/scenario.ts';
 import { compileVehicle } from './compile/vehicle.ts';
@@ -57,10 +58,30 @@ export class DataLibrary {
     return compiled;
   }
 
+  /**
+   * シナリオを取り出す。
+   *
+   * 同梱シナリオの ID のほかに、走行条件の組み合わせから作られた ID
+   * （`runScenarioId()`）も受け付ける。記録の保存・再生はシナリオ ID だけを持ち歩くので、
+   * 組み合わせで作ったシナリオもここから復元できる必要がある。
+   */
   scenario(id: string): Scenario {
+    const options = parseRunScenarioId(id);
+    if (options) return this.run(options);
     const def = this.scenarioDefs.get(id);
     if (!def) throw new Error(`シナリオが見つかりません: ${id}`);
     return compileScenario(def, this.route(def.routeId), this.vehicle(def.vehicleId));
+  }
+
+  /** 走行条件の組み合わせからシナリオを組み立てる */
+  run(options: RunOptions): Scenario {
+    const def = runScenarioDefinition(options);
+    return compileScenario(def, this.route(def.routeId), this.vehicle(def.vehicleId));
+  }
+
+  /** その ID のシナリオを取り出せるか */
+  hasScenario(id: string): boolean {
+    return this.scenarioDefs.has(id) || parseRunScenarioId(id) !== null;
   }
 
   get routeIds(): string[] {
@@ -84,7 +105,7 @@ export class DataLibrary {
 export function createDefaultLibrary(): DataLibrary {
   const lib = new DataLibrary();
   lib.addRoute(testLineRoute);
-  lib.addRoute(testLineBranchRoute);
+  lib.addRoute(testLineLoopRoute);
   lib.addVehicle(commuter4Vehicle);
   lib.addVehicle(commuter4ResistorVehicle);
   lib.addVehicle(commuter4ChopperVehicle);

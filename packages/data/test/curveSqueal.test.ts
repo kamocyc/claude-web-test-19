@@ -74,17 +74,21 @@ describe('試験線のどこで軋み音が出るか', () => {
   it('分岐器を直進で渡っても鳴らない', () => {
     // 曲率が 0 のままで、護輪軌条の押し戻しは軸距の弦で均されてしまう
     expect(scan('test-line-turnout', 6280, 6360).peak).toBe(0);
+    // 交換設備も 1 番線を通るかぎり直線のまま
+    expect(scan('test-line-local', 30, 470).peak).toBe(0);
   });
 
-  it('分岐側へ渡ると鳴る（リード曲線 R350 + トングレールの遊間）', () => {
-    const { peak, ratio } = scan('test-line-turnout-diverging', 6280, 6360);
+  it('2 番線へ入ると鳴る（リード曲線 R350 + トングレールの遊間）', () => {
+    const { peak, ratio } = scan('test-line-loop', 380, 470);
     expect(peak).toBe(1);
     expect(ratio).toBeGreaterThan(0.1);
+    // ホームの部分は本線と平行な直線なので鳴らない
+    expect(scan('test-line-loop', 170, 380).peak).toBe(0);
   });
 
   it('分岐側でも降雪ならほとんど鳴らない', () => {
-    const dry = scan('test-line-turnout-diverging', 6280, 6360, 'dry');
-    const snow = scan('test-line-turnout-diverging', 6280, 6360, 'snow');
+    const dry = scan('test-line-loop', 380, 470, 'dry');
+    const snow = scan('test-line-loop', 380, 470, 'snow');
     expect(snow.peak).toBeGreaterThan(0);
     expect(snow.peak).toBeLessThan(dry.peak * 0.15);
   });

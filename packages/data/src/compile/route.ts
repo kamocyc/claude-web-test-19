@@ -86,7 +86,13 @@ function buildSpeedLimitTable(
     breakpoints.add(Math.max(0, sp.start));
     breakpoints.add(Math.min(routeLength, sp.end));
   }
-  const sorted = [...breakpoints].sort((a, b) => a - b);
+  // 同じ点を指しているつもりの切替点が、丸め誤差で 1e-13 だけずれることがある
+  // （分岐器の終端は「始端 + 全長」、曲線の終端は区間長の累積で求まるため）。
+  // そのまま並べると幅 0 の制限区間ができ、ATS-P の地上子まで生えてしまうので、
+  // 1μm 以内に固まっている切替点は最後の 1 つに寄せる。
+  const sorted = [...breakpoints]
+    .sort((a, b) => a - b)
+    .filter((b, i, all) => i === all.length - 1 || all[i + 1]! - b > 1e-6);
   const stepEntries: PointEntry<number>[] = [];
   const entries: SpeedLimitEntry[] = [];
   let previous = Number.NaN;

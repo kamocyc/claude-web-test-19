@@ -584,10 +584,8 @@ describe('駅の取り扱いと運転評価', () => {
 });
 
 describe('分岐器の通過', () => {
-  const turnoutOf = (id: string) => {
-    const scenario = scenarioOf(id);
-    return scenario.route.turnouts.turnouts[0]!;
-  };
+  const turnoutOf = (id: string, turnoutId: string) =>
+    scenarioOf(id).route.turnouts.get(turnoutId)!;
 
   /**
    * 分岐器の 250m 手前から、指定の速度で**惰行のまま**入って通過する。
@@ -596,9 +594,9 @@ describe('分岐器の通過', () => {
    * 見るために惰行で渡る。保安装置も切ってある（分岐制限に ATS-P のパターンが
    * 掛かると、制限超過で渡るという条件そのものが成立しない）。
    */
-  const cross = (id: string, kmh: number) => {
+  const cross = (id: string, turnoutId: string, kmh: number) => {
     const base = scenarioOf(id);
-    const turnout = turnoutOf(id);
+    const turnout = turnoutOf(id, turnoutId);
     const sim = new Simulation({
       ...base,
       safetySystems: [],
@@ -633,7 +631,7 @@ describe('分岐器の通過', () => {
    * 踏むので、車体は揺れる（欠線は片方のレールにしかないのでロールになる）。
    */
   it('直進側でも分岐器を通れば車体が揺れる', () => {
-    const crossing = cross('test-line-turnout', 100);
+    const crossing = cross('test-line-turnout', 'to-3', 100);
     expect(mpsToKmh(crossing.before.speed)).toBeGreaterThan(90);
     expect(crossing.maxRoll).toBeGreaterThan(0.0004);
     // 揺れはするが、よろけるほどではない
@@ -642,11 +640,12 @@ describe('分岐器の通過', () => {
   });
 
   /**
-   * 分岐側は緩和曲線もカントも無い R350 へ入ることになる。制限（45km/h）を
-   * 無視して渡れば横 G が階段状に立ち上がり、立っている乗客は足を出す。
+   * 2 番線から出る列車は、緩和曲線もカントも無い R350 を戻し曲線と合わせて
+   * **逆向きに 2 度**通ることになる。制限（45km/h）を無視して渡れば横 G が
+   * 階段状に立ち上がり、しかも符号が反転するので、立っている乗客は足を出す。
    */
   it('分岐側を制限速度超過で渡ると乗客がよろける', () => {
-    const fast = cross('test-line-turnout-diverging', 90);
+    const fast = cross('test-line-loop', 'to-2', 90);
     expect(mpsToKmh(fast.before.speed)).toBeGreaterThan(80);
     // R350 を 90km/h → v²/R = 1.8 m/s²。許容カント不足の範囲をはるかに超える。
     expect(fast.maxLateral).toBeGreaterThan(1.5);
@@ -656,7 +655,7 @@ describe('分岐器の通過', () => {
 
   /** 制限速度まで落として渡れば、同じ分岐器でも横 G は乗り心地の範囲に収まる */
   it('制限速度まで落として渡ればよろけない', () => {
-    const slow = cross('test-line-turnout-diverging', 45);
+    const slow = cross('test-line-loop', 'to-2', 45);
     // R350 を 45km/h → 0.45 m/s²。カント不足に直せば 48mm で、許容値の内側。
     expect(slow.maxLateral).toBeLessThan(0.7);
     expect(slow.maxStagger).toBeLessThan(1);
@@ -665,9 +664,11 @@ describe('分岐器の通過', () => {
 
   /** 分岐器の位置と開通方向はスナップショットから読める（HUD の表示に使う） */
   it('次の分岐器がスナップショットに出る', () => {
-    const sim = new Simulation(scenarioOf('test-line-turnout-diverging'));
+    const sim = new Simulation(scenarioOf('test-line-loop'));
     const snap = sim.snapshot();
     expect(snap.nextTurnout).not.toBeNull();
+    // 起点駅の 2 番線に停まっているので、次は交換設備の出口（背向・分岐側）
+    expect(snap.nextTurnout!.turnout.id).toBe('to-2');
     expect(snap.nextTurnout!.turnout.route).toBe('diverging');
     expect(snap.nextTurnout!.distance).toBeGreaterThan(0);
     expect(mpsToKmh(snap.nextTurnout!.turnout.divergingSpeed)).toBeCloseTo(45, 6);
