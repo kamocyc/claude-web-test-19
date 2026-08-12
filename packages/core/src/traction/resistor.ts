@@ -13,7 +13,13 @@ import {
   rimForceFromMotorTorque,
   type ReAdhesionOptions,
 } from './common.ts';
-import { backEmf, motorTorque, selfExcitedCurrent, stepArmatureCurrent } from './dcMotor.ts';
+import {
+  backEmf,
+  currentForTorque,
+  motorTorque,
+  selfExcitedCurrent,
+  stepArmatureCurrent,
+} from './dcMotor.ts';
 import { createResistorDriveState, type ResistorDriveState } from './driveState.ts';
 import type { TractionContext, TractionState, TractionSystem } from './types.ts';
 
@@ -56,6 +62,8 @@ export class ResistorTractionSystem implements TractionSystem {
   private step = -1;
   /** 現在の段に入ってからの経過時間 [s] */
   private dwell = 0;
+  /** 直並列の組替え（渡り）の残り時間 [s]。正のあいだ主回路は開いている。 */
+  private transition = 0;
   /** 電機子電流 [A]（1 台あたり） */
   private current: Amperes = 0;
   /** ブレーキ装置から要求された電気ブレーキ力 [N]（正値） */
@@ -168,36 +176,34 @@ export class ResistorTractionSystem implements TractionSystem {
     const target = notch > 0 ? (spec.notchFinalStep[notch - 1] ?? spec.camSteps.length - 1) : -1;
 
     // --- カム軸を動かす ---
-    this.dwell += dt;
-    if (this.step > target) {
-      // ノッチを戻したときは 1 制御周期で目標段まで落とす（電動カム軸の戻りは速い）。
-      const previous = this.step >= 0 ? spec.camSteps[this.step] : undefined;
-      this.step = target;
+    if (this.transition > 0) {
+      // 渡りの最中。組替えが終わるまでカム軸は次へ進まないし、滞留時間も数えない
+      // （数えてしまうと、渡りが明けた瞬間に次の段へ跳んでしまう）。
+      this.transition -= dt;
       this.dwell = 0;
-      st.stepEvents++;
-      const next = this.step >= 0 ? spec.camSteps[this.step] : undefined;
-      if (previous && next && previous.motorsInSeries !== next.motorsInSeries) st.groupEvents++;
-    } else if (this.step < target) {
-      // 起動の 1 段目は電流条件を待たずに入る（主接触器が閉じる瞬間）。
-      const limit = spec.stepCurrent * loadCompensationRatio(this.consist, ctx.loadFactor);
-      const mayAdvance = this.step < 0 || (this.current < limit && this.dwell >= spec.stepDwell);
-      if (mayAdvance) {
-        const previous = this.step >= 0 ? spec.camSteps[this.step] : undefined;
-        this.step++;
-        this.dwell = 0;
-        st.stepEvents++;
-        const next = spec.camSteps[this.step];
-        if (previous && next && previous.motorsInSeries !== next.motorsInSeries) st.groupEvents++;
+    } else {
+      this.dwell += dt;
+      if (this.step > target) {
+        // ノッチを戻したときは 1 制御周期で目標段まで落とす（電動カム軸の戻りは速い）。
+        this.advanceTo(spec, target);
+      } else if (this.step < target) {
+        // 起動の 1 段目は電流条件を待たずに入る（主接触器が閉じる瞬間）。
+        const limit = spec.stepCurrent * loadCompensationRatio(this.consist, ctx.loadFactor);
+        const mayAdvance = this.step < 0 || (this.current < limit && this.dwell >= spec.stepDwell);
+        if (mayAdvance) this.advanceTo(spec, this.step + 1);
       }
     }
 
-    const cam = this.step >= 0 ? spec.camSteps[this.step] : undefined;
+    const transitioning = this.transition > 0;
+    const cam = this.step >= 0 && !transitioning ? spec.camSteps[this.step] : undefined;
     st.gate = cam !== undefined;
+    st.transitioning = transitioning;
     st.step = Math.max(0, this.step);
     st.dynamicBraking = false;
 
     if (!cam) {
-      // 主接触器が開いている。電流は還流ダイオードを通って自身の時定数で消える。
+      // 主接触器が開いている（惰行、または渡りの最中）。
+      // 電流は還流ダイオードを通って自身の時定数で消える。
       this.current = this.current * Math.exp(-dt / OPEN_CIRCUIT_DECAY);
       this.applyOpenCircuit(spec, dyn);
       return;
@@ -228,6 +234,25 @@ export class ResistorTractionSystem implements TractionSystem {
     this.updateElectrical(spec, cam, ctx);
   }
 
+  /**
+   * カム軸を `next` 段へ動かす。
+   *
+   * つなぎ方が変わる段（直並列の組替え）へ渡るときは、いったん主回路を切って
+   * 接触器を組み替える時間を取る。抵抗を短絡するだけの進段と違って回路の形が
+   * 変わるので、切らずに繋ぎ替えることができないためである。
+   */
+  private advanceTo(spec: ResistorTractionSpec, next: number): void {
+    const previous = this.step >= 0 ? spec.camSteps[this.step] : undefined;
+    this.step = Math.min(next, spec.camSteps.length - 1);
+    this.dwell = 0;
+    this.driveState.stepEvents++;
+    const entered = this.step >= 0 ? spec.camSteps[this.step] : undefined;
+    if (previous && entered && previous.motorsInSeries !== entered.motorsInSeries) {
+      this.driveState.groupEvents++;
+      this.transition = spec.transitionTime;
+    }
+  }
+
   /** 発電ブレーキ: 電機子を制動抵抗へつなぎ、自励で電流を作る */
   private updateDynamicBrake(
     dt: number,
@@ -238,7 +263,9 @@ export class ResistorTractionSystem implements TractionSystem {
     const st = this.driveState;
     this.step = -1;
     this.dwell = 0;
+    this.transition = 0;
     st.gate = false;
+    st.transitioning = false;
     st.dynamicBraking = true;
 
     const available = this.availableElectricBrakeForce(dyn.speed, ctx);
@@ -249,7 +276,6 @@ export class ResistorTractionSystem implements TractionSystem {
       return;
     }
 
-    const ratio = requested / available;
     const omega = st.motorAngularVelocity;
     const full = clamp(
       selfExcitedCurrent(
@@ -262,8 +288,12 @@ export class ResistorTractionSystem implements TractionSystem {
       0,
       spec.brakeCurrentLimit,
     );
-    this.current = full * ratio;
-    const torque = motorTorque(spec.motor, this.current, spec.brakeFieldRatio);
+    // 要求された制動力の割合はそのまま**トルク**の割合である。トルクは電流に
+    // 比例していないので、電流を同じ割合に絞ると力が足りなくなる。
+    // 制動抵抗を段階的に短絡して電流を作る実機に倣い、必要な電流を逆算する。
+    const ratio = requested / available;
+    const torque = motorTorque(spec.motor, full, spec.brakeFieldRatio) * ratio;
+    this.current = currentForTorque(spec.motor, torque, spec.brakeFieldRatio);
     const totalRimForce = this.distribute(dyn, torque, true);
 
     this.state.tractiveEffort = -totalRimForce;
@@ -273,6 +303,7 @@ export class ResistorTractionSystem implements TractionSystem {
     const emf = backEmf(spec.motor, this.current, spec.brakeFieldRatio, omega);
     st.fieldRatio = spec.brakeFieldRatio;
     st.motorsInSeries = spec.brakeMotorsInSeries;
+    st.branches = this.branchCount(spec.brakeMotorsInSeries);
     st.resistance = spec.brakeResistance;
     st.armatureCurrent = this.current;
     st.backEmf = emf;
@@ -342,6 +373,7 @@ export class ResistorTractionSystem implements TractionSystem {
     const motorVoltage = (ctx.lineVoltage - this.current * cam.resistance) / cam.motorsInSeries;
 
     st.motorsInSeries = cam.motorsInSeries;
+    st.branches = branches;
     st.resistance = cam.resistance;
     st.fieldRatio = cam.fieldRatio;
     st.armatureCurrent = this.current;

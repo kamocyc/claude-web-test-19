@@ -10,9 +10,13 @@ import {
   type CouplerSpec,
   type DavisCoefficients,
   DEFAULT_INVERTER,
+  type ChopperTractionSpec,
+  type DcSeriesMotorSpec,
+  type ResistorTractionSpec,
   type TractionControlSpec,
   type VehicleBrakeSpec,
   type VehicleSpec,
+  type VehicleTractionSpec,
   type VvvfTractionSpec,
 } from '@railsim/core';
 
@@ -33,6 +37,90 @@ export const TEST_TRACTION: VvvfTractionSpec = {
   lineVoltage: 1500,
   converterEfficiency: 0.97,
   inverter: DEFAULT_INVERTER,
+};
+
+/**
+ * 試験用の直流直巻電動機（375V・350A・1630rpm 級）。
+ * 磁束定数は銘板から逆算した値そのもの:
+ *   kΦ(350A) = (375 − 350·0.10) / (1630·2π/60) = 1.9918
+ *   kΦ_max   = 1.9918 · (350 + 190) / 350      = 3.0731
+ */
+export const TEST_DC_MOTOR: DcSeriesMotorSpec = {
+  armatureResistance: 0.1,
+  saturationCurrent: 190,
+  fluxConstant: 3.0731,
+  ratedCurrent: 350,
+  armatureInductance: 0.022,
+  commutatorBars: 93,
+  pinionTeeth: 15,
+};
+
+/**
+ * 試験用の抵抗制御。
+ *
+ * 進段表はコンパイラ（`packages/data/src/compile/vehicle.ts`）が作るものと同じ
+ * 幾何級数で、限流値 480A・進段電流 380A（公比 0.7917）から決まる
+ * 8 台直列 7 段 → 4 台直列 8 段 → 弱め界磁 2 段。手で丸めた値を置くと段の境目で
+ * 電流が跳ねてしまい、鋸歯の検定にならない。
+ */
+export const TEST_RESISTOR_TRACTION: ResistorTractionSpec = {
+  kind: 'resistor',
+  motorCount: 4,
+  gearRatio: 5.6,
+  driveEfficiency: 0.95,
+  lineVoltage: 1500,
+  converterEfficiency: 1,
+  motor: TEST_DC_MOTOR,
+  camSteps: [
+    { motorsInSeries: 8, resistance: 2.325, fieldRatio: 1 },
+    { motorsInSeries: 8, resistance: 1.674, fieldRatio: 1 },
+    { motorsInSeries: 8, resistance: 1.159, fieldRatio: 1 },
+    { motorsInSeries: 8, resistance: 0.751, fieldRatio: 1 },
+    { motorsInSeries: 8, resistance: 0.427, fieldRatio: 1 },
+    { motorsInSeries: 8, resistance: 0.172, fieldRatio: 1 },
+    { motorsInSeries: 8, resistance: 0, fieldRatio: 1 },
+    { motorsInSeries: 4, resistance: 1.479, fieldRatio: 1 },
+    { motorsInSeries: 4, resistance: 1.088, fieldRatio: 1 },
+    { motorsInSeries: 4, resistance: 0.778, fieldRatio: 1 },
+    { motorsInSeries: 4, resistance: 0.532, fieldRatio: 1 },
+    { motorsInSeries: 4, resistance: 0.338, fieldRatio: 1 },
+    { motorsInSeries: 4, resistance: 0.184, fieldRatio: 1 },
+    { motorsInSeries: 4, resistance: 0.063, fieldRatio: 1 },
+    { motorsInSeries: 4, resistance: 0, fieldRatio: 1 },
+    { motorsInSeries: 4, resistance: 0, fieldRatio: 0.65 },
+    { motorsInSeries: 4, resistance: 0, fieldRatio: 0.45 },
+  ],
+  currentLimit: 480,
+  stepCurrent: 380,
+  stepDwell: 0.4,
+  transitionTime: 0.5,
+  notchFinalStep: [6, 14, 15, 16],
+  hasDynamicBrake: true,
+  brakeResistance: 6.2,
+  brakeCurrentLimit: 500,
+  brakeMotorsInSeries: 4,
+  brakeFieldRatio: 1,
+};
+
+/** 試験用の電機子チョッパ（抵抗制御と同じ電動機を段なしで回す） */
+export const TEST_CHOPPER_TRACTION: ChopperTractionSpec = {
+  kind: 'chopper',
+  motorCount: 4,
+  gearRatio: 6.07,
+  driveEfficiency: 0.95,
+  lineVoltage: 1500,
+  converterEfficiency: 0.96,
+  motor: TEST_DC_MOTOR,
+  motorsInSeries: 4,
+  chopFrequency: 400,
+  maxDuty: 0.97,
+  dutyRate: 3.0,
+  minFieldRatio: 0.45,
+  fieldRate: 0.6,
+  currentLimit: 500,
+  brakeCurrentLimit: 460,
+  regenFadeStartSpeed: kmhToMps(12),
+  regenFadeEndSpeed: kmhToMps(5),
 };
 
 export const TEST_VEHICLE_BRAKE: VehicleBrakeSpec = {
@@ -98,7 +186,7 @@ export interface TestVehicleOptions {
   readonly drivenAxleCount?: number;
   readonly rotatingMassFactor?: number;
   readonly runningResistance?: DavisCoefficients;
-  readonly traction?: VvvfTractionSpec | null;
+  readonly traction?: VehicleTractionSpec | null;
 }
 
 export function testVehicle(options: TestVehicleOptions = {}): VehicleSpec {

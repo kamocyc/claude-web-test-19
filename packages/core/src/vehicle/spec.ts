@@ -232,6 +232,14 @@ export interface ResistorTractionSpec extends TractionSpecBase {
   readonly stepCurrent: Amperes;
   /** 1 段あたりの最短滞留時間 [s]（カム軸の回転速度） */
   readonly stepDwell: Seconds;
+  /**
+   * 直並列の組替え（渡り）に要する時間 [s]。
+   *
+   * このあいだは主回路が開いていてトルクが出ない。抵抗の入れ替えだけの進段と違い、
+   * 組替えでは電動機のつなぎ方そのものを変えるため、いったん回路を切る必要がある。
+   * 加速中に一瞬つんのめる「渡りのショック」はこの時間そのものである。
+   */
+  readonly transitionTime: Seconds;
   /** 各力行ノッチで到達を許す最終段（`camSteps` の添字。要素数 = notchCount） */
   readonly notchFinalStep: readonly number[];
   /** 発電ブレーキを持つか */

@@ -84,6 +84,49 @@ export const testLineTurnoutDiverging: ScenarioDefinition = {
   routeId: 'test-line-branch',
 };
 
+/**
+ * 抵抗制御シナリオ: 同じ路線を旧型の抵抗制御車で運転する。
+ *
+ * ノッチを入れるとカム軸が自動で刻んでいくので、進段のたびに引張力が鋸歯状に
+ * 上下し、直並列の渡りでは一瞬トルクが抜ける。応荷重制御も無いので、VVVF 車の
+ * 平坦な加速とは体感がはっきり違う。
+ */
+export const testLineResistor: ScenarioDefinition = {
+  ...testLineLocal,
+  id: 'test-line-resistor',
+  name: '試験線 各駅停車（抵抗制御）',
+  vehicleId: 'commuter-4-resistor',
+  safetySystems: ['ats-sn'],
+};
+
+/**
+ * 抵抗制御・降雪シナリオ: 架線の回生受け入れ率が落ちても**発電ブレーキは効く**。
+ *
+ * 抵抗器へ捨てているので架線の都合と無関係だからで、同じ条件の VVVF 車
+ * （`test-line-snow`）と乗り比べると、この方式の数少ない長所がそのまま出る。
+ * そのかわり 28km/h あたりで自励しなくなり、そこから先は空気ブレーキが受け持つ。
+ */
+export const testLineResistorSnow: ScenarioDefinition = {
+  ...testLineResistor,
+  id: 'test-line-resistor-snow',
+  name: '試験線 各駅停車（抵抗制御・降雪）',
+  railCondition: 'snow',
+  regenerationReceptivity: 0.5,
+};
+
+/**
+ * 電機子チョッパシナリオ: 抵抗制御車と**同じ電動機**を、段の無い通流率制御で回す。
+ *
+ * 引張力は滑らかに出て、全通流に達してから弱め界磁へ移る。チョッパ音は速度に
+ * よらず音程が一定で、全通流に入った瞬間に消える。
+ */
+export const testLineChopper: ScenarioDefinition = {
+  ...testLineLocal,
+  id: 'test-line-chopper',
+  name: '試験線 各駅停車（電機子チョッパ）',
+  vehicleId: 'commuter-4-chopper',
+};
+
 export const scenarios = [
   testLineLocal,
   testLineSnow,
@@ -91,4 +134,7 @@ export const scenarios = [
   testLineAtsSn,
   testLineTurnoutThrough,
   testLineTurnoutDiverging,
+  testLineResistor,
+  testLineResistorSnow,
+  testLineChopper,
 ] as const;

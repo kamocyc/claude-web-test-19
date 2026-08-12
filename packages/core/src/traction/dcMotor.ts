@@ -55,6 +55,31 @@ export function motorTorque(
   return spec.fluxConstant * fluxRatio(spec, current) * fieldRatio * current;
 }
 
+/**
+ * 目標トルクを出すのに要る電機子電流 [A]（`motorTorque` の逆関数）。
+ *
+ * トルクは電流に**比例していない**（低電流では 2 乗に近い）ので、「制動力を半分に
+ * したいから電流を半分にする」は誤りである。φ(I) = I/(I+I_飽和) を代入すると
+ *
+ * ```
+ * kΦ_max · β · I² / (I + I_飽和) = T
+ *   →  kΦ_max·β·I² − T·I − T·I_飽和 = 0
+ *   →  I = [ T + √(T² + 4·kΦ_max·β·T·I_飽和) ] / (2·kΦ_max·β)
+ * ```
+ *
+ * と 2 次方程式になり、正の根が求める電流である。
+ */
+export function currentForTorque(
+  spec: DcSeriesMotorSpec,
+  torque: NewtonMeters,
+  fieldRatio: number,
+): Amperes {
+  const k = spec.fluxConstant * fieldRatio;
+  if (k <= 0 || torque <= 0) return 0;
+  const discriminant = torque * torque + 4 * k * torque * spec.saturationCurrent;
+  return (torque + Math.sqrt(discriminant)) / (2 * k);
+}
+
 /** 電機子回路 1 分岐の 1 ステップに必要な量 */
 export interface ArmatureCircuit {
   readonly spec: DcSeriesMotorSpec;

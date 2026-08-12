@@ -17,6 +17,7 @@ import {
 } from './common.ts';
 import {
   backEmf,
+  currentForTorque,
   currentRipple,
   fieldRatioForCurrent,
   motorTorque,
@@ -229,8 +230,12 @@ export class ChopperTractionSystem implements TractionSystem {
       return;
     }
 
+    // 制動力の割合はトルクの割合そのものだが、トルクは電流に比例していないので、
+    // 電流を同じ割合に絞ると力が足りない。必要な電流を逆算する。
     const ratio = requested / available;
-    const target = spec.brakeCurrentLimit * ratio * regenerationFade(spec, v);
+    const fullTorque =
+      motorTorque(spec.motor, spec.brakeCurrentLimit, this.fieldRatio) * regenerationFade(spec, v);
+    const target = currentForTorque(spec.motor, fullTorque * ratio, this.fieldRatio);
     // 制動側でも電流の立ち上がりは電機子回路の時定数に従う。
     this.current = stepArmatureCurrent({
       spec: spec.motor,

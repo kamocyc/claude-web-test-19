@@ -2,6 +2,7 @@ import type { VehicleDefinition } from '../schema/vehicle.ts';
 
 /** VVVF 主回路の共通仕様（M 車 2 両とも同じ） */
 const motorSpec = {
+  kind: 'vvvf' as const,
   motorCount: 4,
   gearRatio: 7.07,
   driveEfficiency: 0.97,

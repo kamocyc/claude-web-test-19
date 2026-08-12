@@ -34,8 +34,10 @@ export interface ResistorDriveState extends DriveRotationState {
   step: number;
   /** 進段表の総段数 */
   stepCount: number;
-  /** 1 分岐に直列に入っている電動機の数（4 = 全直列、2 = 直並列、1 = 全並列） */
+  /** 1 分岐に直列に入っている電動機の数 */
   motorsInSeries: number;
+  /** 並列に並んでいる分岐の数（編成の総電動機数 / motorsInSeries） */
+  branches: number;
   /** 1 分岐に残っている起動抵抗 [Ω] */
   resistance: Ohms;
   /** 界磁率（1 = 全界磁） */
@@ -50,6 +52,8 @@ export interface ResistorDriveState extends DriveRotationState {
   commutatorFrequency: Hertz;
   /** 起動抵抗で熱にしている電力 [W]（編成合計）。全短絡した段では 0 になる。 */
   resistorPower: Watts;
+  /** 直並列の組替え（渡り）の最中か。このあいだトルクは出ない。 */
+  transitioning: boolean;
   /** 発電ブレーキとして動作中か */
   dynamicBraking: boolean;
   /**
@@ -116,6 +120,7 @@ export function createResistorDriveState(): ResistorDriveState {
     step: 0,
     stepCount: 0,
     motorsInSeries: 1,
+    branches: 1,
     resistance: 0,
     fieldRatio: 1,
     armatureCurrent: 0,
@@ -123,6 +128,7 @@ export function createResistorDriveState(): ResistorDriveState {
     backEmf: 0,
     commutatorFrequency: 0,
     resistorPower: 0,
+    transitioning: false,
     dynamicBraking: false,
     stepEvents: 0,
     groupEvents: 0,
@@ -149,23 +155,25 @@ export function createChopperDriveState(chopFrequency: Hertz = 0): ChopperDriveS
   };
 }
 
-/** 抵抗制御のつなぎ方の表示名 */
-export function groupingLabel(motorsInSeries: number): string {
-  switch (motorsInSeries) {
-    case 1:
-      return '並列';
-    case 2:
-      return '直並列';
-    default:
-      return '直列';
-  }
+/**
+ * 抵抗制御のつなぎ方の表示名。
+ *
+ * 「何台直列か」だけでは決まらない。4 台の車なら 2 台直列は直並列だが、
+ * MM' ユニット 8 台なら 4 台直列がそれにあたる。分岐が 1 本なら全直列、
+ * 電動機が 1 台ずつ並んでいれば全並列、その中間が直並列である。
+ */
+export function groupingLabel(motorsInSeries: number, branches: number): string {
+  if (branches <= 1) return '直列';
+  if (motorsInSeries <= 1) return '並列';
+  return '直並列';
 }
 
 /** 抵抗制御の状態の表示名（例: `直列 5/19 段`、`並列 16/19 段 界磁 60%`） */
 export function resistorLabel(state: ResistorDriveState): string {
   if (state.dynamicBraking) return `発電制動 ${state.armatureCurrent.toFixed(0)}A`;
+  if (state.transitioning) return '渡り';
   if (!state.gate) return '切';
-  const grouping = groupingLabel(state.motorsInSeries);
+  const grouping = groupingLabel(state.motorsInSeries, state.branches);
   const steps = `${state.step + 1}/${state.stepCount} 段`;
   if (state.fieldRatio >= 1) return `${grouping} ${steps}`;
   return `${grouping} ${steps} 界磁 ${(state.fieldRatio * 100).toFixed(0)}%`;
