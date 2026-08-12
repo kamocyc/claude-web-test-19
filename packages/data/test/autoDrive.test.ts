@@ -3,13 +3,20 @@ import { Simulation, mpsToKmh, stateHash, type Scenario, type SimSnapshot } from
 import { createDefaultLibrary } from '@railsim/data';
 
 const lib = createDefaultLibrary();
+
+/** 走行中と見なす速度 [m/s]（これ以下での込めは停止保持であり、衝動にならない） */
+const MOVING_SPEED = 0.5;
 const scenarioOf = (id: string): Scenario => lib.scenario(id);
 
 interface RunResult {
   readonly sim: Simulation;
   /** 常用ブレーキノッチが変わった回数（保安装置の介入を含む実効ノッチ） */
   readonly notchChanges: number;
-  /** ブレーキが緩解から込めへ立ち上がった回数 */
+  /**
+   * 走行中にブレーキが緩解から込めへ立ち上がった回数。
+   * 止まってからの停止保持（勾配で転動しないための込め）は、動いていないので
+   * 前後衝動にならない。運転の質として数えたいのは走行中の入切だけ。
+   */
   readonly applications: number;
   /** 停止した瞬間の減速度 [m/s^2] */
   readonly stopDecelerations: number[];
@@ -40,7 +47,7 @@ function autoRun(scenarioId: string, seconds: number, dt = 0.05): RunResult {
     const snap: SimSnapshot = sim.snapshot();
     if (snap.brakeNotch !== previousNotch) {
       notchChanges++;
-      if (previousNotch === 0) applications++;
+      if (previousNotch === 0 && Math.abs(sim.speed) > MOVING_SPEED) applications++;
       previousNotch = snap.brakeNotch;
     }
     if (snap.brakeNotch > 0) brakingSteps++;
@@ -96,8 +103,8 @@ describe('自動運転（ATO）', () => {
 
   it('ブレーキの入切が極端に少ない（停車 1 回につきおおむね 1 回）', () => {
     const { applications, notchChanges, sim } = autoRun('test-line-local', 600);
-    // 起点での停止保持を含めても、込め直しは停車回数程度で収まる
-    expect(applications).toBeLessThanOrEqual(sim.metrics.stops.length + 1);
+    // 走行中の込め直しは停車回数程度で収まる
+    expect(applications).toBeLessThanOrEqual(sim.metrics.stops.length);
     // ノッチの操作回数も、1 回の制動あたり数段の範囲に収まる
     expect(notchChanges).toBeLessThan(30);
   });
