@@ -78,12 +78,15 @@ class TrainNoiseProcessor extends AudioWorkletProcessor {
       output[channel]!.set(this.scratch);
     }
 
-    // 音源ごとの実効値をメインスレッドへ返す（ミキサのメータになる）
+    // 音源ごとの実効値をメインスレッドへ返す（ミキサのメータになる）。
+    // 合わせて、前回からレンダした**音声の秒数**も返す。これが背面タブでの
+    // 親時計になる（`TrainAudio.onClock`）。
     this.sinceLevels += length;
     if (this.sinceLevels >= LEVEL_PERIOD) {
+      const rendered = this.sinceLevels;
       this.sinceLevels = 0;
       this.synth.readLevels(this.levels);
-      this.port.postMessage({ levels: Array.from(this.levels) });
+      this.port.postMessage({ levels: Array.from(this.levels), seconds: rendered / sampleRate });
     }
     return true;
   }

@@ -231,29 +231,73 @@ window.addEventListener('resize', resize);
 
 let previous = performance.now();
 
+/**
+ * シミュレーションを実時間 `wall` 秒ぶん進める。戻り値は進めたシミュレーション時間。
+ *
+ * 描画とは切り離してある。ページが背面へ回ると `requestAnimationFrame` は止まるが、
+ * 音は鳴り続けているので、そのときは音声の時計から呼ぶことになる（`frame` の下）。
+ */
+function advanceSimulation(wall: number): number {
+  if (replaying !== null) return 0;
+  // 一時停止中でもハンドル位置は反映する（再開した瞬間に効くのではなく、
+  // 手元の操作がその場で計器と HUD に出るほうが運転台として自然）。
+  sim.input = desk.input;
+  const advance = paused ? (singleStep ? 1 / 60 : 0) : wall * RATES[rateIndex]!;
+  singleStep = false;
+  if (advance > 0) {
+    recorder.record(sim.elapsed, sim.input);
+    sim.step(advance);
+    sampleTimer += advance;
+    if (sampleTimer >= SAMPLE_PERIOD) {
+      charts.sample(sim);
+      sampleTimer = 0;
+    }
+  }
+  return advance;
+}
+
+/**
+ * ページが背面に回っているか。
+ *
+ * ブラウザは背面のタブで `requestAnimationFrame` を止め、タイマも 1 分に 1 回まで
+ * 絞る。一方 **AudioWorklet は音声スレッドで動き続ける**（音を出しているタブは
+ * 凍結の対象からも外れる）ので、背面のあいだだけ音声の時計を親時計に使う。
+ * こうしないと、絵の更新が止まった瞬間にシミュレーションも止まり、継目・分岐器・
+ * 進段・戸当たりのような**イベントで鳴る音だけが消えて**、鳴りっぱなしの音
+ * （転動音・インバータ）だけが最後の状態で残り続けることになる。
+ */
+let hidden = document.visibilityState === 'hidden';
+
+document.addEventListener('visibilitychange', () => {
+  hidden = document.visibilityState === 'hidden';
+  // 戻ってきた瞬間に「背面にいたあいだ」ぶんの大きな dt を作らないよう、
+  // 実時間の基準を引き直す。
+  if (!hidden) previous = performance.now();
+});
+
+/**
+ * 背面タブでの親時計。音声がレンダされたぶんだけシミュレーションを進める。
+ *
+ * 絵と HUD は見えていないので更新しない。音に要るのはシミュレーションの状態だけで、
+ * `audio.update` に渡すパラメータもそこから作られる。
+ */
+audio.onClock = (seconds) => {
+  if (!hidden) return;
+  const wall = Math.min(seconds, 0.25);
+  const advance = advanceSimulation(wall);
+  audio.update(sim, advance, wall);
+};
+
 function frame(now: number): void {
   requestAnimationFrame(frame);
   const wall = Math.min((now - previous) / 1000, 0.25);
   previous = now;
+  // 背面のあいだに呼ばれた場合（ブラウザによっては低頻度で呼ばれる）は
+  // 音声の時計と二重に進めないよう、描画も更新も見送る。
+  if (hidden) return;
   resize();
 
-  let advance = 0;
-  if (replaying === null) {
-    // 一時停止中でもハンドル位置は反映する（再開した瞬間に効くのではなく、
-    // 手元の操作がその場で計器と HUD に出るほうが運転台として自然）。
-    sim.input = desk.input;
-    advance = paused ? (singleStep ? 1 / 60 : 0) : wall * RATES[rateIndex]!;
-    singleStep = false;
-    if (advance > 0) {
-      recorder.record(sim.elapsed, sim.input);
-      sim.step(advance);
-      sampleTimer += advance;
-      if (sampleTimer >= SAMPLE_PERIOD) {
-        charts.sample(sim);
-        sampleTimer = 0;
-      }
-    }
-  }
+  const advance = advanceSimulation(wall);
 
   // 自動運転中は装置が動かしているノッチを「手元」として表示・描画する
   const held = sim.effectiveInput;

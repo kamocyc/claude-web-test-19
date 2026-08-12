@@ -42,6 +42,7 @@ function compileVvvf(spec: Extract<ParsedTraction, { kind: 'vvvf' }>): VvvfTract
       polePairs: spec.inverter.polePairs,
       ratedSlipFrequency: spec.inverter.ratedSlipFrequency,
       baseFrequency: spec.inverter.baseFrequency,
+      voltageBoost: spec.inverter.voltageBoost,
       asyncCarrier: spec.inverter.asyncCarrier.map(([f, c]) => [f, c] as [number, number]),
       pulseModes: spec.inverter.pulseModes,
       modeHysteresis: spec.inverter.modeHysteresis,
@@ -302,6 +303,8 @@ export function compileVehicle(definition: VehicleDefinition): ConsistSpec {
       mu0: def.adhesion.mu0,
       speedCoefficient: def.adhesion.speedCoefficient,
       peakCreep: def.adhesion.peakCreep,
+      // データは現場の単位（mrad）で書き、ここで rad へ直す
+      lateralCreepSaturation: def.adhesion.lateralCreepSaturation / 1000,
       kineticRatio: def.adhesion.kineticRatio,
       sandingFactor: def.adhesion.sandingFactor,
       creepReferenceSpeed: kmhToMps(def.adhesion.creepReferenceSpeed),

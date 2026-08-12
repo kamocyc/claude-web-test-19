@@ -151,7 +151,11 @@ export class InverterModulation {
     st.fundamentalFrequency = f1;
 
     // --- 変調率: 基底周波数まで V/f 一定、それ以上は定電圧（弱め界磁）---
-    st.modulationIndex = inv.baseFrequency > 0 ? Math.min(1, f1 / inv.baseFrequency) : 1;
+    // 一次抵抗降下ぶんのブーストを足す。f₁ → 0 でも磁束が残るのが要点で、
+    // これが無いと起動時に磁束が立たず、定格トルクを出せる説明がつかない。
+    // 降下は電流に比例するので、上乗せも負荷に比例させる。
+    const boost = inv.voltageBoost * Math.min(1, Math.abs(torqueRatio));
+    st.modulationIndex = inv.baseFrequency > 0 ? Math.min(1, f1 / inv.baseFrequency + boost) : 1;
 
     // --- パルスモードとキャリア周波数 ---
     const pulses = this.selectMode(f1);

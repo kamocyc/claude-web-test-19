@@ -30,6 +30,11 @@ export const inverterSchema = z.object({
   ratedSlipFrequency: z.number().positive().default(2.0),
   /** 基底周波数 [Hz]。ここで変調率が 1 に飽和し、以降は弱め界磁になる。 */
   baseFrequency: z.number().positive().default(53),
+  /**
+   * 低周波電圧ブースト 0..1（一次抵抗降下 `I·R₁` の補償）。
+   * 定格電流での降下が定格電圧の何割にあたるかを書く。
+   */
+  voltageBoost: z.number().min(0).max(0.5).default(0.06),
   /** 非同期モードのキャリア [出力周波数 Hz, キャリア Hz] の折れ線 */
   asyncCarrier: z.array(z.tuple([z.number(), z.number()])).default([
     [0, 250],
@@ -388,6 +393,8 @@ export const adhesionSchema = z.object({
   speedCoefficient: z.number().nonnegative().default(0.008),
   /** ピーク粘着を与えるすべり率 */
   peakCreep: z.number().positive().default(0.012),
+  /** 横クリープ力が飽和するすべり角 [mrad]。軋み音の出はじめる曲線半径を決める。 */
+  lateralCreepSaturation: z.number().positive().default(3.0),
   /** 滑走摩擦係数比 */
   kineticRatio: z.number().positive().max(1).default(0.6),
   /** 砂撒き時の倍率 */

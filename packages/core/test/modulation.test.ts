@@ -106,6 +106,24 @@ describe('インバータの変調', () => {
     expect(above.carrierFrequency).toBe(0);
   });
 
+  it('起動時も変調率が 0 にならない（一次抵抗降下ぶんのブースト）', () => {
+    // V/f 一定を素直に守ると f₁ → 0 で電圧も 0 になり、磁束が立たないので
+    // 定格トルクを出せる説明がつかない。実機はその分を上乗せして入る。
+    const boost = TEST_TRACTION.inverter.voltageBoost;
+    expect(boost).toBeGreaterThan(0);
+    const crawl = settle(0.5, 1).state;
+    expect(crawl.modulationIndex).toBeGreaterThanOrEqual(boost);
+  });
+
+  it('ブーストは負荷に比例する（抵抗降下が電流に比例するため）', () => {
+    const full = settle(2, 1).state.modulationIndex;
+    const half = settle(2, 0.5).state.modulationIndex;
+    const boost = TEST_TRACTION.inverter.voltageBoost;
+    // すべり周波数が違うので f₁ も少し違う。差の主因がブーストであることを見る。
+    expect(full - half).toBeGreaterThan(boost * 0.3);
+    expect(full).toBeGreaterThan(half);
+  });
+
   it('モード境界で速度が上下してもモードが振動しない（ヒステリシス）', () => {
     // 9 パルス → 5 パルスの境界は 38Hz。その周りを細かく往復させる。
     const mod = new InverterModulation(TEST_TRACTION);

@@ -10,6 +10,7 @@ export * from './dsp/runningGear.ts';
 export * from './dsp/brake.ts';
 export * from './dsp/auxiliary.ts';
 export * from './dsp/airSpring.ts';
+export * from './dsp/curveSquealVoice.ts';
 export * from './dsp/cab.ts';
 export * from './dsp/railJointVoice.ts';
 export * from './dsp/turnoutVoice.ts';

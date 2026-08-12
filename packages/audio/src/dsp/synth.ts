@@ -4,6 +4,7 @@ import { AuxiliaryVoice, type AuxiliaryParams } from './auxiliary.ts';
 import { AlarmVoice, HornVoice, type AlarmParams, type HornParams } from './cab.ts';
 import { BrakeVoice, type BrakeParams } from './brake.ts';
 import { ChopperVoice, type ChopperVoiceParams } from './chopperVoice.ts';
+import { CurveSquealVoice, type CurveSquealParams } from './curveSquealVoice.ts';
 import { DoorVoice, type DoorVoiceParams } from './doorVoice.ts';
 import { InverterVoice, type InverterVoiceParams } from './inverterVoice.ts';
 import { ResistorVoice, type ResistorVoiceParams } from './resistorVoice.ts';
@@ -34,6 +35,7 @@ export interface TrainNoiseParams {
   readonly brake: BrakeParams;
   readonly auxiliary: AuxiliaryParams;
   readonly airSpring: AirSpringParams;
+  readonly curveSqueal: CurveSquealParams;
   readonly door: DoorVoiceParams;
   readonly alarm: AlarmParams;
   readonly horn: HornParams;
@@ -63,6 +65,7 @@ export class TrainNoiseSynth {
   readonly railJoint: RailJointVoice;
   readonly turnout: TurnoutVoice;
   readonly airSpring: AirSpringVoice;
+  readonly curveSqueal: CurveSquealVoice;
   readonly door: DoorVoice;
   readonly alarm: AlarmVoice;
   readonly horn: HornVoice;
@@ -84,6 +87,7 @@ export class TrainNoiseSynth {
     this.railJoint = new RailJointVoice(sampleRate);
     this.turnout = new TurnoutVoice(sampleRate);
     this.airSpring = new AirSpringVoice(sampleRate);
+    this.curveSqueal = new CurveSquealVoice(sampleRate);
     this.door = new DoorVoice(sampleRate);
     this.alarm = new AlarmVoice(sampleRate);
     this.horn = new HornVoice(sampleRate);
@@ -99,6 +103,7 @@ export class TrainNoiseSynth {
     this.brake.setParams(params.brake);
     this.auxiliary.setParams(params.auxiliary);
     this.airSpring.setParams(params.airSpring);
+    this.curveSqueal.setParams(params.curveSqueal);
     this.door.setParams(params.door);
     this.alarm.setParams(params.alarm);
     this.horn.setParams(params.horn);
@@ -131,6 +136,7 @@ export class TrainNoiseSynth {
     this.mix(out, VOICE.railJoint, (b) => this.railJoint.render(b));
     this.mix(out, VOICE.turnout, (b) => this.turnout.render(b));
     this.mix(out, VOICE.airSpring, (b) => this.airSpring.render(b));
+    this.mix(out, VOICE.curveSqueal, (b) => this.curveSqueal.render(b));
     this.mix(out, VOICE.door, (b) => this.door.render(b));
     this.mix(out, VOICE.alarm, (b) => this.alarm.render(b));
     this.mix(out, VOICE.horn, (b) => this.horn.render(b));
@@ -179,6 +185,7 @@ export class TrainNoiseSynth {
     this.railJoint.reset();
     this.turnout.reset();
     this.airSpring.reset();
+    this.curveSqueal.reset();
     this.door.reset();
     this.alarm.reset();
     this.horn.reset();

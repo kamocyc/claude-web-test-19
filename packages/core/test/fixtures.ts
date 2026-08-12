@@ -144,6 +144,7 @@ export const TEST_ADHESION: AdhesionSpec = {
   mu0: 0.33,
   speedCoefficient: 0.008,
   peakCreep: 0.012,
+  lateralCreepSaturation: 0.003,
   kineticRatio: 0.6,
   sandingFactor: 1.25,
   creepReferenceSpeed: 0.5,

@@ -12,7 +12,13 @@ import {
   type TrainNoiseParams,
   type TurnoutImpact,
 } from '@railsim/audio';
-import { axleOffsets, jointCrossings, type BodyMotionState, type Simulation } from '@railsim/core';
+import {
+  axleOffsets,
+  bogieSquealDrive,
+  jointCrossings,
+  type BodyMotionState,
+  type Simulation,
+} from '@railsim/core';
 import workletUrl from './trainNoise.worklet.ts?worker&url';
 
 const PROCESSOR = 'train-noise';
@@ -86,6 +92,17 @@ export class TrainAudio {
   /** ワークレットから返ってくる音源ごとの実効値 */
   readonly levels = new Float32Array(VOICE_COUNT);
 
+  /**
+   * 音声の時計。レンダされた**音声の秒数**を約 60ms ごとに知らせる。
+   *
+   * `requestAnimationFrame` は背面タブで止まるが、AudioWorklet は音声スレッドで
+   * 動き続ける（音を出しているタブはブラウザの凍結対象からも外れる）。背面のあいだ
+   * だけこちらを親時計に使えば、シミュレーションが止まらずに済む。
+   * 実時間ではなく音声時間を渡すのは、それがワークレットの持つ唯一の時計であり、
+   * 音の連続性を決めているのもそれだからである。
+   */
+  onClock: ((seconds: number) => void) | null = null;
+
   /** 各車両の前フレームでの距離程（継目・分岐器の跨ぎ判定に使う） */
   private previousPositions: number[] = [];
   private readonly offsetScratch: number[] = [];
@@ -125,9 +142,11 @@ export class TrainAudio {
         numberOfOutputs: 1,
         outputChannelCount: [2],
       });
-      worklet.port.onmessage = (event: MessageEvent<{ levels?: number[] }>) => {
+      worklet.port.onmessage = (event: MessageEvent<{ levels?: number[]; seconds?: number }>) => {
         const levels = event.data.levels;
         if (levels) this.levels.set(levels);
+        const seconds = event.data.seconds;
+        if (seconds !== undefined && seconds > 0) this.onClock?.(seconds);
       };
       const master = context.createGain();
       master.gain.value = 0;
@@ -379,6 +398,11 @@ export class TrainAudio {
         strokeRate: running ? airSpringStrokeRate(snap.body) : 0,
         level: mix.airSpring,
       },
+      curveSqueal: {
+        drive: running ? this.squealDrive(sim) : 0,
+        speed,
+        level: mix.curveSqueal,
+      },
       // 保安装置の報知音と警笛は運転台の中で鳴るので、距離減衰も走行音による
       // マスクも受けない。運転士に届かなければ意味が無い装置だからである。
       alarm: {
@@ -389,6 +413,45 @@ export class TrainAudio {
       },
       horn: { sounding: sim.input.horn, level: mix.horn },
     };
+  }
+
+  /**
+   * 編成のうちいちばん強く軋っている台車の駆動の強さ。
+   *
+   * 判定そのものは `bogieSquealDrive`（コア）にある。ここがやるのは台車の位置を
+   * 並べることと、運転台からの距離で弱めることだけである。
+   *
+   * 足し合わせずに最大を取っているのは、軋りが**その 1 つのモードの自励振動**で
+   * あって、鳴いている台車が増えても音量が線形に増える種類の音ではないためである。
+   */
+  private squealDrive(sim: Simulation): number {
+    const route = sim.scenario.route;
+    const cab = sim.dynamics.frontPosition;
+    const rail = sim.scenario.railCondition;
+    const adhesion = sim.scenario.consist.adhesion;
+    const lateralAt = (s: number): number =>
+      route.irregularity.lateralAt(s) + route.turnouts.lateralAt(s);
+
+    let worst = 0;
+    for (const veh of sim.dynamics.vehicles) {
+      const spec = veh.spec;
+      const half = spec.bogieSpacing / 2;
+      for (const centre of [veh.s + half, veh.s - half]) {
+        const drive = bogieSquealDrive({
+          adhesion,
+          curvature: route.alignment.curvatureAt(centre),
+          lateralAt,
+          position: centre,
+          bogieWheelbase: spec.bogieWheelbase,
+          speed: veh.v,
+          rail,
+        });
+        // 台車は編成のあちこちにあるので、運転台からの距離で弱まる
+        const gain = 1 / (1 + Math.abs(cab - centre) / DISTANCE_HALF);
+        worst = Math.max(worst, drive * gain);
+      }
+    }
+    return worst;
   }
 
   /** 運転台から電動機（M 車）までの距離による減衰 */

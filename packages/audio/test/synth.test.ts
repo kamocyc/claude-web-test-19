@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   SILENT_CHOPPER,
+  SILENT_CURVE_SQUEAL,
   SILENT_DOOR,
   SILENT_RESISTOR,
   TrainNoiseSynth,
@@ -30,6 +31,7 @@ const silence = (): TrainNoiseParams => ({
   brake: { speed: 0, cylinderPressure: 0, pressureRate: 0, level: 0 },
   auxiliary: { compressor: 0, level: 0 },
   airSpring: { strokeRate: 0, level: 0 },
+  curveSqueal: SILENT_CURVE_SQUEAL,
   door: SILENT_DOOR,
   alarm: { bell: false, chime: false, patternApproach: false, level: 0 },
   horn: { sounding: false, level: 0 },
