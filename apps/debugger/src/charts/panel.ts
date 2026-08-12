@@ -1,5 +1,52 @@
-import { mpsToKmh, paToKpa, type Simulation } from '@railsim/core';
+import { mpsToKmh, paToKpa, type DriveState, type Simulation } from '@railsim/core';
 import { StripChart } from './strip.ts';
+
+/**
+ * 主回路のグラフを制御方式ごとに組み立てる。
+ *
+ * 出したい量が方式でまるで違う（VVVF は周波数、抵抗制御は段と電流、チョッパは
+ * 通流率と電流）ので、1 枚の枠の中身を差し替える。桁を揃えるため係数を掛けて
+ * あり、それは表題に書いてある。
+ */
+function makeDriveChart(kind: DriveState['kind']): StripChart {
+  switch (kind) {
+    case 'resistor':
+      return new StripChart({
+        title: '主回路 抵抗制御（電流は 1/10、界磁率は ×100、直列台数は ×20）',
+        series: [
+          { key: 'step', label: '段', color: '#4ea3ff' },
+          { key: 'current', label: '電機子電流/10', color: '#ff9f43' },
+          { key: 'field', label: '界磁率×100', color: '#7ddc8a', dashed: true },
+          { key: 'series', label: '直列台数×20', color: '#c792ea', dashed: true },
+        ],
+        zeroLine: true,
+      });
+    case 'chopper':
+      return new StripChart({
+        title: '主回路 電機子チョッパ（電流は 1/10、通流率・界磁率は ×100）',
+        series: [
+          { key: 'duty', label: '通流率×100', color: '#4ea3ff' },
+          { key: 'current', label: '電機子電流/10', color: '#ff9f43' },
+          { key: 'field', label: '界磁率×100', color: '#7ddc8a', dashed: true },
+          { key: 'ripple', label: 'リップル p-p', color: '#c792ea', dashed: true },
+        ],
+        zeroLine: true,
+      });
+    case 'none':
+      return new StripChart({ title: '主回路（動力装置なし）', series: [], zeroLine: true });
+    case 'vvvf':
+      return new StripChart({
+        title: 'インバータ [Hz]（キャリアは 1/10、パルス数は ×10）',
+        series: [
+          { key: 'fundamental', label: '出力周波数', color: '#4ea3ff' },
+          { key: 'carrier', label: 'キャリア/10', color: '#ff9f43' },
+          { key: 'pulses', label: 'パルス数×10', color: '#7ddc8a', dashed: true },
+          { key: 'slip', label: 'すべり', color: '#c792ea' },
+        ],
+        zeroLine: true,
+      });
+  }
+}
 
 /**
  * 検証用のグラフ一式。
@@ -81,20 +128,13 @@ export class ChartPanel {
         zeroLine: true,
       }),
     );
-    // インバータの変調。音は完全にこの 3 本から作られるので、これを見れば
+    // 主回路の状態。音は完全にこの数本から作られるので、これを見れば
     // 「いま鳴っている音が仕様どおりか」を耳で確かめる前に目で確かめられる。
-    this.inverter = add(
-      new StripChart({
-        title: 'インバータ [Hz]（キャリアは 1/10、パルス数は ×10）',
-        series: [
-          { key: 'fundamental', label: '出力周波数', color: '#4ea3ff' },
-          { key: 'carrier', label: 'キャリア/10', color: '#ff9f43' },
-          { key: 'pulses', label: 'パルス数×10', color: '#7ddc8a', dashed: true },
-          { key: 'slip', label: 'すべり', color: '#c792ea' },
-        ],
-        zeroLine: true,
-      }),
-    );
+    // 系列は制御方式で入れ替わるので、枠だけ確保しておく。
+    this.driveHost.className = 'chart-host';
+    container.append(this.driveHost);
+    this.drive = makeDriveChart(this.driveKind);
+    this.driveHost.append(this.drive.element);
     this.ride = add(
       new StripChart({
         title: '体感加速度 [m/s²]・ロール [deg]・カント不足 [cm]',
@@ -155,7 +195,9 @@ export class ChartPanel {
   private readonly resistance: StripChart;
   private readonly pressure: StripChart;
   private readonly adhesion: StripChart;
-  private readonly inverter: StripChart;
+  private readonly driveHost = document.createElement('div');
+  private drive: StripChart;
+  private driveKind: DriveState['kind'] = 'vvvf';
   private readonly ride: StripChart;
   private readonly sway: StripChart;
   private readonly stance: StripChart;
@@ -199,13 +241,35 @@ export class ChartPanel {
       slip: snap.maxSlip * 100,
       readhesion: snap.reAdhesionFactor * 10,
     });
-    const inv = snap.inverter;
-    this.inverter.push(t, {
-      fundamental: inv.fundamentalFrequency,
-      carrier: inv.carrierFrequency / 10,
-      pulses: inv.pulses * 10,
-      slip: inv.slipFrequency,
-    });
+    const drive = snap.drive;
+    switch (drive.kind) {
+      case 'vvvf':
+        this.drive.push(t, {
+          fundamental: drive.fundamentalFrequency,
+          carrier: drive.carrierFrequency / 10,
+          pulses: drive.pulses * 10,
+          slip: drive.slipFrequency,
+        });
+        break;
+      case 'resistor':
+        this.drive.push(t, {
+          step: drive.gate ? drive.step + 1 : 0,
+          current: drive.armatureCurrent / 10,
+          field: drive.fieldRatio * 100,
+          series: drive.motorsInSeries * 20,
+        });
+        break;
+      case 'chopper':
+        this.drive.push(t, {
+          duty: drive.duty * 100,
+          current: drive.armatureCurrent / 10,
+          field: drive.fieldRatio * 100,
+          ripple: drive.currentRipple,
+        });
+        break;
+      case 'none':
+        break;
+    }
     this.ride.push(t, {
       feltLong: snap.body.feltLongitudinal,
       feltLat: snap.body.feltLateral,
@@ -237,11 +301,24 @@ export class ChartPanel {
     });
   }
 
+  /**
+   * 制御方式に合わせて主回路のグラフを組み替える。
+   * 方式は走行中に変わらないので、シナリオを切り替えたときだけ呼べばよい。
+   */
+  setDriveKind(kind: DriveState['kind']): void {
+    if (kind === this.driveKind) return;
+    this.driveKind = kind;
+    this.drive = makeDriveChart(kind);
+    this.driveHost.replaceChildren(this.drive.element);
+  }
+
   draw(): void {
     for (const c of this.charts) c.draw();
+    this.drive.draw();
   }
 
   clear(): void {
     for (const c of this.charts) c.clear();
+    this.drive.clear();
   }
 }

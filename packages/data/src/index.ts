@@ -6,5 +6,8 @@ export * from './compile/vehicle.ts';
 export * from './compile/scenario.ts';
 export * from './assets/testLine.ts';
 export * from './assets/commuter4.ts';
+export * from './assets/commuter4Resistor.ts';
+export * from './assets/commuter4Chopper.ts';
+export * from './assets/commuter4Scale.ts';
 export * from './assets/scenarios.ts';
 export * from './library.ts';

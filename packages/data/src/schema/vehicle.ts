@@ -30,6 +30,11 @@ export const inverterSchema = z.object({
   ratedSlipFrequency: z.number().positive().default(2.0),
   /** 基底周波数 [Hz]。ここで変調率が 1 に飽和し、以降は弱め界磁になる。 */
   baseFrequency: z.number().positive().default(53),
+  /**
+   * 低周波電圧ブースト 0..1（一次抵抗降下 `I·R₁` の補償）。
+   * 定格電流での降下が定格電圧の何割にあたるかを書く。
+   */
+  voltageBoost: z.number().min(0).max(0.5).default(0.06),
   /** 非同期モードのキャリア [出力周波数 Hz, キャリア Hz] の折れ線 */
   asyncCarrier: z.array(z.tuple([z.number(), z.number()])).default([
     [0, 250],
@@ -59,7 +64,7 @@ export const inverterSchema = z.object({
 });
 
 export const vvvfSchema = z.object({
-  kind: z.literal('vvvf').default('vvvf'),
+  kind: z.literal('vvvf'),
   /** 1 両あたりの主電動機数 */
   motorCount: z.number().int().positive().default(4),
   /** 歯車比 */
@@ -85,6 +90,135 @@ export const vvvfSchema = z.object({
   /** 変調方式と音に関わる諸元 */
   inverter: inverterSchema.default({}),
 });
+
+/**
+ * 直流直巻電動機の諸元。抵抗制御・電機子チョッパに共通。
+ *
+ * 銘板に載っている量（定格電圧・電流・回転数）で書く。磁束定数 kΦ_max は
+ * そこからコンパイラが逆算する — データ側に「計算で出る量」を書かせないのは
+ * 路線データで曲線の制限速度を書かせないのと同じ方針である。
+ */
+export const dcMotorSchema = z.object({
+  /** 電機子 + 直巻界磁 + ブラシの抵抗 [Ω]（1 台あたり） */
+  armatureResistance: z.number().positive().default(0.1),
+  /**
+   * 磁化曲線の飽和電流 [A]。
+   * これより十分小さい電流では磁束 ∝ 電流（トルク ∝ 電流²）、
+   * 十分大きい電流では磁束が飽和して一定（トルク ∝ 電流）になる。
+   */
+  saturationCurrent: z.number().positive(),
+  /** 定格電圧 [V]（1 台あたりの端子電圧） */
+  ratedVoltage: z.number().positive(),
+  /** 定格電流 [A] */
+  ratedCurrent: z.number().positive(),
+  /** 定格回転数 [rpm] */
+  ratedRpm: z.number().positive(),
+  /** 電機子回路のインダクタンス [mH]（1 台あたり） */
+  armatureInductance: z.number().positive().default(20),
+  /** 整流子片数 */
+  commutatorBars: z.number().int().positive().default(93),
+  /** 小歯車の歯数 */
+  pinionTeeth: z.number().int().positive().default(15),
+});
+
+/**
+ * 抵抗制御の諸元。
+ *
+ * 進段表（どの段でどれだけ抵抗を残すか）は書かない。段の切り替わりでは回転数が
+ * 変わらない＝逆起電力が同じなので、`R_j · I_進段 = R_{j+1} · I_限流` が成り立ち、
+ * 抵抗値は公比 `I_進段 / I_限流` の幾何級数として決まってしまう。データに書くのは
+ * 限流値・進段電流・つなぎ方・弱め界磁の段だけで、表はコンパイラが生成する。
+ */
+export const resistorSchema = z.object({
+  kind: z.literal('resistor'),
+  /** 1 両あたりの主電動機数 */
+  motorCount: z.number().int().positive().default(4),
+  /** 歯車比 */
+  gearRatio: z.number().positive().default(5.6),
+  /** 駆動効率 */
+  driveEfficiency: z.number().positive().max(1).default(0.95),
+  /** 公称架線電圧 [V] */
+  lineVoltage: z.number().positive().default(1500),
+  /** 主回路の効率。抵抗制御には変換器が無いので既定は 1。 */
+  converterEfficiency: z.number().positive().max(1).default(1),
+  motor: dcMotorSchema,
+  /** 限流値 [A]（1 台あたり）。段が進んだ直後の電流。 */
+  currentLimit: z.number().positive(),
+  /** 進段電流 [A]。電流がここまで落ちたら次の段へ進む。限流値より小さいこと。 */
+  stepCurrent: z.number().positive(),
+  /** 1 段あたりの最短滞留時間 [s]（カム軸の回転速度） */
+  stepDwell: z.number().positive().default(0.35),
+  /** 直並列の組替え（渡り）に要する時間 [s]。このあいだトルクが抜ける。 */
+  transitionTime: z.number().nonnegative().default(0.5),
+  /**
+   * 直並列の組替え。1 分岐に直列に入る電動機数を、進む順に書く。
+   * `[4, 2]` なら「全直列 → 直並列」、`[4, 2, 1]` なら最後に全並列まで進む。
+   */
+  groupings: z.array(z.number().int().positive()).default([4, 2]),
+  /** 弱め界磁の段（最終つなぎの全短絡のあとに続く界磁率。降順） */
+  fieldSteps: z.array(z.number().positive().max(1)).default([0.75, 0.6, 0.5, 0.4]),
+  /** 各力行ノッチで到達を許す最終段（省略時は全段をノッチ数で等分する） */
+  notchFinalStep: z.array(z.number().int().nonnegative()).optional(),
+  /** 発電ブレーキを持つか */
+  hasDynamicBrake: z.boolean().default(true),
+  /** 発電ブレーキの制動抵抗 [Ω]（1 分岐）。自励が始まる速度を決める。 */
+  brakeResistance: z.number().positive().default(1.6),
+  /** 発電ブレーキの限流値 [A]（省略時は力行の限流値と同じ） */
+  brakeCurrentLimit: z.number().positive().optional(),
+  /** 発電ブレーキ時に 1 分岐へ直列に入る電動機数 */
+  brakeMotorsInSeries: z.number().int().positive().default(2),
+  /** 発電ブレーキの界磁率 */
+  brakeFieldRatio: z.number().positive().max(1).default(1),
+});
+
+/** 電機子チョッパ制御の諸元 */
+export const chopperSchema = z.object({
+  kind: z.literal('chopper'),
+  /** 1 両あたりの主電動機数 */
+  motorCount: z.number().int().positive().default(4),
+  /** 歯車比 */
+  gearRatio: z.number().positive().default(5.6),
+  /** 駆動効率 */
+  driveEfficiency: z.number().positive().max(1).default(0.95),
+  /** 公称架線電圧 [V] */
+  lineVoltage: z.number().positive().default(1500),
+  /** チョッパ装置の効率 */
+  converterEfficiency: z.number().positive().max(1).default(0.96),
+  motor: dcMotorSchema,
+  /** 1 分岐に直列に入る主電動機の数（チョッパは組替えをしない） */
+  motorsInSeries: z.number().int().positive().default(2),
+  /** チョッピング周波数 [Hz] */
+  chopFrequency: z.number().positive().default(400),
+  /** 通流率の上限（素子の転流に要る最小オフ時間のぶんだけ 1 を切る） */
+  maxDuty: z.number().positive().max(1).default(0.97),
+  /** 通流率の変化速度 [1/s] */
+  dutyRate: z.number().positive().default(3.0),
+  /** 弱め界磁の下限界磁率 */
+  minFieldRatio: z.number().positive().max(1).default(0.4),
+  /** 界磁率の変化速度 [1/s] */
+  fieldRate: z.number().positive().default(0.6),
+  /** 力行の限流値 [A] */
+  currentLimit: z.number().positive(),
+  /** 回生の限流値 [A] */
+  brakeCurrentLimit: z.number().positive(),
+  /** 回生の絞り込みが始まる速度 [km/h] */
+  regenFadeStartSpeed: z.number().nonnegative().default(12),
+  /** 回生が完全に失効する速度 [km/h] */
+  regenFadeEndSpeed: z.number().nonnegative().default(5),
+});
+
+/**
+ * 制御方式（`kind` による判別可能ユニオン）。
+ *
+ * `kind` は省略できない。既定値を埋めてから振り分けることもできるが、そうすると
+ * 入力の型が `unknown` に潰れて、車両データを書いた時点での型検査が効かなくなる。
+ * 主回路の諸元は方式ごとにまるで違うので、そこは静的に守りたい。
+ */
+export const tractionSchema = z.discriminatedUnion('kind', [
+  vvvfSchema,
+  resistorSchema,
+  chopperSchema,
+]);
 
 export const vehicleBrakeSchema = z.object({
   kind: z.enum(['tread', 'disc']).default('disc'),
@@ -211,11 +345,30 @@ export const carSchema = z.object({
   /** 牽引装置高さ [m] */
   tractionLinkHeight: z.number().positive().default(0.6),
   brake: vehicleBrakeSchema.default({}),
-  traction: vvvfSchema.nullable().default(null),
+  traction: tractionSchema.nullable().default(null),
   /** 車体を支えるばねの動揺特性 */
   suspension: suspensionSchema.default({}),
   /** 乗客（吊り革）の振られ方 */
   passenger: passengerSchema.default({}),
+});
+
+/**
+ * 客用扉。走りに効くのは閉まり切るまでの時間（戸閉連動）だけで、
+ * あとは音と表示のための量である。
+ */
+export const doorSchema = z.object({
+  /** 開指令から全開までの時間 [s] */
+  openTime: z.number().positive().default(2.2),
+  /** 扉が動き出してから全閉・施錠までの時間 [s] */
+  closeTime: z.number().positive().default(2.4),
+  /** 閉扉予告の時間 [s]。チャイムが鳴ってから扉が動き出すまでの間。 */
+  closeWarningTime: z.number().nonnegative().default(0.6),
+  /** 開くときにドアチャイムを鳴らすか */
+  chimeOnOpen: z.boolean().default(true),
+  /** 閉めるときにドアチャイムを鳴らすか */
+  chimeOnClose: z.boolean().default(true),
+  /** チャイムが鳴っている時間 [s] */
+  chimeDuration: z.number().nonnegative().default(1.6),
 });
 
 export const couplerSchema = z.object({
@@ -240,6 +393,8 @@ export const adhesionSchema = z.object({
   speedCoefficient: z.number().nonnegative().default(0.008),
   /** ピーク粘着を与えるすべり率 */
   peakCreep: z.number().positive().default(0.012),
+  /** 横クリープ力が飽和するすべり角 [mrad]。軋み音の出はじめる曲線半径を決める。 */
+  lateralCreepSaturation: z.number().positive().default(3.0),
   /** 滑走摩擦係数比 */
   kineticRatio: z.number().positive().max(1).default(0.6),
   /** 砂撒き時の倍率 */
@@ -293,6 +448,7 @@ export const vehicleSchema = z.object({
   adhesion: adhesionSchema.default({}),
   traction: tractionControlSchema.default({}),
   brake: brakeControlSchema.default({}),
+  door: doorSchema.default({}),
   /** 曲線抵抗係数 f [kgf/t·m]（比抵抗 = f / R）。狭軌 600、標準軌 800 が目安。 */
   curveResistanceCoefficient: z.number().nonnegative().default(600),
   /** トンネル内で走行抵抗の速度 2 乗項に掛かる倍率 */

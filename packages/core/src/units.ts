@@ -37,6 +37,14 @@ export type Slope = number;
 export type Watts = number;
 /** [J] エネルギー */
 export type Joules = number;
+/** [A] 電流 */
+export type Amperes = number;
+/** [V] 電圧 */
+export type Volts = number;
+/** [Ω] 抵抗 */
+export type Ohms = number;
+/** [H] インダクタンス */
+export type Henries = number;
 
 /** 標準重力加速度 [m/s^2] */
 export const GRAVITY = 9.80665;
@@ -82,6 +90,12 @@ export const paToKgfPerCm2 = (p: Pascals): number => p / 98066.5;
 export const mmToM = (x: number): Meters => x / 1000;
 /** [m] -> [mm] */
 export const mToMm = (x: Meters): number => x * 1000;
+
+/** [mH] -> [H] */
+export const mhToH = (x: number): Henries => x / 1000;
+
+/** [H] -> [mH] */
+export const hToMh = (x: Henries): number => x * 1000;
 
 /** [km] -> [m] */
 export const kmToM = (x: number): Meters => x * 1000;

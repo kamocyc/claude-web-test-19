@@ -1,5 +1,8 @@
 import type { CompiledRoute, ConsistSpec, Scenario } from '@railsim/core';
 import { commuter4Vehicle } from './assets/commuter4.ts';
+import { commuter4ChopperVehicle } from './assets/commuter4Chopper.ts';
+import { commuter4ResistorVehicle } from './assets/commuter4Resistor.ts';
+import { commuter4ScaleVehicle } from './assets/commuter4Scale.ts';
 import { scenarios } from './assets/scenarios.ts';
 import { testLineBranchRoute, testLineRoute } from './assets/testLine.ts';
 import { compileRoute } from './compile/route.ts';
@@ -83,6 +86,9 @@ export function createDefaultLibrary(): DataLibrary {
   lib.addRoute(testLineRoute);
   lib.addRoute(testLineBranchRoute);
   lib.addVehicle(commuter4Vehicle);
+  lib.addVehicle(commuter4ResistorVehicle);
+  lib.addVehicle(commuter4ChopperVehicle);
+  lib.addVehicle(commuter4ScaleVehicle);
   for (const s of scenarios) lib.addScenario(s);
   return lib;
 }

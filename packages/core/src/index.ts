@@ -6,6 +6,7 @@ export * from './physics/index.ts';
 export * from './train/index.ts';
 export * from './traction/index.ts';
 export * from './brake/index.ts';
+export * from './door/index.ts';
 export * from './route/index.ts';
 export * from './signalling/index.ts';
 export * from './safety/index.ts';

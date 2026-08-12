@@ -11,8 +11,12 @@
 export interface NoiseMix {
   /** 全体 0..1 */
   readonly master: number;
-  /** インバータ・主電動機 */
+  /** インバータ・主電動機（VVVF 車） */
   readonly inverter: number;
+  /** 主電動機・起動抵抗・カム軸の進段（抵抗制御車） */
+  readonly resistor: number;
+  /** チョッパ・主電動機（電機子チョッパ車） */
+  readonly chopper: number;
   /** 歯車のかみ合い（M 車の床下） */
   readonly gear: number;
   /** 転動音（全車の足元） */
@@ -29,6 +33,10 @@ export interface NoiseMix {
   readonly auxiliary: number;
   /** 空気ばねのきしみ */
   readonly airSpring: number;
+  /** 曲線・分岐器での車輪の軋み音 */
+  readonly curveSqueal: number;
+  /** 客用扉（チャイム・空気・戸当たり） */
+  readonly door: number;
   /** 保安装置の報知音（打鈴・チャイム・ブザー） */
   readonly alarm: number;
   /** 警笛 */
@@ -55,6 +63,8 @@ export interface NoiseMix {
 export const DEFAULT_NOISE_MIX: NoiseMix = {
   master: 0.7,
   inverter: 1,
+  resistor: 1,
+  chopper: 1,
   gear: 1,
   rolling: 1,
   wind: 1,
@@ -63,6 +73,8 @@ export const DEFAULT_NOISE_MIX: NoiseMix = {
   brake: 1,
   auxiliary: 1,
   airSpring: 1,
+  curveSqueal: 1,
+  door: 1,
   alarm: 1,
   horn: 1,
   inverterLoadTracking: 0.3,
@@ -93,17 +105,23 @@ export const VOICE = {
   airSpring: 8,
   alarm: 9,
   horn: 10,
+  resistor: 11,
+  chopper: 12,
+  door: 13,
+  curveSqueal: 14,
 } as const;
 
 export type VoiceIndex = (typeof VOICE)[keyof typeof VOICE];
 
 /** 音源の数（メータの配列長） */
-export const VOICE_COUNT = 11;
+export const VOICE_COUNT = 15;
 
 /** 音量のつまみ */
 export const NOISE_MIX_LEVELS: readonly NoiseMixControl[] = [
   { key: 'master', label: 'マスター' },
   { key: 'inverter', label: 'インバータ・主電動機', voice: VOICE.inverter },
+  { key: 'resistor', label: '主電動機・起動抵抗・進段', voice: VOICE.resistor },
+  { key: 'chopper', label: 'チョッパ・主電動機', voice: VOICE.chopper },
   { key: 'gear', label: '歯車', voice: VOICE.gear },
   { key: 'rolling', label: '転動音', voice: VOICE.rolling },
   { key: 'wind', label: '風切り', voice: VOICE.wind },
@@ -112,6 +130,8 @@ export const NOISE_MIX_LEVELS: readonly NoiseMixControl[] = [
   { key: 'brake', label: 'ブレーキ', voice: VOICE.brake },
   { key: 'auxiliary', label: '補機（空気圧縮機）', voice: VOICE.auxiliary },
   { key: 'airSpring', label: '空気ばねのきしみ', voice: VOICE.airSpring },
+  { key: 'curveSqueal', label: '曲線の軋み音', voice: VOICE.curveSqueal },
+  { key: 'door', label: '客用扉・ドアチャイム', voice: VOICE.door },
   { key: 'alarm', label: '保安装置の報知音', voice: VOICE.alarm },
   { key: 'horn', label: '警笛', voice: VOICE.horn },
 ];

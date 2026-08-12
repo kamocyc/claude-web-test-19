@@ -1,12 +1,24 @@
 import {
   DEFAULT_NOISE_MIX,
+  SILENT_CHOPPER,
+  SILENT_INVERTER,
+  SILENT_RESISTOR,
   VOICE_COUNT,
+  type ChopperVoiceParams,
+  type InverterVoiceParams,
   type JointImpact,
   type NoiseMix,
+  type ResistorVoiceParams,
   type TrainNoiseParams,
   type TurnoutImpact,
 } from '@railsim/audio';
-import { axleOffsets, jointCrossings, type BodyMotionState, type Simulation } from '@railsim/core';
+import {
+  axleOffsets,
+  bogieSquealDrive,
+  jointCrossings,
+  type BodyMotionState,
+  type Simulation,
+} from '@railsim/core';
 import workletUrl from './trainNoise.worklet.ts?worker&url';
 
 const PROCESSOR = 'train-noise';
@@ -27,6 +39,20 @@ const TURNOUT_REFERENCE_SPEED = 18;
  * この距離だけ離れると音量が半分になる。
  */
 const DISTANCE_HALF = 25;
+
+/**
+ * 起動抵抗のうなりを正規化する基準電力 [W]。
+ *
+ * 抵抗制御では起動直後に電動機の入力とほぼ同じだけの電力を抵抗で熱にしている
+ * （だから直列初段の効率は 5 割を切る）。編成の公称出力と同じ桁を基準にしておくと、
+ * 起動でうなりが最大、進段するほど下がり、全短絡で消えるという関係になる。
+ */
+const RESISTOR_GRID_REFERENCE_POWER = 800_000;
+
+/** 0..1 に丸める */
+function clamp01(x: number): number {
+  return x < 0 ? 0 : x > 1 ? 1 : x;
+}
 
 /**
  * 左右の空気ばねの間隔の半分 [m]。
@@ -66,11 +92,28 @@ export class TrainAudio {
   /** ワークレットから返ってくる音源ごとの実効値 */
   readonly levels = new Float32Array(VOICE_COUNT);
 
+  /**
+   * 音声の時計。レンダされた**音声の秒数**を約 60ms ごとに知らせる。
+   *
+   * `requestAnimationFrame` は背面タブで止まるが、AudioWorklet は音声スレッドで
+   * 動き続ける（音を出しているタブはブラウザの凍結対象からも外れる）。背面のあいだ
+   * だけこちらを親時計に使えば、シミュレーションが止まらずに済む。
+   * 実時間ではなく音声時間を渡すのは、それがワークレットの持つ唯一の時計であり、
+   * 音の連続性を決めているのもそれだからである。
+   */
+  onClock: ((seconds: number) => void) | null = null;
+
   /** 各車両の前フレームでの距離程（継目・分岐器の跨ぎ判定に使う） */
   private previousPositions: number[] = [];
   private readonly offsetScratch: number[] = [];
   private readonly joints: JointImpact[] = [];
   private readonly turnouts: TurnoutImpact[] = [];
+  /** 進段・組替えのカウンタ（増分を撃力の回数として鳴らす） */
+  private lastStepEvents = 0;
+  private lastGroupEvents = 0;
+  /** 扉の戸当たりのカウンタ（増分を撃力の回数として鳴らす） */
+  private lastLatchEvents = 0;
+  private lastOpenEvents = 0;
 
   get available(): boolean {
     return !this.failed;
@@ -99,9 +142,11 @@ export class TrainAudio {
         numberOfOutputs: 1,
         outputChannelCount: [2],
       });
-      worklet.port.onmessage = (event: MessageEvent<{ levels?: number[] }>) => {
+      worklet.port.onmessage = (event: MessageEvent<{ levels?: number[]; seconds?: number }>) => {
         const levels = event.data.levels;
         if (levels) this.levels.set(levels);
+        const seconds = event.data.seconds;
+        if (seconds !== undefined && seconds > 0) this.onClock?.(seconds);
       };
       const master = context.createGain();
       master.gain.value = 0;
@@ -198,27 +243,120 @@ export class TrainAudio {
     send.gain.setTargetAtTime(ratio * TUNNEL_WET, context.currentTime, TUNNEL_FADE);
   }
 
+  /**
+   * 制御方式に応じて主回路の音源を選ぶ。
+   *
+   * 鳴らない方式には無音のパラメータを渡す。方式は走行中に変わらないので、
+   * 使われない音源は毎フレームそのまま素通りするだけで負荷にならない。
+   */
+  private mainCircuitParams(
+    drive: ReturnType<Simulation['snapshot']>['drive'],
+    running: boolean,
+    motorGain: number,
+    load: number,
+  ): {
+    inverter: InverterVoiceParams;
+    resistor: ResistorVoiceParams;
+    chopper: ChopperVoiceParams;
+  } {
+    const mix = this.mixValues;
+    const silent = {
+      inverter: SILENT_INVERTER,
+      resistor: SILENT_RESISTOR,
+      chopper: SILENT_CHOPPER,
+    };
+
+    switch (drive.kind) {
+      case 'vvvf': {
+        // 主回路が切れていれば（惰行・ノッチ切）ゲートが閉じる。音量を 0 にするのでは
+        // なく合成器へゲートの状態を渡し、相電圧を 0 にして磁束を自然に減衰させる。
+        const gate = drive.mode !== 'off' && running;
+        // V/f 一定で磁束が保たれるので、実機の磁気音は負荷でそれほど変わらない。
+        // どれだけ追従させるかは耳で決められるようミキサのつまみにしてある。
+        const inverterLoad = 1 - mix.inverterLoadTracking + mix.inverterLoadTracking * load;
+        return {
+          ...silent,
+          inverter: {
+            gate,
+            // ゲートが閉じているあいだも回転子の周波数を渡し続ける。0 へ落とすと、
+            // 磁束が積分であるために消えぎわで利得が跳ね上がって掃引音が出る。
+            fundamental: gate ? drive.fundamentalFrequency : drive.rotorFrequency,
+            carrier: drive.carrierFrequency,
+            modulation: drive.modulationIndex,
+            pulses: drive.pulses,
+            slotFrequency: drive.slotFrequency,
+            level: inverterLoad * motorGain * mix.inverter,
+          },
+        };
+      }
+      case 'resistor': {
+        // 進段は 1 秒に数回までなので、フレーム精度で鳴らせば足りる
+        // （継目や分岐器のようなサンプル精度の予約は要らない）。
+        const steps = running ? Math.max(0, drive.stepEvents - this.lastStepEvents) : 0;
+        const groupChanges = running ? Math.max(0, drive.groupEvents - this.lastGroupEvents) : 0;
+        this.lastStepEvents = drive.stepEvents;
+        this.lastGroupEvents = drive.groupEvents;
+        return {
+          ...silent,
+          resistor: {
+            gate: (drive.gate || drive.dynamicBraking) && running,
+            current: Math.abs(drive.torqueRatio),
+            commutatorFrequency: running ? drive.commutatorFrequency : 0,
+            // 起動抵抗で捨てている電力を、編成の公称出力で正規化して渡す。
+            // 段が進んで抵抗が短絡されるほど 0 に近づき、うなりが消える。
+            resistorPower: clamp01(drive.resistorPower / RESISTOR_GRID_REFERENCE_POWER),
+            steps,
+            groupChanges,
+            level: motorGain * mix.resistor,
+          },
+        };
+      }
+      case 'chopper':
+        return {
+          ...silent,
+          chopper: {
+            gate: drive.gate && running,
+            current: Math.abs(drive.torqueRatio),
+            duty: drive.duty,
+            chopFrequency: drive.chopFrequency,
+            commutatorFrequency: running ? drive.commutatorFrequency : 0,
+            level: motorGain * mix.chopper,
+          },
+        };
+      case 'none':
+        return silent;
+    }
+  }
+
   private buildParams(
     sim: Simulation,
     snap: ReturnType<Simulation['snapshot']>,
     running: boolean,
   ): TrainNoiseParams {
-    const inv = snap.inverter;
+    const drive = snap.drive;
     const indication = snap.safety.indication;
     const mix = this.mixValues;
     const speed = running ? Math.abs(snap.speed) : 0;
     const spec = sim.scenario.consist.vehicles.find((v) => v.traction)?.traction ?? null;
 
-    // 主回路が切れていれば（惰行・ノッチ切）ゲートが閉じる。音量を 0 にするのでは
-    // なく合成器へゲートの状態を渡し、相電圧を 0 にして磁束を自然に減衰させる。
-    const gate = inv.mode !== 'off' && running;
-    const load = Math.min(1, Math.abs(inv.torqueRatio));
-    // V/f 一定で磁束が保たれるので、実機の磁気音は負荷でそれほど変わらない。
-    // どれだけ追従させるかは耳で決められるようミキサのつまみにしてある。
-    const inverterLoad = 1 - mix.inverterLoadTracking + mix.inverterLoadTracking * load;
+    // 負荷率はどの方式でも「定格に対するトルク比」で表せる。歯車の音はこれで駆動する。
+    const load = Math.min(1, Math.abs(drive.torqueRatio));
     // 電動機は M 車の床下にある。この編成は Tc 先頭なので、運転士には
     // 数十メートル後方から聞こえることになる。
     const motorGain = this.motorDistanceGain(sim);
+
+    // 戸当たりは進段と同じくフレーム精度で足りる（1 回の停車で数回しか鳴らない）。
+    const doorParams = {
+      moving: snap.doors.moving && running,
+      closing: snap.doors.closing,
+      chiming: snap.doors.chiming && running,
+      latches: running ? Math.max(0, snap.doors.latchEvents - this.lastLatchEvents) : 0,
+      opens: running ? Math.max(0, snap.doors.openEvents - this.lastOpenEvents) : 0,
+      // 扉は運転台のすぐ後ろから編成の端までにあるので、距離減衰は掛けない。
+      level: mix.door,
+    };
+    this.lastLatchEvents = snap.doors.latchEvents;
+    this.lastOpenEvents = snap.doors.openEvents;
 
     const cylinder = spec
       ? snap.cylinderPressure /
@@ -227,24 +365,17 @@ export class TrainAudio {
     const pressureRate = this.cylinderRate(snap.cylinderPressure, sim);
 
     return {
-      inverter: {
-        gate,
-        // ゲートが閉じているあいだも回転子の周波数を渡し続ける。0 へ落とすと、
-        // 磁束が積分であるために消えぎわで利得が跳ね上がって掃引音が出る。
-        fundamental: gate ? inv.fundamentalFrequency : inv.rotorFrequency,
-        carrier: inv.carrierFrequency,
-        modulation: inv.modulationIndex,
-        pulses: inv.pulses,
-        slotFrequency: inv.slotFrequency,
-        level: inverterLoad * motorGain * mix.inverter,
-      },
+      ...this.mainCircuitParams(drive, running, motorGain, load),
       gear: {
-        meshFrequency: running ? inv.gearMeshFrequency : 0,
-        shaftFrequency: running ? inv.motorRpm / 60 : 0,
+        // 歯車のかみ合いは主回路が何であろうと同じように鳴るので、
+        // 制御方式に依らない共通の回転量から作る。
+        meshFrequency: running ? drive.gearMeshFrequency : 0,
+        shaftFrequency: running ? drive.motorRpm / 60 : 0,
         load: 1 - mix.gearLoadTracking + mix.gearLoadTracking * load,
         // 歯車箱は M 車の床下にしか無いので、電動機と同じだけ遠い
         level: motorGain * mix.gear,
       },
+      door: doorParams,
       // 転動音と風切り音は編成のどこからでも来る。運転台の真下にも軸があるし、
       // 前面は自分が風を切っている当人なので、距離減衰は掛からない。
       rolling: {
@@ -267,6 +398,11 @@ export class TrainAudio {
         strokeRate: running ? airSpringStrokeRate(snap.body) : 0,
         level: mix.airSpring,
       },
+      curveSqueal: {
+        drive: running ? this.squealDrive(sim) : 0,
+        speed,
+        level: mix.curveSqueal,
+      },
       // 保安装置の報知音と警笛は運転台の中で鳴るので、距離減衰も走行音による
       // マスクも受けない。運転士に届かなければ意味が無い装置だからである。
       alarm: {
@@ -277,6 +413,45 @@ export class TrainAudio {
       },
       horn: { sounding: sim.input.horn, level: mix.horn },
     };
+  }
+
+  /**
+   * 編成のうちいちばん強く軋っている台車の駆動の強さ。
+   *
+   * 判定そのものは `bogieSquealDrive`（コア）にある。ここがやるのは台車の位置を
+   * 並べることと、運転台からの距離で弱めることだけである。
+   *
+   * 足し合わせずに最大を取っているのは、軋りが**その 1 つのモードの自励振動**で
+   * あって、鳴いている台車が増えても音量が線形に増える種類の音ではないためである。
+   */
+  private squealDrive(sim: Simulation): number {
+    const route = sim.scenario.route;
+    const cab = sim.dynamics.frontPosition;
+    const rail = sim.scenario.railCondition;
+    const adhesion = sim.scenario.consist.adhesion;
+    const lateralAt = (s: number): number =>
+      route.irregularity.lateralAt(s) + route.turnouts.lateralAt(s);
+
+    let worst = 0;
+    for (const veh of sim.dynamics.vehicles) {
+      const spec = veh.spec;
+      const half = spec.bogieSpacing / 2;
+      for (const centre of [veh.s + half, veh.s - half]) {
+        const drive = bogieSquealDrive({
+          adhesion,
+          curvature: route.alignment.curvatureAt(centre),
+          lateralAt,
+          position: centre,
+          bogieWheelbase: spec.bogieWheelbase,
+          speed: veh.v,
+          rail,
+        });
+        // 台車は編成のあちこちにあるので、運転台からの距離で弱まる
+        const gain = 1 / (1 + Math.abs(cab - centre) / DISTANCE_HALF);
+        worst = Math.max(worst, drive * gain);
+      }
+    }
+    return worst;
   }
 
   /** 運転台から電動機（M 車）までの距離による減衰 */
@@ -388,6 +563,10 @@ export class TrainAudio {
     this.previousPositions.length = 0;
     this.lastCylinder = 0;
     this.lastCylinderTime = 0;
+    this.lastStepEvents = 0;
+    this.lastGroupEvents = 0;
+    this.lastLatchEvents = 0;
+    this.lastOpenEvents = 0;
     this.worklet?.port.postMessage({ reset: true });
   }
 

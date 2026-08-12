@@ -1,4 +1,14 @@
-import { formatClock, modulationLabel, mpsToKmh, paToKpa, type Simulation } from '@railsim/core';
+import {
+  doorLabel,
+  driveDetail,
+  driveDetailRowLabel,
+  driveLabel,
+  driveRowLabel,
+  formatClock,
+  mpsToKmh,
+  paToKpa,
+  type Simulation,
+} from '@railsim/core';
 
 const ASPECT_TEXT: Record<string, string> = {
   R: '停止',
@@ -105,7 +115,7 @@ export class Hud {
         handleLabel,
         handles.emergency
           ? '<span class="danger">非常</span>'
-          : handle + (handles.doorsClosed ? '' : ' <span class="warn">戸開</span>'),
+          : handle + (snap.doors.interlocked ? '' : ' <span class="warn">戸開</span>'),
       ),
     );
     rows.push(
@@ -135,18 +145,22 @@ export class Hud {
       ),
     );
     rows.push(row('主回路電流', `${snap.motorCurrent.toFixed(0)} A`));
-    // インバータの変調。音がこの数値どおりに鳴っているかを耳と目で突き合わせられる。
-    const inv = snap.inverter;
-    rows.push(row('変調', modulationLabel(inv)));
+    // 主回路の状態。音がこの数値どおりに鳴っているかを耳と目で突き合わせられる。
+    // 制御方式によって出す量が違う（VVVF は周波数、直流機は電流と電圧）ので、
+    // 行の見出しごと `drive` から引く。
+    const drive = snap.drive;
+    // 扉。閉指令を出しても閉まり切るまでは力行できない（戸閉連動）ので、
+    // 動いている途中も見えるようにしておく。
     rows.push(
       row(
-        '出力 / すべり',
-        inv.mode === 'off'
-          ? `— / — （${inv.motorRpm.toFixed(0)} rpm）`
-          : `${inv.fundamentalFrequency.toFixed(1)} / ${inv.slipFrequency.toFixed(2)} Hz` +
-              `（${inv.motorRpm.toFixed(0)} rpm）`,
+        '客用扉',
+        snap.doors.interlocked
+          ? doorLabel(snap.doors)
+          : `<span class="warn">${doorLabel(snap.doors)}</span>`,
       ),
     );
+    rows.push(row(driveRowLabel(drive), driveLabel(drive)));
+    rows.push(row(driveDetailRowLabel(drive), driveDetail(drive)));
     rows.push(
       row('勾配 / 曲率', `${(snap.grade * 1000).toFixed(1)} ‰ / ${radius(snap.curvature)}`),
     );

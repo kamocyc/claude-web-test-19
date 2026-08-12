@@ -34,6 +34,17 @@ export interface InverterVoiceParams {
   readonly level: number;
 }
 
+/** 主回路が動いていないときのインバータ音（VVVF 以外の車両で使う） */
+export const SILENT_INVERTER: InverterVoiceParams = {
+  gate: false,
+  fundamental: 0,
+  carrier: 0,
+  modulation: 0,
+  pulses: 0,
+  slotFrequency: 0,
+  level: 0,
+};
+
 export interface InverterVoiceOptions {
   /**
    * オーバーサンプリング倍率。比較器の出力は理想的な矩形波なので、
@@ -58,7 +69,20 @@ export interface InverterVoiceOptions {
   readonly slotDepth?: number;
 }
 
+/*
+ * 先頭の 400Hz は固定子の**楕円モード（円周方向の次数 m = 2）**である。
+ *
+ * 固定子鉄心を輪と見ると、円周方向に m 個の腹を持つ変形が並ぶ。半径力波が次数 m の
+ * 変形を励振したときの振れ幅は `1/(m² − 1)²` に比例するので、m = 2 が他を圧して大きく
+ * （m = 3 の 16 倍、m = 4 の 56 倍）、しかも輪の曲げ剛性が最も低いので**いちばん低い
+ * 周波数**に来る。電気機械の騒音でまず問題になるのは常にこのモードである。
+ *
+ * それが表に無く、いちばん下が 620Hz から始まっていた。600Hz 以下には共振の裾しか
+ * 無いところへ放射効率の落ち（下の一致周波数の項）が重なるので、この帯に音程を持つ
+ * 車両 — 音階インバータの階段は 196〜587Hz にある — だけが不当に静かになっていた。
+ */
 const DEFAULT_RESONANCES: ReadonlyArray<readonly [number, number, number]> = [
+  [400, 5, 1.2],
   [620, 7, 1.0],
   [1180, 9, 0.7],
   [2350, 11, 0.45],
