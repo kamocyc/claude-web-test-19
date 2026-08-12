@@ -89,7 +89,13 @@ export interface AutoDriveParameters {
   readonly lookahead: Meters;
   /** 停止制動の基準減速度 [m/s^2] */
   readonly stopDeceleration: MetersPerSecondSquared;
-  /** 止まる瞬間の減速度 [m/s^2]（衝撃緩和の到達点） */
+  /**
+   * 止まる瞬間の減速度 [m/s^2]（衝撃緩和の到達点）。
+   *
+   * 停止制動中は最弱ノッチ（B1）より緩めないので、実際に到達できるのは
+   * B1 の減速度までである。ここはその上限（ノッチの粗い編成で、B1 でも
+   * なお強すぎるときに効く）で、実効値は `finalDeceleration()` が決める。
+   */
   readonly finalDeceleration: MetersPerSecondSquared;
   /** 減速度の絞り込み（衝撃緩和）を始める速度 [m/s] */
   readonly easeSpeed: MetersPerSecond;
@@ -484,7 +490,7 @@ export class AutoDriver {
         this.stopping = false;
         this.stoppingTarget = null;
       }
-      if (stopDemand >= this.shapeDeceleration(v)) {
+      if (stopDemand >= this.shapeDeceleration(ctx, v)) {
         this.stopping = true;
         this.stoppingTarget = point.position;
       }
@@ -640,11 +646,29 @@ export class AutoDriver {
   // 停止制動
   // ------------------------------------------------------------------
 
+  /**
+   * 止まる瞬間に狙う減速度 [m/s^2]。
+   *
+   * 停止制動中はブレーキを抜かない（`applyBrake` の `min`）ので、止まる瞬間に
+   * 残っているのは最も浅いノッチ B1 である。したがって**停止の衝撃の下限は
+   * B1 の減速度**であり、それより小さい値を狙っても届かない。逆に B1 より
+   * 大きい値を狙うと、B2 以上を込めたまま止まることになり、その段のぶんが
+   * そのまま前後衝動として出る。到達できる中でいちばん小さい値、すなわち
+   * B1 の減速度を狙う。
+   *
+   * 空気ブレーキは指令を追うのに 1 秒ほど掛かるので、B1 相当まで指令を
+   * 落とすのが早いほど、止まるまでに BC 圧が抜けきる。
+   */
+  private finalDeceleration(ctx: AutoDriveContext): MetersPerSecondSquared {
+    return Math.min(this.params.finalDeceleration, ctx.brake.decelerationForNotch(1));
+  }
+
   /** 速度 v に対する目標減速度（止まる直前は絞り込む） */
-  private shapeDeceleration(v: MetersPerSecond): MetersPerSecondSquared {
+  private shapeDeceleration(ctx: AutoDriveContext, v: MetersPerSecond): MetersPerSecondSquared {
     const p = this.params;
     if (v >= p.easeSpeed) return p.stopDeceleration;
-    return p.finalDeceleration + (p.stopDeceleration - p.finalDeceleration) * (v / p.easeSpeed);
+    const aFinal = this.finalDeceleration(ctx);
+    return aFinal + (p.stopDeceleration - aFinal) * (v / p.easeSpeed);
   }
 
   /**
@@ -656,14 +680,15 @@ export class AutoDriver {
    *
    * と解析的に求まる。v_ease を超えるぶんは一定減速度として足す。
    */
-  private shapeDistance(v: MetersPerSecond): Meters {
+  private shapeDistance(ctx: AutoDriveContext, v: MetersPerSecond): Meters {
     const p = this.params;
+    const aFinal = this.finalDeceleration(ctx);
     const ve = Math.min(v, p.easeSpeed);
-    const c = (p.stopDeceleration - p.finalDeceleration) / p.easeSpeed;
+    const c = (p.stopDeceleration - aFinal) / p.easeSpeed;
     const low =
       c <= 1e-9
-        ? (ve * ve) / (2 * p.finalDeceleration)
-        : ve / c - (p.finalDeceleration / (c * c)) * Math.log(1 + (c * ve) / p.finalDeceleration);
+        ? (ve * ve) / (2 * aFinal)
+        : ve / c - (aFinal / (c * c)) * Math.log(1 + (c * ve) / aFinal);
     if (v <= p.easeSpeed) return low;
     return low + (v * v - p.easeSpeed * p.easeSpeed) / (2 * p.stopDeceleration);
   }
@@ -689,8 +714,8 @@ export class AutoDriver {
         ? ctx.consist.brake.maxServiceDeceleration
         : ctx.brake.decelerationForNotch(p.holdNotch);
     }
-    const shape = this.shapeDeceleration(v);
-    return Math.min((shape * this.shapeDistance(v)) / distance, shape * p.stopDemandCap);
+    const shape = this.shapeDeceleration(ctx, v);
+    return Math.min((shape * this.shapeDistance(ctx, v)) / distance, shape * p.stopDemandCap);
   }
 
   /** もっとも近い停止目標 */
@@ -826,7 +851,7 @@ export class AutoDriver {
     const gap =
       point === null
         ? Number.POSITIVE_INFINITY
-        : point.position - ctx.position - this.shapeDistance(v) - v * p.responseTime;
+        : point.position - ctx.position - this.shapeDistance(ctx, v) - v * p.responseTime;
     const nearStop = gap <= p.coastLead + v * p.coastLeadTime;
     const nearBrake = demand >= p.approachDeceleration * p.releaseRatio;
 
