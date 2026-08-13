@@ -1,9 +1,9 @@
 import { Biquad, DcBlocker, OnePoleHighPass, OnePoleLowPass, Smoothed } from './biquad.ts';
 import {
-  CommutatorTone,
+  DcMotorTone,
   DC_MOTOR_RESONANCES,
   MASS_CONTROLLED_FREQUENCY,
-  type CommutatorParams,
+  type DcMotorParams,
 } from './dcMotorVoice.ts';
 
 const TWO_PI = Math.PI * 2;
@@ -18,8 +18,12 @@ export interface ChopperVoiceParams {
   readonly duty: number;
   /** チョッパ周波数 [Hz] */
   readonly chopFrequency: number;
+  /** 電機子スロットの通過周波数 [Hz]（主電動機の音程を決める） */
+  readonly slotFrequency: number;
   /** ブラシが整流子片を渡る周波数 [Hz] */
   readonly commutatorFrequency: number;
+  /** 通風ファンの翼通過周波数 [Hz] */
+  readonly ventilationFrequency: number;
   /** 音量 0..1 */
   readonly level: number;
 }
@@ -29,7 +33,9 @@ export const SILENT_CHOPPER: ChopperVoiceParams = {
   current: 0,
   duty: 0,
   chopFrequency: 0,
+  slotFrequency: 0,
   commutatorFrequency: 0,
+  ventilationFrequency: 0,
   level: 0,
 };
 
@@ -45,13 +51,14 @@ const RIPPLE_LEAK_FREQUENCY = 40;
 /**
  * リップル電流を可聴域の振幅へ写す倍率。
  *
- * 値は実測で決めてある。チョッパ音は**この車の音のいちばんの特徴**なので、整流子の
- * 音に埋もれてはいけない。基音どうしで比べて整流子の 1/4〜2/3 になるようにしてある
- * （＝−6〜−2dB）。これより下げると、通流率を動かしても音がほとんど変わらなくなる。
+ * 値は実測で決めてある。チョッパ音は**この車の音のいちばんの特徴**なので、主電動機の
+ * 音に埋もれてはいけない。電動機の音程を担うスロット通過の線と基音どうしで比べて、
+ * 起動直後は 2.8 倍、40km/h で 1.5 倍、60km/h では逆に 0.4 倍になる。これより下げると、
+ * 通流率を動かしても音がほとんど変わらなくなる。
  *
- * なお、この音源がいちばん大きくなるのは起動直後の低い回転数だが、それはチョッパ音の
- * せいではなく、整流子の基音が 980Hz の構造共振を通過するためである。倍率を下げても
- * そこは変わらない。
+ * 速度とともに比が下がるのは、チョッパ周波数が 400Hz に固定されているのに対し、
+ * スロット通過は回転とともに上がって構造共振と放射効率のよいところへ入っていく
+ * ためである。実車でも高速では電動機の唸りがチョッパ音を覆う。
  */
 const RIPPLE_GAIN = 620;
 
@@ -69,13 +76,16 @@ const RIPPLE_GAIN = 620;
  *  2. **倍音の構成が通流率で変わる。** 方形波の n 次成分は `sin(nπδ)/n` なので、
  *     δ が動くと音色だけが変わる。加速につれて音が「開いていく」のはこれである。
  *  3. **全通流で消える。** δ → 1 では電圧が切れ目なく掛かるのでリップルが
- *     生まれない。チョッパ音が消えて整流子の音だけが残る — 実車で全界磁最終段に
- *     入った瞬間に静かになるのと同じ。
+ *     生まれない。チョッパ音が消えて主電動機の音 — スロット通過の唸りと通風音
+ *     （`dcMotorVoice.ts`）— だけが残る。実車で全界磁最終段に入った瞬間に
+ *     静かになるのと同じである。このとき音程の担い手が入れ替わるのが面白いところで、
+ *     それまで鳴っていた速度に依らない音が引き、代わりに回転数に比例して上がって
+ *     いく音が出てくる。
  *
- * 惰行では主電動機の音（`CommutatorTone`）だけが残る。
+ * 惰行では主電動機の音（`DcMotorTone`）— といっても電流が無いので通風音 — だけが残る。
  */
 export class ChopperVoice {
-  private readonly commutator: CommutatorTone;
+  private readonly motor: DcMotorTone;
   private readonly resonators: Biquad[] = [];
   private readonly weights: number[] = [];
   private readonly radiation: OnePoleHighPass;
@@ -92,7 +102,7 @@ export class ChopperVoice {
   private params: ChopperVoiceParams = SILENT_CHOPPER;
 
   constructor(readonly sampleRate: number) {
-    this.commutator = new CommutatorTone(sampleRate);
+    this.motor = new DcMotorTone(sampleRate);
     for (const [frequency, q, weight] of DC_MOTOR_RESONANCES) {
       this.resonators.push(new Biquad().bandPass(sampleRate, frequency, q));
       this.weights.push(weight);
@@ -109,17 +119,20 @@ export class ChopperVoice {
 
   setParams(params: ChopperVoiceParams): void {
     this.params = params;
-    const commutator: CommutatorParams = {
-      frequency: params.commutatorFrequency,
-      current: params.current,
+    // チョッパが切れていても電動機は回り続ける。消えるのは電磁音だけで通風音は残る。
+    const motor: DcMotorParams = {
+      slotFrequency: params.slotFrequency,
+      commutatorFrequency: params.commutatorFrequency,
+      ventilationFrequency: params.ventilationFrequency,
+      current: params.gate ? params.current : 0,
       level: params.level,
     };
-    this.commutator.setParams(commutator);
+    this.motor.setParams(motor);
   }
 
   /** バッファへ**加算**する */
   render(out: Float32Array): void {
-    this.commutator.render(out);
+    this.motor.render(out);
 
     const p = this.params;
     const dt = 1 / this.sampleRate;
@@ -156,7 +169,7 @@ export class ChopperVoice {
   }
 
   reset(): void {
-    this.commutator.reset();
+    this.motor.reset();
     this.theta = 0;
     this.ripple = 0;
     this.dcBlock.reset();

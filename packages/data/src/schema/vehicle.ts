@@ -115,8 +115,12 @@ export const dcMotorSchema = z.object({
   ratedRpm: z.number().positive(),
   /** 電機子回路のインダクタンス [mH]（1 台あたり） */
   armatureInductance: z.number().positive().default(20),
-  /** 整流子片数 */
+  /** 電機子スロット数（電磁音の主役。スロット通過周波数 = 回転数/60 × スロット数） */
+  armatureSlots: z.number().int().positive().default(31),
+  /** 整流子片数（スロット数 × 1 スロットのコイル辺数） */
   commutatorBars: z.number().int().positive().default(93),
+  /** 通風ファンの翼数（通風音の翼通過周波数を決める） */
+  fanBlades: z.number().int().positive().default(34),
   /** 小歯車の歯数 */
   pinionTeeth: z.number().int().positive().default(15),
 });
@@ -146,8 +150,12 @@ export const resistorSchema = z.object({
   currentLimit: z.number().positive(),
   /** 進段電流 [A]。電流がここまで落ちたら次の段へ進む。限流値より小さいこと。 */
   stepCurrent: z.number().positive(),
-  /** 1 段あたりの最短滞留時間 [s]（カム軸の回転速度） */
-  stepDwell: z.number().positive().default(0.35),
+  /**
+   * 1 段あたりの最短滞留時間 [s]（カム軸を回すパイロットモータの機械的な速度）。
+   * ふつう進段の間隔を決めているのは電流条件のほうで、これが律速になるのは
+   * 限流継電器が最初から復帰している場面 — 高速からの再力行 — だけである。
+   */
+  stepDwell: z.number().positive().default(0.25),
   /** 直並列の組替え（渡り）に要する時間 [s]。このあいだトルクが抜ける。 */
   transitionTime: z.number().nonnegative().default(0.5),
   /**

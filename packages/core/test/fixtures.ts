@@ -52,7 +52,9 @@ export const TEST_DC_MOTOR: DcSeriesMotorSpec = {
   fluxConstant: 3.0731,
   ratedCurrent: 350,
   armatureInductance: 0.022,
+  armatureSlots: 31,
   commutatorBars: 93,
+  fanBlades: 34,
   pinionTeeth: 15,
 };
 
@@ -93,7 +95,7 @@ export const TEST_RESISTOR_TRACTION: ResistorTractionSpec = {
   ],
   currentLimit: 480,
   stepCurrent: 380,
-  stepDwell: 0.4,
+  stepDwell: 0.25,
   transitionTime: 0.5,
   notchFinalStep: [6, 14, 15, 16],
   hasDynamicBrake: true,

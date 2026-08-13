@@ -126,6 +126,59 @@ describe('カム軸の進段', () => {
     });
   });
 
+  it('高速からの再力行では電流を待たずにカム軸が回りきる', () => {
+    const spec = TEST_RESISTOR_TRACTION;
+    // 70km/h で惰行しているところへノッチを入れる。カム軸は開放まで戻っているので、
+    // 速度に見合った段まで 1 段ずつ駆け上がることになる。
+    const r = rig({ initialSpeed: kmhToMps(70) });
+    r.run(0.5);
+    expect(r.drive().gate).toBe(false);
+
+    const startSpeed = r.dyn.speed;
+    r.traction.setNotch(4);
+
+    let time = 0;
+    let last = -1;
+    let groupEvents = 0;
+    let previousTime = 0;
+    let caughtUp = -1;
+    let speedAfter2s = 0;
+    const gaps: number[] = [];
+    r.run(10, () => {
+      time += DT;
+      if (speedAfter2s === 0 && time >= 2) speedAfter2s = r.dyn.speed;
+      const s = r.drive();
+      if (!s.gate) return;
+      if (s.step !== last) {
+        const regrouped = s.groupEvents > groupEvents;
+        groupEvents = s.groupEvents;
+        // 渡りを挟む 1 回だけは組替えの時間が乗るので、間隔の検定から外す
+        if (last >= 0 && !regrouped && caughtUp < 0) gaps.push(time - previousTime);
+        previousTime = time;
+        last = s.step;
+      }
+      // 速度に見合った段へ届くと、電流がようやく進段電流の水準まで戻る。
+      if (caughtUp < 0 && s.armatureCurrent >= spec.stepCurrent * 0.9) caughtUp = time;
+    });
+
+    // 追いつくまでの進段の間隔は、カム軸の回転速度そのものになっている。起動時と
+    // 違って電流条件は最初から満たされている（逆起電力が大きく、全抵抗が入った
+    // 1 段目でも電流が進段電流を大きく下回る）ため、電流を待つ時間が乗らない。
+    expect(gaps.length).toBeGreaterThan(8);
+    for (const gap of gaps) {
+      expect(gap).toBeLessThan(spec.stepDwell + 3 * CONTROL_DT);
+    }
+
+    // 速度に見合った段まで駆け上がって初めて電流が進段電流に届き、加速が戻る。
+    // ここから先は起動時と同じで、電流条件のほうが律速に戻る。
+    expect(caughtUp).toBeGreaterThan(1);
+    expect(caughtUp).toBeLessThan(6);
+
+    // それまでは引張力がほとんど出ないので、2 秒経ってもまだ加速していない。
+    // 抵抗制御車で「一度ノッチを切ると再加速が遅い」と言われるのはこれである。
+    expect(mpsToKmh(speedAfter2s - startSpeed)).toBeLessThan(1);
+  });
+
   it('ノッチを戻すと段も戻る', () => {
     const r = rig();
     r.traction.setNotch(4);
@@ -341,5 +394,38 @@ describe('主回路の電気量', () => {
     expect(r.drive().gate).toBe(false);
     expect(r.traction.state.tractiveEffort).toBe(0);
     expect(r.traction.state.motorCurrent).toBe(0);
+  });
+});
+
+describe('音の元になる回転周波数', () => {
+  const motor = TEST_RESISTOR_TRACTION.motor;
+
+  it('どれも回転数 × 次数として出る', () => {
+    const r = rig();
+    r.traction.setNotch(4);
+    r.run(12);
+    const s = r.drive();
+    const rps = s.motorRpm / 60;
+    expect(rps).toBeGreaterThan(1);
+    expect(s.slotFrequency).toBeCloseTo(rps * motor.armatureSlots, 6);
+    expect(s.commutatorFrequency).toBeCloseTo(rps * motor.commutatorBars, 6);
+    expect(s.ventilationFrequency).toBeCloseTo(rps * motor.fanBlades, 6);
+    expect(s.gearMeshFrequency).toBeCloseTo(rps * motor.pinionTeeth, 6);
+  });
+
+  it('主電動機の音程は歯車のかみ合いの 3 倍以内に収まる', () => {
+    // 実車で聞こえる成分（歯車・スロット・通風）は 1 オクターブほどの幅に集まる。
+    // 音程を整流子片数（93 次 = 歯車の 6.2 倍）で決めていたころは、この関係が
+    // 崩れて実車よりはっきり高く聞こえていた。整流子はその上のかすれでしかない。
+    expect(motor.armatureSlots / motor.pinionTeeth).toBeLessThan(3);
+    expect(motor.fanBlades / motor.pinionTeeth).toBeLessThan(3);
+    expect(motor.commutatorBars / motor.pinionTeeth).toBeGreaterThan(3);
+  });
+
+  it('整流子片数は 1 スロットに入るコイル辺の数だけスロット数より多い', () => {
+    const sides = motor.commutatorBars / motor.armatureSlots;
+    expect(Number.isInteger(sides)).toBe(true);
+    expect(sides).toBeGreaterThanOrEqual(2);
+    expect(sides).toBeLessThanOrEqual(4);
   });
 });

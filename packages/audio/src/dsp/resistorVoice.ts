@@ -1,5 +1,5 @@
 import { Biquad, Smoothed } from './biquad.ts';
-import { CommutatorTone, type CommutatorParams } from './dcMotorVoice.ts';
+import { DcMotorTone, type DcMotorParams } from './dcMotorVoice.ts';
 import { Noise } from './noise.ts';
 
 const TWO_PI = Math.PI * 2;
@@ -10,8 +10,12 @@ export interface ResistorVoiceParams {
   readonly gate: boolean;
   /** 定格に対する電機子電流 */
   readonly current: number;
+  /** 電機子スロットの通過周波数 [Hz]（主電動機の音程を決める） */
+  readonly slotFrequency: number;
   /** ブラシが整流子片を渡る周波数 [Hz] */
   readonly commutatorFrequency: number;
+  /** 通風ファンの翼通過周波数 [Hz] */
+  readonly ventilationFrequency: number;
   /** 起動抵抗で熱にしている電力（定格に対する比 0..1）。全短絡した段では 0。 */
   readonly resistorPower: number;
   /** このフレームでカム軸が進段した回数 */
@@ -25,7 +29,9 @@ export interface ResistorVoiceParams {
 export const SILENT_RESISTOR: ResistorVoiceParams = {
   gate: false,
   current: 0,
+  slotFrequency: 0,
   commutatorFrequency: 0,
+  ventilationFrequency: 0,
   resistorPower: 0,
   steps: 0,
   groupChanges: 0,
@@ -71,8 +77,9 @@ const BLOWER_FREQUENCY = 28;
  *
  * 3 つの成分でできている:
  *
- *  1. **主電動機**（`CommutatorTone`）— キャリアが無いので音程は回転数だけで決まる。
+ *  1. **主電動機**（`DcMotorTone`）— キャリアが無いので音程は回転数だけで決まる。
  *     力行中は限流値で電流がほぼ一定なので、音量が変わらず音程だけが上がっていく。
+ *     ノッチを切っても通風音だけは残る。
  *  2. **起動抵抗のうなり** — 抵抗器は電流の 2 乗に比例して発熱し、その送風機と
  *     格子の振動が低い唸りになる。**段が進んで抵抗が短絡されるほど小さくなり、
  *     全短絡した段と弱め界磁域では完全に消える。** 音量を別に決めているのではなく、
@@ -83,7 +90,7 @@ const BLOWER_FREQUENCY = 28;
  * 2 と 3 が VVVF 車には無い音であり、抵抗制御車らしさはほぼこの 2 つが作っている。
  */
 export class ResistorVoice {
-  private readonly commutator: CommutatorTone;
+  private readonly motor: DcMotorTone;
   private readonly noise = new Noise(0x71c3);
   private readonly gridBand: Biquad;
   private readonly gridLow: Biquad;
@@ -104,7 +111,7 @@ export class ResistorVoice {
   private params: ResistorVoiceParams = SILENT_RESISTOR;
 
   constructor(readonly sampleRate: number) {
-    this.commutator = new CommutatorTone(sampleRate);
+    this.motor = new DcMotorTone(sampleRate);
     this.gridBand = new Biquad().bandPass(sampleRate, 260, 0.55);
     this.gridLow = new Biquad().lowPass(sampleRate, 900);
     this.gridSmooth = new Smoothed(sampleRate, 0.05);
@@ -118,12 +125,16 @@ export class ResistorVoice {
 
   setParams(params: ResistorVoiceParams): void {
     this.params = params;
-    const commutator: CommutatorParams = {
-      frequency: params.commutatorFrequency,
+    // 主接触器が切れていても電動機は回り続けるので、周波数はそのまま渡す。
+    // 切れて消えるのは電流が作る電磁音だけで、通風音は残る。
+    const motor: DcMotorParams = {
+      slotFrequency: params.slotFrequency,
+      commutatorFrequency: params.commutatorFrequency,
+      ventilationFrequency: params.ventilationFrequency,
       current: params.gate ? params.current : 0,
       level: params.level,
     };
-    this.commutator.setParams(commutator);
+    this.motor.setParams(motor);
     this.scheduleImpacts(params);
   }
 
@@ -154,7 +165,7 @@ export class ResistorVoice {
 
   /** バッファへ**加算**する */
   render(out: Float32Array): void {
-    this.commutator.render(out);
+    this.motor.render(out);
     this.renderGrid(out);
     this.renderImpacts(out);
   }
@@ -228,7 +239,7 @@ export class ResistorVoice {
   }
 
   reset(): void {
-    this.commutator.reset();
+    this.motor.reset();
     this.active.fill(0);
     this.started.fill(0);
     this.envelopes.fill(0);
