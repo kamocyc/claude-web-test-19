@@ -2,7 +2,7 @@ import { AirCompressor, type CompressorState } from '../brake/compressor.ts';
 import { ElectroPneumaticBrakeSystem } from '../brake/electroPneumatic.ts';
 import type { BrakeCommand } from '../brake/types.ts';
 import { Rng } from '../math/rng.ts';
-import { clamp } from '../math/scalar.ts';
+import { clamp, firstOrderLag } from '../math/scalar.ts';
 import {
   AutoDriver,
   type AutoDriveParameters,
@@ -29,6 +29,7 @@ import type { Bridge } from '../track/bridge.ts';
 import type { Turnout } from '../track/turnout.ts';
 import type { BodyMotionState } from '../train/bodyMotion.ts';
 import { TrainDynamics, type DynamicsEnvironment } from '../train/dynamics.ts';
+import { RemoteTrain, type RemoteTrainCommand } from '../train/remoteTrain.ts';
 import { DoorSystem, type DoorState } from '../door/index.ts';
 import type { DriveState } from '../traction/driveState.ts';
 import { createTractionSystem } from '../traction/factory.ts';
@@ -44,6 +45,12 @@ const PHYSICS_MICROS = 1000;
 export const CONTROL_DT = 0.01;
 /** 1 回の step() で進める最大の物理ステップ数（処理落ち時の暴走防止） */
 const MAX_SUBSTEPS = 2000;
+
+/**
+ * ダイヤ列車の加速度を折れ線から均す時定数 [s]。
+ * ノッチを動かしてから加速度が変わりきるまでの時間にあたる。
+ */
+const SCHEDULE_ACCELERATION_TIME = 2.0;
 
 /** 駅での取り扱い状態 */
 export interface StationProgress {
@@ -86,6 +93,14 @@ export class Simulation {
   readonly compressor = new AirCompressor();
   readonly doors: DoorSystem;
   readonly signalling: SignallingSystem;
+  /**
+   * ダイヤ列車の装置（列車 id → 装置一式）。
+   *
+   * ダイヤが持っているのは位置だけだが、音はノッチ・ゲート・BC 圧から出る。
+   * `RemoteTrain` が自列車とまったく同じ装置を回してそれを埋めるので、
+   * 対向列車も先行列車も自列車と同じ音源で鳴らせる。
+   */
+  readonly remoteTrains = new Map<string, RemoteTrain>();
   /** 踏切（鳴動と遮断桿。線路上のすべての列車を見て動く） */
   readonly levelCrossings: LevelCrossingSystem;
   readonly safety: SafetySystem;
@@ -123,6 +138,9 @@ export class Simulation {
   /** 実際に装置へ渡っている指令（自動運転中は装置が組み立てたもの） */
   private activeInput: ControlInput = NEUTRAL_INPUT;
   private lastCylinderPressure = 0;
+  /** ダイヤ列車の前周期の速度と、均した加速度（列車 id で引く） */
+  private readonly remoteSpeeds = new Map<string, number>();
+  private readonly remoteAccelerations = new Map<string, number>();
   private readonly env: DynamicsEnvironment;
 
   readonly stations: StationProgress[];
@@ -221,6 +239,76 @@ export class Simulation {
     return out;
   }
 
+  /**
+   * ダイヤ列車の装置を進める。
+   *
+   * ダイヤの折れ線は位置しか書いていないので、加速度は速度を微分して得る。
+   * 折れ線の折れ点では速度が階段状に変わるため、そのまま微分するとありえない
+   * 大きさの尖りになる。実際の列車の速度は連続なので、折れ線は粗い書き方だと
+   * 見なして一次遅れで均す。この時定数が、ノッチを操作してから加速度が変わる
+   * までの時間にあたる。
+   */
+  private updateRemoteTrains(dt: Seconds): void {
+    const states = this.signalling.trainStates;
+    if (states.length === 0 && this.remoteTrains.size === 0) return;
+    const alive = new Set<string>();
+    for (const state of states) {
+      const id = state.train.id;
+      alive.add(id);
+      const previous = this.remoteSpeeds.get(id) ?? state.speed;
+      this.remoteSpeeds.set(id, state.speed);
+      const raw = dt > 0 ? (state.speed - previous) / dt : 0;
+      const acceleration = firstOrderLag(
+        this.remoteAccelerations.get(id) ?? 0,
+        raw,
+        SCHEDULE_ACCELERATION_TIME,
+        dt,
+      );
+      this.remoteAccelerations.set(id, acceleration);
+      const command: RemoteTrainCommand = {
+        leadPosition: state.leadPosition,
+        direction: state.direction,
+        speed: state.speed,
+        acceleration,
+        // ダイヤが駅の中で列車を止めていれば、客扱いのために扉が開く
+        doorsClosed: !this.stoppedInPlatform(state.occupancy, state.speed),
+      };
+      const existing = this.remoteTrains.get(id);
+      if (existing) {
+        existing.update(dt, command);
+      } else {
+        this.remoteTrains.set(
+          id,
+          new RemoteTrain(
+            this.scenario.consist,
+            this.scenario.route.alignment,
+            command,
+            this.scenario.loadFactor,
+          ),
+        );
+      }
+    }
+    // 走り終えた列車は装置ごと消える
+    for (const id of [...this.remoteTrains.keys()]) {
+      if (alive.has(id)) continue;
+      this.remoteTrains.delete(id);
+      this.remoteSpeeds.delete(id);
+      this.remoteAccelerations.delete(id);
+    }
+  }
+
+  /** 停止していて、かつホームに掛かっているか */
+  private stoppedInPlatform(occupancy: { front: Meters; rear: Meters }, speed: number): boolean {
+    if (speed > 0.05) return false;
+    for (const station of this.scenario.route.stations) {
+      if (station.isPass) continue;
+      if (occupancy.front >= station.platformStart && occupancy.rear <= station.platformEnd) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   get speed(): MetersPerSecond {
     return this.dynamics.speed;
   }
@@ -295,7 +383,11 @@ export class Simulation {
     // 1. 閉塞・信号現示の更新
     this.signalling.update(this.occupancy(), this.time);
 
-    // 1b. 踏切。線路上の列車を検知して鳴り、少し遅れて遮断桿が下りる。自列車だけ
+    // 1b. ダイヤ列車の装置。ダイヤは位置しか持たないので、そこから逆に
+    //     ノッチ・ゲート・BC 圧を求めて自列車と同じ装置を回す。
+    this.updateRemoteTrains(dt);
+
+    // 1c. 踏切。線路上の列車を検知して鳴り、少し遅れて遮断桿が下りる。自列車だけ
     //     でなくダイヤ列車も検知するので、対向列車が来れば自分が止まっていても鳴る。
     this.levelCrossings.update(dt, this.trainPresences());
 

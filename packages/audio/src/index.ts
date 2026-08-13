@@ -19,3 +19,4 @@ export * from './dsp/carBody.ts';
 export * from './dsp/crossingVoice.ts';
 export * from './dsp/passingVoice.ts';
 export * from './dsp/synth.ts';
+export * from './dsp/remoteTrain.ts';

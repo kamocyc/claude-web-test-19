@@ -22,6 +22,18 @@ import {
   type WindParams,
 } from './runningGear.ts';
 
+/**
+ * `TrainNoiseSynth` へ追加で混ぜられる音源。
+ *
+ * 隣の線路の列車（`RemoteTrainVoice`）がこれにあたる。あちらは中で
+ * `TrainNoiseSynth` をもう 1 つ持つので、型が循環しないようここで細く切ってある。
+ */
+export interface ExtraVoice {
+  /** バッファへ**加算**する */
+  render(out: Float32Array): void;
+  reset(): void;
+}
+
 /** 走行音全体を決める量。シミュレーションのスナップショットから素直に写せる。 */
 export interface TrainNoiseParams {
   /**
@@ -81,6 +93,15 @@ export class TrainNoiseSynth {
   readonly door: DoorVoice;
   readonly alarm: AlarmVoice;
   readonly horn: HornVoice;
+
+  /**
+   * ここへ混ぜる外部の音源（隣の線路を走る列車）。
+   *
+   * 相手の列車の音は**この合成器をもう 1 つ**回して作る（`RemoteTrainVoice`）。
+   * その入れ子を型の上で閉じるために、ここでは最小限の形だけを見ている。
+   * 飽和の前に混ぜるので、遠くの列車が近づいても全体の音量が破綻しない。
+   */
+  extra: ExtraVoice | null = null;
 
   /** 音源ごとの 2 乗和（`readLevels` で実効値に直して読み出す） */
   private readonly squareSum = new Float64Array(VOICE_COUNT);
@@ -158,6 +179,8 @@ export class TrainNoiseSynth {
     this.mix(out, VOICE.bridge, (b) => this.bridge.render(b));
     this.mix(out, VOICE.crossing, (b) => this.crossing.render(b));
     this.mix(out, VOICE.passing, (b) => this.passing.render(b));
+    // 隣の線路の列車。すれ違いの圧力波と同じメータに入れる（どちらも「すれ違い」）。
+    if (this.extra) this.mix(out, VOICE.passing, (b) => this.extra!.render(b));
     this.mix(out, VOICE.door, (b) => this.door.render(b));
     this.mix(out, VOICE.alarm, (b) => this.alarm.render(b));
     this.mix(out, VOICE.horn, (b) => this.horn.render(b));
@@ -213,6 +236,7 @@ export class TrainNoiseSynth {
     this.door.reset();
     this.alarm.reset();
     this.horn.reset();
+    this.extra?.reset();
     this.squareSum.fill(0);
     this.measured = 0;
   }
