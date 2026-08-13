@@ -153,8 +153,8 @@ describe('分岐器のコンパイル', () => {
   const siding = main.turnouts.get('to-3')!;
 
   it('番数から寸法が決まる', () => {
-    // 交換設備の 2 基（対向・背向）と、側線への 1 基
-    expect(main.turnouts.length).toBe(3);
+    // 交換設備の 2 基（対向・背向）、側線への 1 基、保守基地への 1 基
+    expect(main.turnouts.length).toBe(4);
     expect(siding.number).toBe(12);
     expect(siding.radius).toBeCloseTo(350, 6);
     // リード長 = R α、全長はその 1.4 倍

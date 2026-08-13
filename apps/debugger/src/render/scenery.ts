@@ -46,6 +46,8 @@ export function buildScenery(
   const inTunnel = (s: number): boolean => route.tunnels.at(s).length > 0;
   const nearStation = (s: number): boolean =>
     route.stations.some((st) => s > st.platformStart - 60 && s < st.platformEnd + 60);
+  // 橋の下は谷か川なので、そこに樹木や建物は立っていない
+  const overWater = (s: number): boolean => route.bridges.overlapping(s - 45, s + 45).length > 0;
 
   // --- 配置候補を作る ---
   interface Placement {
@@ -59,7 +61,7 @@ export function buildScenery(
   const count = Math.floor(route.length / step);
   for (let i = 0; i < count; i++) {
     const s = i * step + rng.range(-step / 3, step / 3);
-    if (s < 0 || s > route.length || inTunnel(s)) continue;
+    if (s < 0 || s > route.length || inTunnel(s) || overWater(s)) continue;
     const f = frameAt(s);
 
     for (const side of [-1, 1] as const) {

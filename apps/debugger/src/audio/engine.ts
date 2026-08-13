@@ -1,13 +1,20 @@
 import {
   DEFAULT_NOISE_MIX,
+  SILENT_BRIDGE,
   SILENT_CHOPPER,
+  SILENT_CROSSING,
   SILENT_INVERTER,
+  SILENT_PASSING,
   SILENT_RESISTOR,
   VOICE_COUNT,
+  type BridgeVoiceParams,
   type ChopperVoiceParams,
+  type CrossingVoiceParams,
   type InverterVoiceParams,
   type JointImpact,
+  type JointImpactKind,
   type NoiseMix,
+  type PassingVoiceParams,
   type ResistorVoiceParams,
   type TrainNoiseParams,
   type TurnoutImpact,
@@ -15,8 +22,12 @@ import {
 import {
   axleOffsets,
   bogieSquealDrive,
+  bridgeAcoustics,
   jointCrossings,
   type BodyMotionState,
+  type Bridge,
+  type BridgeAcoustics,
+  type RailJointKind,
   type Simulation,
 } from '@railsim/core';
 import workletUrl from './trainNoise.worklet.ts?worker&url';
@@ -49,6 +60,18 @@ const DISTANCE_HALF = 25;
  */
 const RESISTOR_GRID_REFERENCE_POWER = 800_000;
 
+/**
+ * 路線データの継目の種類から、合成器の音色への対応。
+ *
+ * 音の側（`@railsim/audio`）は物理コアを知らないので、種類の名前を独立に持っている。
+ * ここが唯一の対応表で、踏切板の目地（`panel`）だけは継目ではなく踏切の側から来る。
+ */
+const JOINT_KIND: Readonly<Record<RailJointKind, JointImpactKind>> = {
+  standard: 'standard',
+  insulated: 'insulated',
+  expansion: 'expansion',
+};
+
 /** 0..1 に丸める */
 function clamp01(x: number): number {
   return x < 0 ? 0 : x > 1 ? 1 : x;
@@ -60,6 +83,24 @@ function clamp01(x: number): number {
  * ロール角速度にこの腕の長さを掛けたぶんが、上下速度に加わる。
  */
 const AIR_SPRING_HALF_SPACING = 1.0;
+
+/**
+ * 踏切の警報機の位置。
+ *
+ * 警報機は踏切道の両側、軌道中心から 3.5m ほど離れた道路側に建つ。2 台の線路方向の
+ * 間隔は道路の幅より一回り広い（道路の外側に立つため）。この 2 つの数字が、
+ * すれ違いざまに「片方が近づき、もう片方が遠ざかる」聞こえ方を決めている。
+ */
+const CROSSING_POST = { lateral: 3.5, margin: 3 } as const;
+
+/**
+ * 橋りょうの反響を残響へ送る比率。
+ *
+ * トンネルほど閉じてはいないが、桁と主構は硬い反射面である。下路トラス橋は
+ * 列車が主構のあいだを通るのでよく響き、上路桁では足元だけが返ってくる。
+ * どちらになるかは `bridgeAcoustics()` の反射の強さがそのまま決める。
+ */
+const BRIDGE_WET = 0.4;
 
 /** トンネル内の残響時間 [s]（覆工が硬く、断面が狭いので長め） */
 const TUNNEL_REVERB_TIME = 1.1;
@@ -114,6 +155,8 @@ export class TrainAudio {
   /** 扉の戸当たりのカウンタ（増分を撃力の回数として鳴らす） */
   private lastLatchEvents = 0;
   private lastOpenEvents = 0;
+  /** 橋りょうの音の諸元（桁の寸法から決まるので、橋ごとに 1 度求めれば足りる） */
+  private readonly bridgeCache = new Map<string, BridgeAcoustics>();
 
   get available(): boolean {
     return !this.failed;
@@ -230,17 +273,116 @@ export class TrainAudio {
   }
 
   /**
-   * トンネル内かどうかで残響の送り量を切り替える。
-   * 坑口では一瞬で変わるのではなく、列車が入りきるまでのあいだに移り変わる。
+   * 反響の送り量を切り替える。
+   *
+   * 硬い面に囲まれるほど響くので、トンネルと橋りょうを同じ経路で扱う。坑口や
+   * 橋台では一瞬で変わるのではなく、列車が入りきるまでのあいだに移り変わる。
    */
   private updateTunnel(sim: Simulation): void {
     const context = this.context;
     const send = this.tunnelSend;
     if (!context || !send) return;
+    const vehicles = sim.dynamics.vehicles;
+    const bridges = sim.scenario.route.bridges;
     let inside = 0;
-    for (const veh of sim.dynamics.vehicles) if (veh.inTunnel) inside++;
-    const ratio = sim.dynamics.vehicles.length > 0 ? inside / sim.dynamics.vehicles.length : 0;
-    send.gain.setTargetAtTime(ratio * TUNNEL_WET, context.currentTime, TUNNEL_FADE);
+    let onBridge = 0;
+    let reflection = 0;
+    for (const veh of vehicles) {
+      if (veh.inTunnel) inside++;
+      const bridge = bridges.at(veh.s);
+      if (!bridge) continue;
+      onBridge++;
+      reflection = Math.max(reflection, this.acousticsOf(bridge).reflection);
+    }
+    const count = vehicles.length > 0 ? vehicles.length : 1;
+    const wet = (inside / count) * TUNNEL_WET + (onBridge / count) * reflection * BRIDGE_WET;
+    send.gain.setTargetAtTime(wet, context.currentTime, TUNNEL_FADE);
+  }
+
+  /** 橋の音の諸元。桁の寸法から決まる値なので、橋ごとに 1 度求めて使い回す。 */
+  private acousticsOf(bridge: Bridge): BridgeAcoustics {
+    const cached = this.bridgeCache.get(bridge.id);
+    if (cached) return cached;
+    const acoustics = bridgeAcoustics(bridge);
+    this.bridgeCache.set(bridge.id, acoustics);
+    return acoustics;
+  }
+
+  /**
+   * 橋りょうの音。
+   *
+   * 鳴らしているのは桁であって列車ではないので、音量は**桁に乗っている編成の
+   * 割合**で決まる。先頭が橋台へ乗った瞬間に鳴り出し、最後部が抜けた瞬間に
+   * 止まる。編成より短い橋なら、渡りきるまで音は最大にならない。
+   */
+  private bridgeParams(sim: Simulation, running: boolean): BridgeVoiceParams {
+    if (!running) return SILENT_BRIDGE;
+    const bridges = sim.scenario.route.bridges;
+    const vehicles = sim.dynamics.vehicles;
+    let covered = 0;
+    let bridge: Bridge | undefined;
+    for (const veh of vehicles) {
+      const found = bridges.at(veh.s);
+      if (!found) continue;
+      covered++;
+      bridge ??= found;
+    }
+    if (!bridge || vehicles.length === 0) return SILENT_BRIDGE;
+    const acoustics = this.acousticsOf(bridge);
+    return {
+      speed: Math.abs(sim.speed),
+      coverage: covered / vehicles.length,
+      radiation: acoustics.radiation,
+      reflection: acoustics.reflection,
+      modes: acoustics.modes,
+      weights: acoustics.weights,
+      damping: acoustics.damping,
+      sleeperSpacing: bridge.sleeperSpacing,
+      level: this.mixValues.bridge,
+    };
+  }
+
+  /**
+   * 踏切の警報音。
+   *
+   * 音源は線路脇に**静止している**ので、渡す量は位置関係と自分の速度だけである。
+   * 距離減衰もドップラーも音源側で決めることは何も無い。鳴っているかどうかは
+   * 踏切保安装置（`LevelCrossingSystem`）が決めていて、対向列車が来れば自分が
+   * 止まっていても鳴る。
+   */
+  private crossingParams(
+    snap: ReturnType<Simulation['snapshot']>,
+    running: boolean,
+  ): CrossingVoiceParams {
+    const crossing = snap.crossing;
+    if (!crossing || !running) return SILENT_CROSSING;
+    return {
+      ringing: crossing.state.ringing,
+      bell: crossing.state.crossing.bell,
+      distance: crossing.distance,
+      lateral: CROSSING_POST.lateral,
+      postSpacing: crossing.state.crossing.roadWidth + CROSSING_POST.margin,
+      speed: snap.speed,
+      level: this.mixValues.crossing,
+    };
+  }
+
+  /** 対向列車とのすれ違い */
+  private passingParams(
+    snap: ReturnType<Simulation['snapshot']>,
+    running: boolean,
+  ): PassingVoiceParams {
+    const passing = snap.passing;
+    if (!passing || !running) return SILENT_PASSING;
+    return {
+      present: true,
+      headGap: passing.headGap,
+      tailGap: passing.tailGap,
+      closingSpeed: passing.closingSpeed,
+      otherSpeed: passing.otherSpeed,
+      separation: passing.lateralSeparation,
+      level: this.mixValues.passing,
+    };
   }
 
   /**
@@ -409,6 +551,11 @@ export class TrainAudio {
         speed,
         level: mix.curveSqueal,
       },
+      // 橋・踏切・対向列車は「線路と沿線の側にあるもの」なので、車両の状態では
+      // なく位置関係から決まる。3 つとも音源は自分の外にある。
+      bridge: this.bridgeParams(sim, running),
+      crossing: this.crossingParams(snap, running),
+      passing: this.passingParams(snap, running),
       // 保安装置の報知音と警笛は運転台の中で鳴るので、距離減衰も走行音による
       // マスクも受けない。運転士に届かなければ意味が無い装置だからである。
       alarm: {
@@ -493,7 +640,7 @@ export class TrainAudio {
   }
 
   /**
-   * この描画フレームのあいだに各軸が踏んだ継目と分岐器を集める。
+   * この描画フレームのあいだに各軸が踏んだ継目・分岐器・踏切板を集める。
    *
    * 軸ごと・要素ごとに、フレーム内のどの位置で踏んだかを小数で求め、
    * サンプル数に直して予約する。60fps に丸めると 16ms もばらつき、
@@ -502,6 +649,18 @@ export class TrainAudio {
    * 分岐器も同じ扱いで、1 つの分岐器につき軸ごとに 2 回（トングレール先端と
    * クロッシング）鳴る。2 つの間隔はリード長を速度で割った時間そのものなので、
    * 番数の大きい分岐器ほど離れて聞こえる。
+   *
+   * 継目には 3 通りある。
+   *
+   *  - **定尺の継目** — 距離程の周期なので、`jointCrossings()` が跨ぎを数える
+   *  - **個別の継目**（分岐器の前後の絶縁継目・橋の両端の伸縮継目）— そこに
+   *    置く理由がある継目なので、位置を 1 つずつ持つ。ロングレール区間でここだけ
+   *    音がするのはこのため
+   *  - **踏切板の目地** — 踏切道の入口と出口。舗装と踏切板の段差を踏む
+   *
+   * どれも同じ音源（`RailJointVoice`）へ送るが、種類ごとに構造が違うので鳴り方が
+   * 違う。ミキサのつまみを 1 本にしてあるのも「継目の音」として一括りにできるためで、
+   * 音色を分けているのは構造の違いだけである。
    */
   private collectImpacts(sim: Simulation, wall: number): void {
     this.joints.length = 0;
@@ -537,9 +696,29 @@ export class TrainAudio {
           this.joints.push({
             delay: Math.round(u * frameSamples),
             strength: jointStrength * distance,
+            kind: 'standard',
           });
         }
-        if (route.turnouts.length === 0 || dCentre === 0) continue;
+        if (dCentre === 0) continue;
+        // 個別に置かれた継目（絶縁継目・伸縮継目）
+        for (const entry of route.railJoints.crossing(prev, now)) {
+          const u = (entry.s - prev) / dCentre;
+          this.joints.push({
+            delay: Math.round(u * frameSamples),
+            strength: jointStrength * distance * entry.value.strength,
+            kind: JOINT_KIND[entry.value.kind],
+          });
+        }
+        // 踏切道の入口と出口（舗装と踏切板の目地）
+        for (const entry of route.levelCrossings.crossing(prev, now)) {
+          const u = (entry.s - prev) / dCentre;
+          this.joints.push({
+            delay: Math.round(u * frameSamples),
+            strength: jointStrength * distance * entry.value.strength,
+            kind: 'panel',
+          });
+        }
+        if (route.turnouts.length === 0) continue;
         for (const entry of route.turnouts.crossing(prev, now)) {
           const u = (entry.s - prev) / dCentre;
           this.turnouts.push({

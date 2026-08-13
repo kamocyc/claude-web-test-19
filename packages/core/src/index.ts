@@ -11,4 +11,5 @@ export * from './route/index.ts';
 export * from './signalling/index.ts';
 export * from './safety/index.ts';
 export * from './operation/index.ts';
+export * from './crossing/index.ts';
 export * from './sim/index.ts';

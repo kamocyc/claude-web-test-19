@@ -19,6 +19,13 @@ import type { SafetyContext, SafetyOutput, SafetySystem } from '../safety/types.
 import { noOutput } from '../safety/types.ts';
 import { VigilanceSystem } from '../safety/vigilance.ts';
 import { SignallingSystem } from '../signalling/system.ts';
+import { nearestPassingEncounter, type PassingEncounter } from '../signalling/passing.ts';
+import {
+  LevelCrossingSystem,
+  type DirectedOccupancy,
+  type LevelCrossingState,
+} from '../crossing/system.ts';
+import type { Bridge } from '../track/bridge.ts';
 import type { Turnout } from '../track/turnout.ts';
 import type { BodyMotionState } from '../train/bodyMotion.ts';
 import { TrainDynamics, type DynamicsEnvironment } from '../train/dynamics.ts';
@@ -79,6 +86,8 @@ export class Simulation {
   readonly compressor = new AirCompressor();
   readonly doors: DoorSystem;
   readonly signalling: SignallingSystem;
+  /** 踏切（鳴動と遮断桿。線路上のすべての列車を見て動く） */
+  readonly levelCrossings: LevelCrossingSystem;
   readonly safety: SafetySystem;
   readonly metrics = new MetricsRecorder();
   readonly rng: Rng;
@@ -134,6 +143,7 @@ export class Simulation {
       initialSpeed: scenario.startSpeed,
       irregularity: scenario.route.irregularity,
       turnouts: scenario.route.turnouts,
+      levelCrossings: scenario.route.levelCrossings,
       ...(scenario.rigidConsist === undefined ? {} : { rigidConsist: scenario.rigidConsist }),
     });
     this.traction = createTractionSystem(scenario.consist);
@@ -142,6 +152,7 @@ export class Simulation {
       controlPeriod: CONTROL_DT,
     });
     this.signalling = new SignallingSystem(scenario.route, scenario.scheduledTrains);
+    this.levelCrossings = new LevelCrossingSystem(scenario.route.levelCrossings);
     this.safety = options.safetyFactory
       ? options.safetyFactory(scenario)
       : buildSafetySystems(scenario);
@@ -192,6 +203,22 @@ export class Simulation {
   /** 列車の在線範囲 */
   occupancy(): { front: Meters; rear: Meters } {
     return { front: this.dynamics.frontPosition, rear: this.dynamics.rearPosition };
+  }
+
+  /**
+   * 線路上にいる列車の在線範囲と進行の向き（自列車 + ダイヤ列車）。
+   *
+   * 踏切はどの列車かを区別せず、線路上に列車がいることだけを検知して鳴る装置なので、
+   * 自列車もダイヤ列車も同じ形で渡す。
+   */
+  private trainPresences(): DirectedOccupancy[] {
+    // 自列車の向きは、逆転機の位置ではなく実際に動いている向きで見る
+    const direction: 1 | -1 = this.dynamics.speed < -0.05 ? -1 : 1;
+    const out: DirectedOccupancy[] = [{ ...this.occupancy(), direction }];
+    for (const state of this.signalling.trainStates) {
+      out.push({ ...state.occupancy, direction: state.direction });
+    }
+    return out;
   }
 
   get speed(): MetersPerSecond {
@@ -267,6 +294,10 @@ export class Simulation {
 
     // 1. 閉塞・信号現示の更新
     this.signalling.update(this.occupancy(), this.time);
+
+    // 1b. 踏切。線路上の列車を検知して鳴り、少し遅れて遮断桿が下りる。自列車だけ
+    //     でなくダイヤ列車も検知するので、対向列車が来れば自分が止まっていても鳴る。
+    this.levelCrossings.update(dt, this.trainPresences());
 
     // 2. 地上子の通過処理（区間交差で判定するため取りこぼしがない）
     const ctx = this.safetyContext(front, this.lastControlFront);
@@ -531,6 +562,7 @@ export class Simulation {
     const alignment = this.scenario.route.alignment;
     const nextStation = this.nextStation;
     const turnout = this.scenario.route.turnouts.next(dyn.frontPosition);
+    const ringing = this.levelCrossings.nearestRinging(dyn.frontPosition);
     return {
       time: this.time,
       elapsed: this.elapsed,
@@ -570,6 +602,16 @@ export class Simulation {
       nextStationName: nextStation?.station.name ?? null,
       distanceToStop: nextStation ? nextStation.station.stopPosition - dyn.frontPosition : null,
       nextTurnout: turnout ? { turnout, distance: turnout.position - dyn.frontPosition } : null,
+      bridge: this.scenario.route.bridges.at(dyn.frontPosition) ?? null,
+      crossing: ringing
+        ? { state: ringing, distance: ringing.crossing.position - dyn.frontPosition }
+        : null,
+      passing: nearestPassingEncounter(
+        dyn.frontPosition,
+        dyn.speed,
+        this.signalling.trainStates,
+        this.scenario.route.adjacentTrack,
+      ),
       autoDrive: this.autoDrive ? this.autoDriver.state : null,
     };
   }
@@ -622,6 +664,15 @@ export interface SimSnapshot {
    * 開通方向と分岐側の制限速度が入っているので、手前で速度を落とす判断に使える。
    */
   nextTurnout: { turnout: Turnout; distance: Meters } | null;
+  /** いま桁の上にいる橋りょう（明かり区間なら null） */
+  bridge: Bridge | null;
+  /**
+   * いちばん近い鳴動中の踏切と、そこまでの距離 [m]（負 = 通過済み）。
+   * 警報音は踏切のスピーカから鳴っているので、これが音源の位置になる。
+   */
+  crossing: { state: LevelCrossingState; distance: Meters } | null;
+  /** 隣の線路の対向列車とのすれ違い（誰も来ていなければ null） */
+  passing: PassingEncounter | null;
   /** 自動運転装置の状態（手動運転なら null） */
   autoDrive: AutoDriveState | null;
 }

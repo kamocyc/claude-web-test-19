@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  SILENT_BRIDGE,
   SILENT_CHOPPER,
+  SILENT_CROSSING,
   SILENT_CURVE_SQUEAL,
   SILENT_DOOR,
+  SILENT_PASSING,
   SILENT_RESISTOR,
   TrainNoiseSynth,
   VOICE,
@@ -32,6 +35,9 @@ const silence = (): TrainNoiseParams => ({
   auxiliary: { compressor: 0, level: 0 },
   airSpring: { strokeRate: 0, level: 0 },
   curveSqueal: SILENT_CURVE_SQUEAL,
+  bridge: SILENT_BRIDGE,
+  crossing: SILENT_CROSSING,
+  passing: SILENT_PASSING,
   door: SILENT_DOOR,
   alarm: { bell: false, chime: false, patternApproach: false, level: 0 },
   horn: { sounding: false, level: 0 },
