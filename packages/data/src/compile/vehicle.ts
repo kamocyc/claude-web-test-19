@@ -86,7 +86,9 @@ function compileDcMotor(spec: ParsedMotor): DcSeriesMotorSpec {
     fluxConstant,
     ratedCurrent: spec.ratedCurrent,
     armatureInductance: mhToH(spec.armatureInductance),
+    armatureSlots: spec.armatureSlots,
     commutatorBars: spec.commutatorBars,
+    fanBlades: spec.fanBlades,
     pinionTeeth: spec.pinionTeeth,
   };
 }

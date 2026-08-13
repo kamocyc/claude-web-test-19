@@ -41,7 +41,10 @@ const motorSpec = {
     ratedCurrent: 350,
     ratedRpm: 1630,
     armatureInductance: 22,
+    // 抵抗制御車と同じ電動機（31 スロット × コイル辺 3 = 整流子 93 片）。
+    armatureSlots: 31,
     commutatorBars: 93,
+    fanBlades: 34,
     pinionTeeth: 15,
   },
   motorsInSeries: 4,

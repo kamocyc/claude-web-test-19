@@ -301,7 +301,11 @@ export class TrainAudio {
           resistor: {
             gate: (drive.gate || drive.dynamicBraking) && running,
             current: Math.abs(drive.torqueRatio),
+            // 主接触器が切れていても電動機は回っている。周波数は `gate` で止めず、
+            // 惰行でも通風音が残るようにする（消えるのは電流が作る電磁音だけ）。
+            slotFrequency: running ? drive.slotFrequency : 0,
             commutatorFrequency: running ? drive.commutatorFrequency : 0,
+            ventilationFrequency: running ? drive.ventilationFrequency : 0,
             // 起動抵抗で捨てている電力を、編成の公称出力で正規化して渡す。
             // 段が進んで抵抗が短絡されるほど 0 に近づき、うなりが消える。
             resistorPower: clamp01(drive.resistorPower / RESISTOR_GRID_REFERENCE_POWER),
@@ -319,7 +323,9 @@ export class TrainAudio {
             current: Math.abs(drive.torqueRatio),
             duty: drive.duty,
             chopFrequency: drive.chopFrequency,
+            slotFrequency: running ? drive.slotFrequency : 0,
             commutatorFrequency: running ? drive.commutatorFrequency : 0,
+            ventilationFrequency: running ? drive.ventilationFrequency : 0,
             level: motorGain * mix.chopper,
           },
         };

@@ -343,3 +343,36 @@ describe('主回路の電気量', () => {
     expect(r.traction.state.motorCurrent).toBe(0);
   });
 });
+
+describe('音の元になる回転周波数', () => {
+  const motor = TEST_RESISTOR_TRACTION.motor;
+
+  it('どれも回転数 × 次数として出る', () => {
+    const r = rig();
+    r.traction.setNotch(4);
+    r.run(12);
+    const s = r.drive();
+    const rps = s.motorRpm / 60;
+    expect(rps).toBeGreaterThan(1);
+    expect(s.slotFrequency).toBeCloseTo(rps * motor.armatureSlots, 6);
+    expect(s.commutatorFrequency).toBeCloseTo(rps * motor.commutatorBars, 6);
+    expect(s.ventilationFrequency).toBeCloseTo(rps * motor.fanBlades, 6);
+    expect(s.gearMeshFrequency).toBeCloseTo(rps * motor.pinionTeeth, 6);
+  });
+
+  it('主電動機の音程は歯車のかみ合いの 3 倍以内に収まる', () => {
+    // 実車で聞こえる成分（歯車・スロット・通風）は 1 オクターブほどの幅に集まる。
+    // 音程を整流子片数（93 次 = 歯車の 6.2 倍）で決めていたころは、この関係が
+    // 崩れて実車よりはっきり高く聞こえていた。整流子はその上のかすれでしかない。
+    expect(motor.armatureSlots / motor.pinionTeeth).toBeLessThan(3);
+    expect(motor.fanBlades / motor.pinionTeeth).toBeLessThan(3);
+    expect(motor.commutatorBars / motor.pinionTeeth).toBeGreaterThan(3);
+  });
+
+  it('整流子片数は 1 スロットに入るコイル辺の数だけスロット数より多い', () => {
+    const sides = motor.commutatorBars / motor.armatureSlots;
+    expect(Number.isInteger(sides)).toBe(true);
+    expect(sides).toBeGreaterThanOrEqual(2);
+    expect(sides).toBeLessThanOrEqual(4);
+  });
+});

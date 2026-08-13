@@ -52,7 +52,9 @@ export const TEST_DC_MOTOR: DcSeriesMotorSpec = {
   fluxConstant: 3.0731,
   ratedCurrent: 350,
   armatureInductance: 0.022,
+  armatureSlots: 31,
   commutatorBars: 93,
+  fanBlades: 34,
   pinionTeeth: 15,
 };
 

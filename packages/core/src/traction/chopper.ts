@@ -140,8 +140,11 @@ export class ChopperTractionSystem implements TractionSystem {
     const omega = Math.abs(meanDrivenAxleOmega(dyn)) * spec.gearRatio;
     st.motorAngularVelocity = omega;
     st.motorRpm = radPerSecToRpm(omega);
-    st.gearMeshFrequency = (omega / (2 * Math.PI)) * spec.motor.pinionTeeth;
-    st.commutatorFrequency = (omega / (2 * Math.PI)) * spec.motor.commutatorBars;
+    const rps = omega / (2 * Math.PI);
+    st.gearMeshFrequency = rps * spec.motor.pinionTeeth;
+    st.commutatorFrequency = rps * spec.motor.commutatorBars;
+    st.slotFrequency = rps * spec.motor.armatureSlots;
+    st.ventilationFrequency = rps * spec.motor.fanBlades;
 
     const notch = this.cutOffActive ? 0 : this.state.notch;
     const braking = this.electricBrakeRequest > 0 && notch === 0;

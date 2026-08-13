@@ -25,8 +25,24 @@ export interface DriveRotationState {
   torqueRatio: number;
 }
 
+/**
+ * 直流直巻電動機の音に効く回転周波数（抵抗制御・電機子チョッパが共有する）。
+ *
+ * 3 つとも回転数に次数を掛けただけの量だが、**次数が桁で違う**ので音の性格が
+ * まるで違う。この 3 つを別々に持たせているのは、どれか 1 つで電動機を代表させると
+ * 音程を取り違えるからである（`packages/audio/src/dsp/dcMotorVoice.ts`）。
+ */
+export interface DcMotorRotationState extends DriveRotationState {
+  /** ブラシが整流子片を渡る周波数 [Hz] = 回転数/60 × 整流子片数 */
+  commutatorFrequency: Hertz;
+  /** 電機子スロットの通過周波数 [Hz] = 回転数/60 × スロット数（電磁音の主役） */
+  slotFrequency: Hertz;
+  /** 通風ファンの翼通過周波数 [Hz] = 回転数/60 × 翼数 */
+  ventilationFrequency: Hertz;
+}
+
 /** 抵抗制御（カム軸進段・直並列切替・弱め界磁）の状態 */
-export interface ResistorDriveState extends DriveRotationState {
+export interface ResistorDriveState extends DcMotorRotationState {
   kind: 'resistor';
   /** 主接触器が入っているか（惰行・切では false） */
   gate: boolean;
@@ -48,8 +64,6 @@ export interface ResistorDriveState extends DriveRotationState {
   armatureVoltage: Volts;
   /** 逆起電力 [V]（1 台あたり） */
   backEmf: Volts;
-  /** ブラシが整流子片を渡る周波数 [Hz] */
-  commutatorFrequency: Hertz;
   /** 起動抵抗で熱にしている電力 [W]（編成合計）。全短絡した段では 0 になる。 */
   resistorPower: Watts;
   /** 直並列の組替え（渡り）の最中か。このあいだトルクは出ない。 */
@@ -67,7 +81,7 @@ export interface ResistorDriveState extends DriveRotationState {
 }
 
 /** 電機子チョッパ制御の状態 */
-export interface ChopperDriveState extends DriveRotationState {
+export interface ChopperDriveState extends DcMotorRotationState {
   kind: 'chopper';
   /** チョッパが動作しているか（惰行では false） */
   gate: boolean;
@@ -85,8 +99,6 @@ export interface ChopperDriveState extends DriveRotationState {
   armatureVoltage: Volts;
   /** 逆起電力 [V]（1 台あたり） */
   backEmf: Volts;
-  /** ブラシが整流子片を渡る周波数 [Hz] */
-  commutatorFrequency: Hertz;
   /** 回生ブレーキとして動作中か */
   regenerating: boolean;
 }
@@ -127,6 +139,8 @@ export function createResistorDriveState(): ResistorDriveState {
     armatureVoltage: 0,
     backEmf: 0,
     commutatorFrequency: 0,
+    slotFrequency: 0,
+    ventilationFrequency: 0,
     resistorPower: 0,
     transitioning: false,
     dynamicBraking: false,
@@ -151,6 +165,8 @@ export function createChopperDriveState(chopFrequency: Hertz = 0): ChopperDriveS
     armatureVoltage: 0,
     backEmf: 0,
     commutatorFrequency: 0,
+    slotFrequency: 0,
+    ventilationFrequency: 0,
     regenerating: false,
   };
 }

@@ -115,8 +115,12 @@ export const dcMotorSchema = z.object({
   ratedRpm: z.number().positive(),
   /** 電機子回路のインダクタンス [mH]（1 台あたり） */
   armatureInductance: z.number().positive().default(20),
-  /** 整流子片数 */
+  /** 電機子スロット数（電磁音の主役。スロット通過周波数 = 回転数/60 × スロット数） */
+  armatureSlots: z.number().int().positive().default(31),
+  /** 整流子片数（スロット数 × 1 スロットのコイル辺数） */
   commutatorBars: z.number().int().positive().default(93),
+  /** 通風ファンの翼数（通風音の翼通過周波数を決める） */
+  fanBlades: z.number().int().positive().default(34),
   /** 小歯車の歯数 */
   pinionTeeth: z.number().int().positive().default(15),
 });

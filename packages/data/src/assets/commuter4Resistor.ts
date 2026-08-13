@@ -44,7 +44,12 @@ const motorSpec = {
     ratedCurrent: 350,
     ratedRpm: 1630,
     armatureInductance: 22,
+    // 電機子は 31 スロット、1 スロットにコイル辺が 3 個なので整流子片は 31 × 3 = 93。
+    // 音の主役は片数（93 次）ではなくスロット（31 次）のほうで、40km/h で 714Hz。
+    // 歯車のかみ合い（15 次・345Hz）のほぼ 1 オクターブ上に来る。
+    armatureSlots: 31,
     commutatorBars: 93,
+    fanBlades: 34,
     pinionTeeth: 15,
   },
   currentLimit: 480,
