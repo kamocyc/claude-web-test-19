@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { NEUTRAL_INPUT, Simulation, type ControlInput, type Scenario } from '@railsim/core';
+import {
+  NEUTRAL_INPUT,
+  Simulation,
+  gearMeshFrequencyAt,
+  type ControlInput,
+  type Scenario,
+} from '@railsim/core';
 import {
   compileRoute,
   createDefaultLibrary,
@@ -162,6 +168,21 @@ describe('対向列車とのすれ違い', () => {
     // 自分は止まっているので、相対速度は相手の速度そのもの（約 100km/h）
     expect(maxClosing).toBeGreaterThan(25);
     expect(maxClosing).toBeLessThan(31);
+  });
+
+  it('相手の歯車の音は速度だけから求まる（走行状態を知らなくてよい）', () => {
+    // ダイヤ列車は位置しか持たないが、歯車の音は力行に依らず鳴るので速度で決まる。
+    // 実際に走らせた列車の値と一致することを確かめる。
+    const sim = new Simulation(scenarioOf('test-line-local'));
+    sim.input = input({ powerNotch: 4 });
+    run(sim, 20);
+    const motored = sim.scenario.consist.vehicles.find((v) => v.traction)!;
+    const estimated = gearMeshFrequencyAt(motored.traction!, motored.wheelDiameter, sim.speed);
+    const actual = sim.snapshot().drive.gearMeshFrequency;
+    // ぴったり同じにはならない。実際の列車は**輪軸の回転**から求めており、力行中は
+    // クリープすべりのぶんだけ車輪のほうが速く回っているためで、その差は 1% 以内。
+    expect(estimated).toBeGreaterThan(actual * 0.99);
+    expect(estimated).toBeLessThan(actual * 1.001);
   });
 
   it('対向列車は自分の信号現示に関係しない（別の線路なので）', () => {

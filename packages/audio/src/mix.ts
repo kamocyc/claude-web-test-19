@@ -23,7 +23,12 @@ export interface NoiseMix {
   readonly rolling: number;
   /** 風切り音（高速でだけ効く） */
   readonly wind: number;
-  /** レール継目 */
+  /**
+   * レール継目。
+   *
+   * 継目は線路の側にあるものなので、**自列車の軸が踏んだ音も、隣の線路の対向列車が
+   * 踏んだ音も同じ音源**から出る（違うのは距離と車体の遮音による減り方だけ）。
+   */
   readonly railJoint: number;
   /** 分岐器（トングレール・クロッシング） */
   readonly turnout: number;
@@ -31,7 +36,10 @@ export interface NoiseMix {
   readonly bridge: number;
   /** 踏切の警報音 */
   readonly crossing: number;
-  /** 対向列車とのすれ違い */
+  /**
+   * 対向列車とのすれ違い（相手の転動音・歯車・圧力波）。
+   * 相手が踏んだ継目の音は「レール継目」のほうに入る。
+   */
   readonly passing: number;
   /** ブレーキ（摩擦・鳴き・空気） */
   readonly brake: number;

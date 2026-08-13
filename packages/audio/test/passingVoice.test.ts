@@ -18,6 +18,7 @@ const params = (over: Partial<PassingVoiceParams> = {}): PassingVoiceParams => (
   tailGap: LENGTH,
   closingSpeed: 28,
   otherSpeed: 28,
+  gearMeshFrequency: 0,
   separation: 3.4,
   level: 1,
   ...over,
@@ -127,6 +128,43 @@ describe('対向列車とのすれ違い', () => {
   it('最後尾が抜けるときにも圧力波が来る（対で「バン…バン」になる）', () => {
     const middle = rms(render(params({ headGap: -40, tailGap: 40, otherSpeed: 0 })));
     expect(pulseRms({ otherSpeed: 0 }, true)).toBeGreaterThan(middle * 2);
+  });
+
+  it('相手の歯車のかみ合い音が乗る', () => {
+    const at = (x: Float32Array, f: number): number =>
+      bandPower(x, SAMPLE_RATE, f * 0.98, f * 1.02);
+    const mesh = 520;
+    const withGear = render(params({ headGap: -40, tailGap: 40, gearMeshFrequency: mesh }), 1);
+    const without = render(params({ headGap: -40, tailGap: 40, gearMeshFrequency: 0 }), 1);
+    // 転動音は広帯域だが、歯車はかみ合い周波数に線が立つ
+    expect(at(withGear, mesh)).toBeGreaterThan(at(without, mesh) * 20);
+    // 2 倍の高調波も出る（歯面のかみ合いは正弦ではない）
+    expect(at(withGear, mesh * 2)).toBeGreaterThan(at(without, mesh * 2) * 5);
+  });
+
+  it('歯車の音程もドップラーで動く（近づくと高く、離れると低い）', () => {
+    const mesh = 520;
+    const peak = (x: Float32Array): number => {
+      let best = mesh;
+      let bestPower = -Infinity;
+      for (let f = mesh * 0.85; f <= mesh * 1.15; f += 1) {
+        const power = bandPower(x, SAMPLE_RATE, f - 1, f + 1, 2);
+        if (power > bestPower) {
+          bestPower = power;
+          best = f;
+        }
+      }
+      return best;
+    };
+    const approaching = peak(
+      render(params({ headGap: 120, tailGap: 200, gearMeshFrequency: mesh }), 1),
+    );
+    const receding = peak(
+      render(params({ headGap: -200, tailGap: -120, gearMeshFrequency: mesh }), 1),
+    );
+    // 相対速度 28m/s なら前後で 1.08 倍と 0.92 倍
+    expect(approaching).toBeGreaterThan(mesh * 1.05);
+    expect(receding).toBeLessThan(mesh * 0.95);
   });
 
   it('音量を 0 にすれば鳴らない', () => {

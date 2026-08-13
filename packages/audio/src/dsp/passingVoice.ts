@@ -1,4 +1,5 @@
 import { Biquad, Smoothed } from './biquad.ts';
+import { CarBodyInsulation } from './carBody.ts';
 import { Noise, PinkFilter } from './noise.ts';
 
 const TWO_PI = Math.PI * 2;
@@ -15,6 +16,16 @@ export interface PassingVoiceParams {
   readonly closingSpeed: number;
   /** 相手の速度 [m/s] */
   readonly otherSpeed: number;
+  /**
+   * 相手の歯車のかみ合い周波数 [Hz]。
+   *
+   * 歯車の音は**力行しているかどうかに依らず**鳴る（惰行でも回転部の慣性トルクが
+   * 歯面に掛かる）ので、相手の走行状態を知らなくても速度だけから決まる。逆に
+   * インバータの磁気音はゲートが開いているあいだしか出ないため、等速で通過する
+   * 列車（＝惰行）では鳴らない。すれ違いざまに「ヒューン」と下がって聞こえるのは
+   * ふつうこの歯車の音のほうである。
+   */
+  readonly gearMeshFrequency: number;
   /** 線路中心間隔 [m] */
   readonly separation: number;
   /** 音量 0..1 */
@@ -27,6 +38,7 @@ export const SILENT_PASSING: PassingVoiceParams = {
   tailGap: 1e6,
   closingSpeed: 0,
   otherSpeed: 0,
+  gearMeshFrequency: 0,
   separation: 3.4,
   level: 0,
 };
@@ -40,8 +52,14 @@ const REFERENCE_SPEED = 30;
 /** この距離で相手の走行音が基準の大きさになる [m] */
 const REFERENCE_DISTANCE = 6;
 
-/** 基準距離・基準速度での相手の走行音の大きさ */
-const ROLLING_LEVEL = 0.6;
+/**
+ * 基準距離・基準速度での相手の走行音の大きさ（**車外での**大きさ）。
+ * 運転台で聞こえるのは、これに車体の遮音（`CarBodyInsulation`）を掛けたあとになる。
+ */
+const ROLLING_LEVEL = 7.0;
+
+/** 同じく、相手の歯車のかみ合い音の大きさ */
+const GEAR_LEVEL = 1.8;
 
 /**
  * 基準の相対速度 [m/s]（110km/h ＋ 0 に相当）。
@@ -77,9 +95,11 @@ const PULSE_RATTLE = 380;
  *     車体を叩く。車体表面の圧力変化は動圧に比例するので、**相対速度の 2 乗**で
  *     効く。停まっているところを 100km/h で抜かれても、40km/h どうしですれ違っても
  *     相対速度は同じ、というのがこの音の勘どころである。
- *  2. **相手の走行音** — 相手の転動音が 3.4m 先から直接届く。並んでいるあいだ
- *     （相手の編成長 / 相対速度）だけ続くので、80m の 4 両編成を相対 30m/s で
- *     やり過ごすなら 2.7 秒。
+ *  2. **相手の走行音** — 相手の転動音と歯車のかみ合い音が 3.4m 先から届く。
+ *     並んでいるあいだ（相手の編成長 / 相対速度）だけ続くので、80m の 4 両編成を
+ *     相対 30m/s でやり過ごすなら 2.7 秒。**継目を踏む音は別で、相手の軸が実際に
+ *     継目を踏んだ位置と時刻から鳴らす**（`RailJointVoice` へ送る）。
+ *     いずれも車外の音なので、車体を透過するぶんだけ削られてこもる。
  *  3. **最後尾が抜ける瞬間の圧力波** — 今度は逆向き（引かれる側）の圧が来る。
  *     1 と対になって「バン…ゴォォ…バン」になる。
  *
@@ -93,8 +113,22 @@ export class PassingVoice {
   private readonly rollingBand = new Biquad();
   private readonly rattleBand = new Biquad();
   private readonly rollingLevel: Smoothed;
+  private readonly gearLevel: Smoothed;
+  private readonly gearFrequency: Smoothed;
+  /**
+   * 車体の遮音。
+   *
+   * 相手の走行音は**車外の空気を伝わってくる**ので、窓と車体を透過するぶんだけ
+   * 削られる。一方、圧力波は空気の音として窓を透過するのではなく**車体そのものを
+   * 押す**ので、この経路を通さない。すれ違いで「音は意外にこもっているのに、
+   * ドンという衝撃だけは体に来る」のはこの違いによる。
+   */
+  private readonly body: CarBodyInsulation;
 
   private targetRolling = 0;
+  private targetGear = 0;
+  private targetGearFrequency = 0;
+  private thetaGear = 0;
   /** 転動音の周波数の倍率（ドップラー）。帯域の中心をこれで動かす。 */
   private dopplerFactor = 1;
 
@@ -113,7 +147,10 @@ export class PassingVoice {
 
   constructor(private readonly sampleRate: number) {
     this.dt = 1 / sampleRate;
+    this.body = new CarBodyInsulation(sampleRate);
     this.rollingLevel = new Smoothed(sampleRate, 0.03);
+    this.gearLevel = new Smoothed(sampleRate, 0.03);
+    this.gearFrequency = new Smoothed(sampleRate, 0.01);
     this.rattleBand.bandPass(sampleRate, PULSE_RATTLE, 1.1);
     // 車体が圧力の階段に応答して鳴る時間と、建具ががたつく時間
     this.pulseDecay = Math.exp(-1 / (sampleRate * 0.16));
@@ -124,6 +161,7 @@ export class PassingVoice {
   setParams(p: PassingVoiceParams): void {
     if (!p.present) {
       this.targetRolling = 0;
+      this.targetGear = 0;
       this.tracking = false;
       return;
     }
@@ -144,6 +182,10 @@ export class PassingVoice {
     const rolling =
       Math.pow(Math.abs(p.otherSpeed) / REFERENCE_SPEED, 1.5) / (1 + distance / REFERENCE_DISTANCE);
     this.targetRolling = p.level * ROLLING_LEVEL * rolling;
+    // 歯車のかみ合い音。音源は 1 点（相手の M 車の床下）なので同じ距離減衰を受け、
+    // 音程はドップラーでそのまま上下する。
+    this.targetGear = p.level * GEAR_LEVEL * rolling;
+    this.targetGearFrequency = p.gearMeshFrequency * this.dopplerFactor;
     // 速度が上がると粗さの短い波長が効いてくる（転動音と同じ理屈）。それに
     // ドップラーの倍率を掛けたところが、実際に耳へ届く帯域になる。
     const centre = (380 + 14 * Math.abs(p.otherSpeed)) * this.dopplerFactor;
@@ -178,11 +220,21 @@ export class PassingVoice {
     for (let i = 0; i < out.length; i++) {
       let sound = 0;
 
+      // --- 車外の空気を伝わってくる音（車体で削られる） ---
+      let outside = 0;
       const rolling = this.rollingLevel.process(this.targetRolling);
       if (rolling > 1e-6) {
-        sound += this.rollingBand.process(this.pink.process(this.noise.next())) * rolling;
+        outside += this.rollingBand.process(this.pink.process(this.noise.next())) * rolling;
       }
+      const gear = this.gearLevel.process(this.targetGear);
+      if (gear > 1e-6) {
+        const mesh = this.gearFrequency.process(this.targetGearFrequency);
+        this.thetaGear = wrap(this.thetaGear + TWO_PI * mesh * this.dt);
+        outside += (Math.sin(this.thetaGear) + 0.4 * Math.sin(2 * this.thetaGear)) * gear;
+      }
+      sound += this.body.process(outside);
 
+      // --- 車体を直接押す圧力（窓を透過してくる音ではない） ---
       if (this.pulseEnvelope > 1e-5) {
         this.pulsePhase = wrap(this.pulsePhase + TWO_PI * PULSE_BODY * this.dt);
         sound += Math.sin(this.pulsePhase) * this.pulseEnvelope * this.pulseSign;
@@ -199,9 +251,12 @@ export class PassingVoice {
 
   reset(): void {
     this.pink.reset();
+    this.body.reset();
     this.rollingBand.reset();
     this.rattleBand.reset();
     this.rollingLevel.set(0);
+    this.gearLevel.set(0);
+    this.thetaGear = 0;
     this.pulseEnvelope = 0;
     this.rattleEnvelope = 0;
     this.tracking = false;

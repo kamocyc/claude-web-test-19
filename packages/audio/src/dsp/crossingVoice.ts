@@ -1,3 +1,4 @@
+import { CarBodyInsulation } from './carBody.ts';
 import { Noise } from './noise.ts';
 import { OnePoleLowPass, Smoothed } from './biquad.ts';
 
@@ -71,8 +72,15 @@ const GONG_RATE = 1.15;
 /** この距離で音量が基準になる [m] */
 const REFERENCE_DISTANCE = 8;
 
-/** 基準距離での音量 */
-const BELL_LEVEL = 0.6;
+/**
+ * 基準距離での音量（**車外での**大きさ）。
+ *
+ * 警報機は道路の利用者へ向けて鳴らす装置なので、屋外ではかなり大きい
+ * （1m で 90dB 級）。ここはその車外の音量で、運転台の中でどう聞こえるかは
+ * 車体の遮音（`CarBodyInsulation`）を通したあとの話になる。窓を閉めた運転室では
+ * 走行音に埋もれ気味になり、それが実際の聞こえ方である。
+ */
+const BELL_LEVEL = 2.6;
 
 /** 同時に扱う警報機の数（踏切道の両側に 1 台ずつ） */
 const POSTS = 2;
@@ -102,6 +110,8 @@ const MAX_PARTIALS = 4;
  */
 export class CrossingVoice {
   private readonly noise = new Noise(0x1f4b);
+  /** 車体の遮音。音源は車外にあるので、窓と車体を透過してから耳に届く。 */
+  private readonly body: CarBodyInsulation;
   private readonly airAbsorption: OnePoleLowPass[] = [];
   private readonly gains: Smoothed[] = [];
 
@@ -125,6 +135,7 @@ export class CrossingVoice {
 
   constructor(private readonly sampleRate: number) {
     this.dt = 1 / sampleRate;
+    this.body = new CarBodyInsulation(sampleRate);
     for (let p = 0; p < POSTS; p++) {
       // 遠い音源ほど高域が失われる。空気の吸収は距離と周波数の両方で効くので、
       // 遮断周波数を距離で動かす 1 次低域通過で表す。
@@ -209,11 +220,13 @@ export class CrossingVoice {
         // 近づくにつれて音が「開く」のはこれで、音量だけを上げても同じにはならない。
         sound += this.airAbsorption[post]!.process(unit) * gain;
       }
-      out[i] = out[i]! + sound;
+      // 車外で鳴っている音なので、車体を透過したぶんだけが運転台へ入る
+      out[i] = out[i]! + this.body.process(sound);
     }
   }
 
   reset(): void {
+    this.body.reset();
     this.envelopes.fill(0);
     this.strikeEnvelopes.fill(0);
     this.phases.fill(0);

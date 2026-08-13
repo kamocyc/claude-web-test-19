@@ -1,4 +1,5 @@
 import {
+  CAR_BODY_LOSS,
   DEFAULT_NOISE_MIX,
   SILENT_BRIDGE,
   SILENT_CHOPPER,
@@ -23,6 +24,7 @@ import {
   axleOffsets,
   bogieSquealDrive,
   bridgeAcoustics,
+  gearMeshFrequencyAt,
   jointCrossings,
   type BodyMotionState,
   type Bridge,
@@ -71,6 +73,14 @@ const JOINT_KIND: Readonly<Record<RailJointKind, JointImpactKind>> = {
   insulated: 'insulated',
   expansion: 'expansion',
 };
+
+/**
+ * 隣の線路の音が半分になる距離 [m]。
+ *
+ * 自分の足元の音（`DISTANCE_HALF` = 25m）より短いのは、床下から構造を伝わって
+ * 入ってくる自分の走行音と違い、相手の音は空気を伝わってくるからである。
+ */
+const OTHER_TRAIN_DISTANCE_HALF = 12;
 
 /** 0..1 に丸める */
 function clamp01(x: number): number {
@@ -157,6 +167,8 @@ export class TrainAudio {
   private lastOpenEvents = 0;
   /** 橋りょうの音の諸元（桁の寸法から決まるので、橋ごとに 1 度求めれば足りる） */
   private readonly bridgeCache = new Map<string, BridgeAcoustics>();
+  /** ダイヤ列車の前フレームでの先頭端（相手の軸が踏んだ継目を数えるのに使う） */
+  private readonly previousTrainPositions = new Map<string, number>();
 
   get available(): boolean {
     return !this.failed;
@@ -367,19 +379,31 @@ export class TrainAudio {
     };
   }
 
-  /** 対向列車とのすれ違い */
+  /**
+   * 対向列車とのすれ違い。
+   *
+   * 相手の歯車のかみ合い周波数は、相手の速度と**こちらと同じ諸元**（同じ路線を走る
+   * 同じ形式の列車と見なす）から求める。歯車の音は力行に依らず鳴るので速度だけで
+   * 決まるが、インバータの磁気音はゲートが開いていないと出ない。等速で通過していく
+   * ダイヤ列車は惰行にあたるので、実車でもインバータ音は聞こえない。
+   */
   private passingParams(
+    sim: Simulation,
     snap: ReturnType<Simulation['snapshot']>,
     running: boolean,
   ): PassingVoiceParams {
     const passing = snap.passing;
     if (!passing || !running) return SILENT_PASSING;
+    const motored = sim.scenario.consist.vehicles.find((v) => v.traction);
     return {
       present: true,
       headGap: passing.headGap,
       tailGap: passing.tailGap,
       closingSpeed: passing.closingSpeed,
       otherSpeed: passing.otherSpeed,
+      gearMeshFrequency: motored?.traction
+        ? gearMeshFrequencyAt(motored.traction, motored.wheelDiameter, passing.otherSpeed)
+        : 0,
       separation: passing.lateralSeparation,
       level: this.mixValues.passing,
     };
@@ -555,7 +579,7 @@ export class TrainAudio {
       // なく位置関係から決まる。3 つとも音源は自分の外にある。
       bridge: this.bridgeParams(sim, running),
       crossing: this.crossingParams(snap, running),
-      passing: this.passingParams(snap, running),
+      passing: this.passingParams(sim, snap, running),
       // 保安装置の報知音と警笛は運転台の中で鳴るので、距離減衰も走行音による
       // マスクも受けない。運転士に届かなければ意味が無い装置だからである。
       alarm: {
@@ -671,13 +695,21 @@ export class TrainAudio {
     const route = sim.scenario.route;
     const speed = Math.abs(sim.speed);
     const vehicles = sim.dynamics.vehicles;
+    const frameSamples = wall * context.sampleRate;
+
+    // 隣の線路の列車は自分が止まっていても走っている。自分の足元の話とは別に数える。
+    this.collectOtherTrainImpacts(sim, frameSamples);
+
     if (speed < 0.3 || this.previousPositions.length !== vehicles.length) {
       this.syncPositions(sim);
       return;
     }
-    const jointStrength = Math.min(1.2, Math.pow(speed / JOINT_REFERENCE_SPEED, 1.5));
-    const turnoutStrength = Math.min(1.4, Math.pow(speed / TURNOUT_REFERENCE_SPEED, 1.5));
-    const frameSamples = wall * context.sampleRate;
+    // 衝撃は音源側に音量の入り口が無い（撃力そのものを渡すため）ので、
+    // ミキサのつまみはここで強さに掛ける。
+    const jointStrength =
+      Math.min(1.2, Math.pow(speed / JOINT_REFERENCE_SPEED, 1.5)) * this.mixValues.railJoint;
+    const turnoutStrength =
+      Math.min(1.4, Math.pow(speed / TURNOUT_REFERENCE_SPEED, 1.5)) * this.mixValues.turnout;
 
     const crossings: number[] = [];
     for (let i = 0; i < vehicles.length; i++) {
@@ -731,6 +763,70 @@ export class TrainAudio {
     }
   }
 
+  /**
+   * 隣の線路を走る対向列車が踏んだ継目を集める。
+   *
+   * 継目は**線路の側にあるもの**なので、誰の軸が踏んでも同じ継目が鳴る。自列車と
+   * 同じように、相手の軸が跨いだ継目を数えて同じ音源（`RailJointVoice`）へ送る。
+   * 違うのは届き方だけで、
+   *
+   *  - 音源が離れている（最短でも線路中心間隔ぶん）ので距離で減衰し、
+   *  - 車外の音なので車体の遮音（`CAR_BODY_LOSS`）を受ける
+   *
+   * この 2 つのぶんだけ小さくなる。すれ違いざまに相手の「ガタン ゴトン」が
+   * こもって聞こえるのはそのためで、相手が定尺レール区間にいれば鳴り、
+   * ロングレール区間にいれば鳴らない — こちらの足元と同じ理屈である。
+   */
+  private collectOtherTrainImpacts(sim: Simulation, frameSamples: number): void {
+    const route = sim.scenario.route;
+    const spec = sim.scenario.consist.vehicles[0];
+    if (!spec) return;
+    const cab = sim.dynamics.frontPosition;
+    const crossings: number[] = [];
+
+    for (const state of sim.signalling.trainStates) {
+      if ((state.train.track ?? 'own') !== 'adjacent') continue;
+      const previous = this.previousTrainPositions.get(state.train.id);
+      this.previousTrainPositions.set(state.train.id, state.leadPosition);
+      if (previous === undefined) continue;
+      const delta = state.leadPosition - previous;
+      if (delta === 0 || Math.abs(delta) > 200) continue;
+
+      const strength =
+        Math.min(1.2, Math.pow(state.speed / JOINT_REFERENCE_SPEED, 1.5)) *
+        this.mixValues.railJoint;
+      const cars = Math.max(1, Math.round(state.train.length / spec.length));
+      const offsets = axleOffsets(spec, this.offsetScratch);
+      const separation = Math.abs(route.adjacentTrack.offsetAt(state.leadPosition)) || 3.4;
+
+      for (let car = 0; car < cars; car++) {
+        // 先頭端は進行方向の先。編成はそこから後ろへ伸びる。
+        const centre = state.leadPosition - state.direction * (car + 0.5) * spec.length;
+        for (const offset of offsets) {
+          const now = centre + state.direction * offset;
+          const prev = now - delta;
+          // 運転台から相手の軸までの距離。並んだ瞬間は線路中心間隔そのものになる。
+          const distance = Math.hypot(now - cab, separation);
+          const gain = (CAR_BODY_LOSS * strength) / (1 + distance / OTHER_TRAIN_DISTANCE_HALF);
+          if (gain < 1e-3) continue;
+
+          jointCrossings(prev, now, route.railJointSpacing.at(now), crossings);
+          for (const u of crossings) {
+            this.joints.push({ delay: Math.round(u * frameSamples), strength: gain });
+          }
+          for (const entry of route.railJoints.crossing(prev, now)) {
+            const u = (entry.s - prev) / delta;
+            this.joints.push({
+              delay: Math.round(u * frameSamples),
+              strength: gain * entry.value.strength,
+              kind: JOINT_KIND[entry.value.kind],
+            });
+          }
+        }
+      }
+    }
+  }
+
   private clearImpacts(sim: Simulation): void {
     this.syncPositions(sim);
     this.joints.length = 0;
@@ -752,6 +848,7 @@ export class TrainAudio {
     this.lastGroupEvents = 0;
     this.lastLatchEvents = 0;
     this.lastOpenEvents = 0;
+    this.previousTrainPositions.clear();
     this.worklet?.port.postMessage({ reset: true });
   }
 
