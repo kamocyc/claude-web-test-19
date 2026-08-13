@@ -150,8 +150,12 @@ export const resistorSchema = z.object({
   currentLimit: z.number().positive(),
   /** 進段電流 [A]。電流がここまで落ちたら次の段へ進む。限流値より小さいこと。 */
   stepCurrent: z.number().positive(),
-  /** 1 段あたりの最短滞留時間 [s]（カム軸の回転速度） */
-  stepDwell: z.number().positive().default(0.35),
+  /**
+   * 1 段あたりの最短滞留時間 [s]（カム軸を回すパイロットモータの機械的な速度）。
+   * ふつう進段の間隔を決めているのは電流条件のほうで、これが律速になるのは
+   * 限流継電器が最初から復帰している場面 — 高速からの再力行 — だけである。
+   */
+  stepDwell: z.number().positive().default(0.25),
   /** 直並列の組替え（渡り）に要する時間 [s]。このあいだトルクが抜ける。 */
   transitionTime: z.number().nonnegative().default(0.5),
   /**

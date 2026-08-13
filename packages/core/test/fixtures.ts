@@ -95,7 +95,7 @@ export const TEST_RESISTOR_TRACTION: ResistorTractionSpec = {
   ],
   currentLimit: 480,
   stepCurrent: 380,
-  stepDwell: 0.4,
+  stepDwell: 0.25,
   transitionTime: 0.5,
   notchFinalStep: [6, 14, 15, 16],
   hasDynamicBrake: true,

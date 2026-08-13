@@ -191,6 +191,13 @@ export class ResistorTractionSystem implements TractionSystem {
         this.advanceTo(spec, target);
       } else if (this.step < target) {
         // 起動の 1 段目は電流条件を待たずに入る（主接触器が閉じる瞬間）。
+        //
+        // 2 つの条件のどちらが律速になるかは場面で入れ替わる。起動から加速していく
+        // あいだは電流条件（限流継電器）が律速で、電流が限流値から進段電流まで落ちる
+        // のに 1.5〜2 秒かかる。いっぽう高速からの再力行では逆起電力が大きく、全抵抗が
+        // 入った 1 段目でも電流が進段電流を大きく下回るので、電流条件は最初から真に
+        // なっている。そこではカム軸の回転速度（`stepDwell`）だけが律速になり、
+        // 段が連打されながら速度に見合った段まで駆け上がる。
         const limit = spec.stepCurrent * loadCompensationRatio(this.consist, ctx.loadFactor);
         const mayAdvance = this.step < 0 || (this.current < limit && this.dwell >= spec.stepDwell);
         if (mayAdvance) this.advanceTo(spec, this.step + 1);
