@@ -1,5 +1,11 @@
-import { NEUTRAL_INPUT, type ControlInput } from '@railsim/core';
+import type { ControlInput } from '@railsim/core';
 import { CAMERA_MODES, type CameraMode } from '../render/cameras.ts';
+import {
+  DriverState,
+  type DriverCommand,
+  type HandlePosition,
+  type HeldCommand,
+} from './driverState.ts';
 
 export interface DriverDeskOptions {
   /** 力行ノッチ段数。シナリオ（車両）を切り替えても追従できるよう関数で受ける。 */
@@ -17,8 +23,27 @@ export interface DriverDeskOptions {
   onUserGesture?(): void;
 }
 
-/** 「押している間だけ有効」なキー（離すまで状態が続く操作） */
-const HELD_KEYS = new Set(['enter', 'r', 'h', 's']);
+/** 一度押すと段が変わるキー */
+const NOTCH_KEYS: Readonly<Record<string, DriverCommand>> = {
+  z: 'powerUp',
+  arrowup: 'powerUp',
+  a: 'powerDown',
+  arrowdown: 'powerDown',
+  '.': 'brakeUp',
+  arrowright: 'brakeUp',
+  ',': 'brakeDown',
+  arrowleft: 'brakeDown',
+  ' ': 'emergency',
+  d: 'doorsToggle',
+};
+
+/** 押している間だけ有効なキー（離すまで状態が続く操作） */
+const HELD_KEYS: Readonly<Record<string, HeldCommand>> = {
+  enter: 'acknowledge',
+  r: 'safetyReset',
+  h: 'horn',
+  s: 'sanding',
+};
 
 /**
  * キー入力を無視すべき相手か。
@@ -39,21 +64,21 @@ function isTextEntry(target: EventTarget | null): boolean {
 /**
  * キーボードを運転台に見立てて `ControlInput` を組み立てる。
  *
- * 実車のマスコンと同じく、力行とブレーキは別々のハンドルとして扱い、
- * 「押している間だけ有効」なもの（砂撒き・警笛・確認扱い）と
- * 「一度押すと段が変わる」もの（ノッチ）を区別する。
+ * ハンドル位置そのものは `DriverState` が持つ。この class はキーと指令の
+ * 対応表に徹していて、タッチ運転台と同じ状態機械を叩く（同じ `DriverState` を
+ * 渡せば、キーで入れたノッチが画面のレバーにもそのまま出る）。
  */
 export class DriverDesk {
-  private powerNotch = 0;
-  private brakeNotch = 0;
-  private emergency = false;
-  private held = new Set<string>();
-  private doorsClosed = true;
+  private readonly state: DriverState;
 
-  constructor(private readonly options: DriverDeskOptions) {
+  constructor(
+    private readonly options: DriverDeskOptions,
+    state?: DriverState,
+  ) {
+    this.state = state ?? new DriverState(options);
     window.addEventListener('keydown', this.onKeyDown);
     window.addEventListener('keyup', this.onKeyUp);
-    window.addEventListener('blur', () => this.held.clear());
+    window.addEventListener('blur', this.onBlur);
   }
 
   private onKeyDown = (e: KeyboardEvent): void => {
@@ -62,70 +87,48 @@ export class DriverDesk {
     // AudioContext はユーザ操作の中でしか開始できない（自動再生規制）
     this.options.onUserGesture?.();
     const key = e.key.toLowerCase();
+    const heldCommand = HELD_KEYS[key];
+    if (heldCommand) this.state.hold(heldCommand);
     let handled = true;
     if (!e.repeat) {
-      switch (key) {
-        case 'z':
-        case 'arrowup':
-          this.brakeNotch = 0;
-          this.emergency = false;
-          this.powerNotch = Math.min(this.options.powerNotchCount(), this.powerNotch + 1);
-          break;
-        case 'a':
-        case 'arrowdown':
-          this.powerNotch = Math.max(0, this.powerNotch - 1);
-          break;
-        case '.':
-        case 'arrowright':
-          this.powerNotch = 0;
-          this.brakeNotch = Math.min(this.options.brakeNotchCount(), this.brakeNotch + 1);
-          break;
-        case ',':
-        case 'arrowleft':
-          this.emergency = false;
-          this.brakeNotch = Math.max(0, this.brakeNotch - 1);
-          break;
-        case ' ':
-          this.powerNotch = 0;
-          this.brakeNotch = this.options.brakeNotchCount();
-          this.emergency = true;
-          break;
-        case 'd':
-          this.doorsClosed = !this.doorsClosed;
-          break;
-        case '1':
-        case '2':
-        case '3':
-        case '4':
-        case '5': {
-          const mode = CAMERA_MODES[Number(key) - 1];
-          if (mode) this.options.onCameraChange?.(mode);
-          break;
+      const notchCommand = NOTCH_KEYS[key];
+      if (notchCommand) {
+        this.state.apply(notchCommand);
+      } else {
+        switch (key) {
+          case '1':
+          case '2':
+          case '3':
+          case '4':
+          case '5': {
+            const mode = CAMERA_MODES[Number(key) - 1];
+            if (mode) this.options.onCameraChange?.(mode);
+            break;
+          }
+          case 'o':
+            this.options.onAutoDriveToggle?.();
+            break;
+          case 'p':
+            this.options.onPauseToggle?.();
+            break;
+          case 'f':
+            this.options.onSingleStep?.();
+            break;
+          case 'm':
+            this.options.onMuteToggle?.();
+            break;
+          case '[':
+            this.options.onRateChange?.(-1);
+            break;
+          case ']':
+            this.options.onRateChange?.(1);
+            break;
+          default:
+            handled = heldCommand !== undefined;
+            break;
         }
-        case 'o':
-          this.options.onAutoDriveToggle?.();
-          break;
-        case 'p':
-          this.options.onPauseToggle?.();
-          break;
-        case 'f':
-          this.options.onSingleStep?.();
-          break;
-        case 'm':
-          this.options.onMuteToggle?.();
-          break;
-        case '[':
-          this.options.onRateChange?.(-1);
-          break;
-        case ']':
-          this.options.onRateChange?.(1);
-          break;
-        default:
-          handled = HELD_KEYS.has(key);
-          break;
       }
     }
-    this.held.add(key);
     // 運転操作に使うキーはブラウザ既定の動作を止める。
     // 特に Space / Enter は、直前にクリックしたボタンを再度押してしまうため
     // （非常ブレーキのつもりが「一時停止」を叩く、といった事故になる）。
@@ -133,15 +136,17 @@ export class DriverDesk {
   };
 
   private onKeyUp = (e: KeyboardEvent): void => {
-    this.held.delete(e.key.toLowerCase());
+    const heldCommand = HELD_KEYS[e.key.toLowerCase()];
+    if (heldCommand) this.state.release(heldCommand);
+  };
+
+  /** ウィンドウからフォーカスが外れたら、押しっぱなしのキーは離したものとして扱う */
+  private onBlur = (): void => {
+    this.state.releaseAll();
   };
 
   reset(): void {
-    this.powerNotch = 0;
-    this.brakeNotch = 0;
-    this.emergency = false;
-    this.doorsClosed = true;
-    this.held.clear();
+    this.state.reset();
   }
 
   /**
@@ -150,39 +155,22 @@ export class DriverDesk {
    * 装置が入れていたブレーキが解除に変わって列車が走り出してしまう。
    */
   takeOver(power: number, brake: number, doorsClosed: boolean): void {
-    this.powerNotch = Math.max(0, Math.round(power));
-    this.brakeNotch = Math.max(0, Math.round(brake));
-    this.emergency = false;
-    this.doorsClosed = doorsClosed;
+    this.state.takeOver(power, brake, doorsClosed);
   }
 
   /** 運転士が握っているハンドルの位置（シミュレーションの実効ノッチとは別） */
-  get handles(): { power: number; brake: number; emergency: boolean; doorsClosed: boolean } {
-    return {
-      power: this.powerNotch,
-      brake: this.brakeNotch,
-      emergency: this.emergency,
-      doorsClosed: this.doorsClosed,
-    };
+  get handles(): HandlePosition {
+    return this.state.handles;
   }
 
   /** 現在の操作入力 */
   get input(): ControlInput {
-    return {
-      ...NEUTRAL_INPUT,
-      powerNotch: this.powerNotch,
-      brakeNotch: this.brakeNotch,
-      emergency: this.emergency,
-      acknowledge: this.held.has('enter'),
-      safetyReset: this.held.has('r'),
-      horn: this.held.has('h'),
-      sanding: this.held.has('s'),
-      doorsClosed: this.doorsClosed,
-    };
+    return this.state.input;
   }
 
   dispose(): void {
     window.removeEventListener('keydown', this.onKeyDown);
     window.removeEventListener('keyup', this.onKeyUp);
+    window.removeEventListener('blur', this.onBlur);
   }
 }

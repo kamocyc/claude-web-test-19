@@ -14,13 +14,15 @@ import {
 } from '@railsim/data';
 import { TrainAudio } from './audio/engine.ts';
 import { ChartPanel } from './charts/panel.ts';
+import { DriverState } from './input/driverState.ts';
 import { DriverDesk } from './input/keyboard.ts';
 import { createCabInterior } from './render/cab.ts';
-import { CAMERA_LABEL, CameraRig, type CameraMode } from './render/cameras.ts';
+import { CAMERA_LABEL, CAMERA_MODES, CameraRig, type CameraMode } from './render/cameras.ts';
 import { TrackScene } from './render/scene.ts';
 import { GMeter } from './ui/gmeter.ts';
 import { Hud } from './ui/hud.ts';
 import { Mixer } from './ui/mixer.ts';
+import { TouchConsole } from './ui/touchConsole.ts';
 
 const RATES = [0.1, 0.25, 0.5, 1, 2, 4, 8];
 /** グラフのサンプリング周期 [s]（描画フレームごとだと細かすぎる） */
@@ -44,9 +46,18 @@ const loadInput = document.querySelector<HTMLInputElement>('#load')!;
 const gmeterElement = document.querySelector<HTMLElement>('#gmeter')!;
 const muteButton = document.querySelector<HTMLButtonElement>('#mute')!;
 const mixerElement = document.querySelector<HTMLElement>('#mixer')!;
+const appElement = document.querySelector<HTMLElement>('#app')!;
+const touchElement = document.querySelector<HTMLElement>('#touch')!;
+const touchButton = document.querySelector<HTMLButtonElement>('#touchui')!;
+const drawerButton = document.querySelector<HTMLButtonElement>('#drawer')!;
+
+/** 指で触る端末か（タッチ運転台を出すかと、描画の重さの判断に使う） */
+const coarsePointer = window.matchMedia('(pointer: coarse)');
 
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+// 携帯の画面は画素密度が高く、2 倍で描くと影付きの広い面が間に合わない。
+// 指で触る端末では上限を下げる（見た目の粗さより、詰まらないことを採る）。
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, coarsePointer.matches ? 1.5 : 2));
 // 影を落とす。柔らかい影（PCF）にしないと、レールやまくらぎの細い影が
 // 拡大されたドットの列に見えてしまう。
 renderer.shadowMap.enabled = true;
@@ -134,22 +145,62 @@ let replaying: Recording | null = null;
 /** 自動運転の入切（シナリオを切り替えても保つ） */
 let autoDrive = false;
 
-const desk = new DriverDesk({
+/** ノッチ段数は車両で変わる。切り替えに追従できるよう関数で渡す。 */
+const notchCounts = {
   powerNotchCount: () => scenario.consist.traction.notchCount,
   brakeNotchCount: () => scenario.consist.brake.notchCount,
-  onCameraChange: (mode: CameraMode) => applyCameraMode(mode),
+};
+
+/**
+ * 運転台のハンドル位置。キーボードと画面のタッチ運転台が同じものを握る。
+ * 別々に持たせると、キーで入れたノッチが画面のレバーに出ない（逆も同じ）。
+ */
+const deskState = new DriverState(notchCounts);
+
+const desk = new DriverDesk(
+  {
+    ...notchCounts,
+    onCameraChange: (mode: CameraMode) => applyCameraMode(mode),
+    onAutoDriveToggle: () => setAutoDrive(!autoDrive),
+    onPauseToggle: () => setPaused(!paused),
+    onSingleStep: () => {
+      singleStep = true;
+    },
+    onRateChange: (delta) => {
+      rateIndex = Math.max(0, Math.min(RATES.length - 1, rateIndex + delta));
+      updateRateLabel();
+    },
+    onMuteToggle: () => setMuted(!audio.isMuted),
+    onUserGesture: () => startAudio(),
+  },
+  deskState,
+);
+
+const touchConsole = new TouchConsole(touchElement, {
+  state: deskState,
+  ...notchCounts,
+  onUserGesture: () => startAudio(),
+  onCameraCycle: () => cycleCamera(),
   onAutoDriveToggle: () => setAutoDrive(!autoDrive),
   onPauseToggle: () => setPaused(!paused),
-  onSingleStep: () => {
-    singleStep = true;
-  },
-  onRateChange: (delta) => {
-    rateIndex = Math.max(0, Math.min(RATES.length - 1, rateIndex + delta));
-    updateRateLabel();
-  },
-  onMuteToggle: () => setMuted(!audio.isMuted),
-  onUserGesture: () => startAudio(),
+  onDrawerToggle: () => setDrawerOpen(!appElement.classList.contains('drawer-open')),
 });
+
+/** 視点を次のカメラへ送る（ボタン 1 つで 5 種類を回す） */
+function cycleCamera(): void {
+  const index = CAMERA_MODES.indexOf(cameraRig.mode);
+  const next = CAMERA_MODES[(index + 1) % CAMERA_MODES.length];
+  if (next) applyCameraMode(next);
+}
+
+/** 走行条件・記録・音量・グラフの引き出し（画面が狭いときだけ引き出しになる） */
+function setDrawerOpen(open: boolean): void {
+  appElement.classList.toggle('drawer-open', open);
+  drawerButton.setAttribute('aria-expanded', String(open));
+  drawerButton.textContent = open ? '×' : '≡';
+  // 閉じたらフォーカスを運転台へ返す（`releaseFocus` と同じ理由）
+  if (!open) canvas.focus();
+}
 
 function applyCameraMode(mode: CameraMode): void {
   cameraRig.setMode(mode);
@@ -231,6 +282,59 @@ function releaseFocus(element: HTMLElement): void {
   canvas.focus();
 }
 
+/** タッチ運転台を出すかの手動指定。`null` なら端末の判定に任せる。 */
+const TOUCH_CONSOLE_KEY = 'railsim.touchConsole';
+
+function readTouchOverride(): boolean | null {
+  try {
+    const saved = window.localStorage.getItem(TOUCH_CONSOLE_KEY);
+    return saved === '1' ? true : saved === '0' ? false : null;
+  } catch {
+    // プライベートブラウズなどで localStorage が使えないことがある
+    return null;
+  }
+}
+
+function writeTouchOverride(value: boolean): void {
+  try {
+    window.localStorage.setItem(TOUCH_CONSOLE_KEY, value ? '1' : '0');
+  } catch {
+    // 保存できなくても動作には影響しない
+  }
+}
+
+let touchOverride = readTouchOverride();
+
+/** 指で触る端末か、サイドパネルが入らない幅なら既定で出す */
+function prefersTouchConsole(): boolean {
+  return coarsePointer.matches || window.innerWidth <= 900;
+}
+
+function setTouchConsole(on: boolean): void {
+  touchConsole.setVisible(on);
+  touchButton.textContent = on ? 'タッチ運転台: 入' : 'タッチ運転台: 切';
+  // 運転台を出すときは引き出しを畳んで、画面を運転に明け渡す
+  if (on) setDrawerOpen(false);
+}
+
+// タブレットにキーボードを繋ぐと粗ポインタでなくなる端末があるので、
+// 手で指定されていないあいだは追従する。
+coarsePointer.addEventListener('change', () => {
+  if (touchOverride === null) setTouchConsole(prefersTouchConsole());
+});
+
+touchButton.addEventListener('click', () => {
+  releaseFocus(touchButton);
+  touchOverride = !touchConsole.isVisible;
+  writeTouchOverride(touchOverride);
+  setTouchConsole(touchOverride);
+});
+
+drawerButton.addEventListener('click', () => {
+  startAudio();
+  setDrawerOpen(!appElement.classList.contains('drawer-open'));
+});
+
 // AudioContext はユーザ操作の中でしか開始できない。画面のどこを触っても解錠する。
 canvas.addEventListener('pointerdown', () => startAudio());
 muteButton.addEventListener('click', () => {
@@ -289,9 +393,22 @@ loadInput.addEventListener('change', async () => {
 /** 編成長 [m] */
 const trainLength = (): number => scenario.consist.vehicles.reduce((a, v) => a + v.length, 0);
 
+/**
+ * 表示サイズに描画バッファを合わせる。
+ *
+ * 毎フレーム呼んでいるのは、`resize` イベントが来ない画面変化（携帯の回転、
+ * iOS のアドレスバーの伸縮、引き出しの開閉）に追従するため。ただし寸法が
+ * 変わっていないのに `setSize` を呼ぶと、伸縮のあいだ毎フレーム描画バッファを
+ * 作り直すことになるので、変化したときだけ通す。
+ */
+let lastWidth = 0;
+let lastHeight = 0;
 function resize(): void {
   const width = canvas.clientWidth;
   const height = canvas.clientHeight;
+  if (width === lastWidth && height === lastHeight) return;
+  lastWidth = width;
+  lastHeight = height;
   renderer.setSize(width, height, false);
   cameraRig.resize(width, height);
 }
@@ -338,6 +455,9 @@ let hidden = document.visibilityState === 'hidden';
 
 document.addEventListener('visibilitychange', () => {
   hidden = document.visibilityState === 'hidden';
+  // 背面へ回ると指もキーも離した通知が来ない。押しっぱなしのまま残ると、
+  // 見えないところで警笛が鳴り続けることになる。
+  if (hidden) deskState.releaseAll();
   // 戻ってきた瞬間に「背面にいたあいだ」ぶんの大きな dt を作らないよう、
   // 実時間の基準を引き直す。
   if (!hidden) previous = performance.now();
@@ -392,12 +512,14 @@ function frame(now: number): void {
   });
   renderer.render(scene.scene, cameraRig.camera);
   hud.update(sim, CAMERA_LABEL[cameraRig.mode], RATES[rateIndex]!, paused, handles);
+  touchConsole.update(handles, CAMERA_LABEL[cameraRig.mode], autoDrive, paused);
   gmeter.draw(sim);
   charts.draw();
 }
 
 scene.scene.add(cameraRig.camera);
 applyCameraMode('cab');
+setTouchConsole(touchOverride ?? prefersTouchConsole());
 setMuted(false);
 updateRateLabel();
 resize();

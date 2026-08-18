@@ -2,7 +2,8 @@
 <html lang="ja">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- viewport-fit=cover がないと env(safe-area-inset-*) が 0 になる（ノッチ端末で操作盤が隠れる） -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>鉄道運転シミュレータ — デバッグビューア</title>
     <link
       rel="icon"
@@ -16,14 +17,16 @@
         <canvas id="scene" tabindex="0"></canvas>
         <div id="hud"></div>
         <div id="gmeter"></div>
+        <div id="touch"></div>
         <div id="help">
           <strong>操作</strong>
-          <div>Z / A: 力行ノッチ +/−</div>
-          <div>. / ,: ブレーキノッチ +/−</div>
+          <div>Z / A（↑ / ↓）: 力行ノッチ +/−</div>
+          <div>. / ,（→ / ←）: ブレーキノッチ +/−</div>
           <div>Space: 非常ブレーキ</div>
           <div>Enter: 確認扱い / R: 保安装置復帰</div>
           <div>S: 砂撒き / H: 警笛 / D: 戸閉め</div>
           <div>1-5: カメラ（運転席/追跡/側面/俯瞰/自由）</div>
+          <div>O: 自動運転（ATO）の入切</div>
           <div>P: 一時停止 / F: 1 ステップ / [ ]: 速度倍率</div>
           <div>M: 消音</div>
           <div class="note">
@@ -31,6 +34,7 @@
           </div>
         </div>
       </div>
+      <button id="drawer" type="button" aria-label="走行条件パネルの開閉">≡</button>
       <aside id="side">
         <div id="conditions">
           <label class="pick">車両<select id="vehicle"></select></label>
@@ -49,6 +53,7 @@
             <input id="load" type="file" accept="application/json" />
           </label>
           <button id="mute" type="button">音を出す</button>
+          <button id="touchui" type="button">タッチ運転台</button>
         </div>
         <div id="mixer"></div>
         <div id="charts"></div>
