@@ -9,6 +9,7 @@ import {
   paToKpa,
   type Simulation,
 } from '@railsim/core';
+import type { HandlePosition } from '../input/driverState.ts';
 
 const ASPECT_TEXT: Record<string, string> = {
   R: '停止',
@@ -18,15 +19,11 @@ const ASPECT_TEXT: Record<string, string> = {
   G: '進行',
 };
 
-/** 運転士が握っているハンドルの位置 */
-export interface HandlePosition {
-  readonly power: number;
-  readonly brake: number;
-  readonly emergency: boolean;
-  readonly doorsClosed: boolean;
-}
+/** 運転士が握っているハンドルの位置（定義は運転台の状態機械が持つ） */
+export type { HandlePosition };
 
-const notchText = (power: number, brake: number, emergency: boolean): string =>
+/** ノッチ位置の表示（`非常` / `B7` / `P4` / `切`）。タッチ運転台でも同じ文言を使う。 */
+export const notchText = (power: number, brake: number, emergency: boolean): string =>
   emergency ? '非常' : brake > 0 ? `B${brake}` : power > 0 ? `P${power}` : '切';
 
 /** 自動運転装置の動作モードの表示名 */
@@ -58,7 +55,7 @@ export class Hud {
       `<div class="speed">${mpsToKmh(snap.speed).toFixed(1)} <span class="label">km/h</span></div>`,
     );
     rows.push(
-      row(
+      keyRow(
         '制限 / パターン',
         [
           `${mpsToKmh(Math.min(snap.speedLimit, sim.scenario.route.maxSpeed)).toFixed(0)} km/h`,
@@ -68,13 +65,13 @@ export class Hud {
         ].join(' / '),
       ),
     );
-    rows.push(row('時刻', `${formatClock(snap.time)}（経過 ${snap.elapsed.toFixed(1)}s）`));
+    rows.push(keyRow('時刻', `${formatClock(snap.time)}（経過 ${snap.elapsed.toFixed(1)}s）`));
     // 自動運転中は、装置が「何を見て」「どれだけの減速度を出そうとしているか」を出す。
     // ノッチが動かないのが正常なので、動かない理由がここで読み取れる必要がある。
     const auto = snap.autoDrive;
     if (auto) {
       rows.push(
-        row(
+        keyRow(
           '<span class="ok">自動運転</span>',
           `${AUTO_MODE_TEXT[auto.mode] ?? auto.mode} / 目標 ${mpsToKmh(auto.targetSpeed).toFixed(0)} km/h`,
         ),
@@ -103,7 +100,7 @@ export class Hud {
         ),
       );
     }
-    rows.push(row('距離程', `${snap.front.toFixed(1)} m`));
+    rows.push(keyRow('距離程', `${snap.front.toFixed(1)} m`));
     // ハンドル位置（運転士の操作）と実効ノッチ（保安装置・戸閉め条件を通したあと）は
     // 一致しないことがある。取り違えると「ノッチが効かない」と見えるので両方出す。
     const handleLabel = snap.autoDrive ? 'ノッチ（自動）' : 'ノッチ（手元）';
@@ -111,7 +108,7 @@ export class Hud {
     const effective = notchText(snap.powerNotch, snap.brakeNotch, snap.emergency);
     const cutOff = handles.power > 0 && snap.powerNotch === 0;
     rows.push(
-      row(
+      keyRow(
         handleLabel,
         handles.emergency
           ? '<span class="danger">非常</span>'
@@ -119,7 +116,7 @@ export class Hud {
       ),
     );
     rows.push(
-      row(
+      keyRow(
         'ノッチ（実効）',
         snap.emergency || snap.safety.emergencyBrake
           ? '<span class="danger">非常</span>'
@@ -152,7 +149,7 @@ export class Hud {
     // 扉。閉指令を出しても閉まり切るまでは力行できない（戸閉連動）ので、
     // 動いている途中も見えるようにしておく。
     rows.push(
-      row(
+      keyRow(
         '客用扉',
         snap.doors.interlocked
           ? doorLabel(snap.doors)
@@ -245,7 +242,7 @@ export class Hud {
       const aspect = snap.nextSignal.state.aspect;
       const cls = aspect === 'R' ? 'danger' : aspect === 'G' ? 'ok' : 'warn';
       rows.push(
-        row(
+        keyRow(
           '次の信号',
           `<span class="${cls}">${ASPECT_TEXT[aspect] ?? aspect}</span> ${snap.nextSignal.distance.toFixed(0)} m`,
         ),
@@ -253,7 +250,7 @@ export class Hud {
     }
     if (next) {
       rows.push(
-        row(
+        keyRow(
           '次の駅',
           `${next.station.name} ${snap.distanceToStop === null ? '' : `${snap.distanceToStop.toFixed(0)} m`}`,
         ),
@@ -274,13 +271,13 @@ export class Hud {
     if (snap.regenerationLost) flags.push('<span class="warn">回生失効</span>');
     if (snap.antiSkidActive) flags.push('<span class="warn">滑走防止</span>');
     if (snap.reAdhesionFactor < 0.999) flags.push('<span class="warn">空転</span>');
-    if (flags.length > 0) rows.push(row('状態', flags.join(' ')));
+    if (flags.length > 0) rows.push(keyRow('状態', flags.join(' ')));
 
     const stops = sim.metrics.stops;
     const last = stops[stops.length - 1];
     if (last) {
       rows.push(
-        row(
+        keyRow(
           '直近の停止',
           `${last.stationName} 誤差 ${last.stopError >= 0 ? '+' : ''}${last.stopError.toFixed(2)} m` +
             (last.delay === null
@@ -306,6 +303,16 @@ const deg = (rad: number): string => ((rad * 180) / Math.PI).toFixed(2);
 
 const row = (label: string, value: string): string =>
   `<div class="row"><span class="label">${label}</span><span>${value}</span></div>`;
+
+/**
+ * 運転そのものに要る行。
+ *
+ * 携帯の画面には 30 行あまりが入らないので、狭い画面ではこの印の付いた行だけを
+ * 残す（`style.css` の `#hud .row:not([data-key])`）。並び順ではなく明示の印に
+ * してあるのは、行を足し引きしたときに黙って別の行が消えないようにするため。
+ */
+const keyRow = (label: string, value: string): string =>
+  `<div class="row" data-key><span class="label">${label}</span><span>${value}</span></div>`;
 
 const radius = (curvature: number): string => {
   if (Math.abs(curvature) < 1e-6) return '直線';

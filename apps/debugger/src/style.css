@@ -18,6 +18,11 @@ body {
   height: 100%;
   background: var(--bg);
   color: var(--text);
+  /* 端まで引いたときのバウンスと「引っ張って更新」を止める */
+  overscroll-behavior: none;
+  -webkit-text-size-adjust: 100%;
+  /* 二度押しでの拡大と、それを待つための 300ms の遅延を切る */
+  touch-action: manipulation;
   font-family:
     'Hiragino Kaku Gothic ProN',
     'Noto Sans JP',
@@ -31,12 +36,30 @@ body {
 #app {
   display: grid;
   grid-template-columns: 1fr 420px;
+  /*
+   * 行は器の高さちょうどに固定する。既定の `auto` だと、行の高さが中身
+   * （`height: 100%` のキャンバス）で決まり、キャンバスの高さが行の高さで決まる、
+   * という循環になって器より高く育つ（画面下端がはみ出して操作盤が隠れる）。
+   */
+  grid-template-rows: minmax(0, 1fr);
   height: 100%;
+  /* 引き出しにしたサイドパネルの位置決めの基準 */
+  position: relative;
+}
+
+/* iOS はアドレスバーのぶん 100vh が画面より高くなる。dvh なら伸縮に追従する。 */
+@supports (height: 100dvh) {
+  #app {
+    height: 100dvh;
+  }
 }
 
 #viewport {
   position: relative;
   min-width: 0;
+  /* グリッドの既定（min-height: auto）だと中身より小さくなれない */
+  min-height: 0;
+  overflow: hidden;
 }
 
 #scene {
@@ -45,12 +68,14 @@ body {
   height: 100%;
   /* キー操作を受け取れるようフォーカス可能にしてあるが、枠は出さない */
   outline: none;
+  /* 自由視点の操作はタッチで受け取り、ページのスクロールは起こさせない */
+  touch-action: none;
 }
 
 #hud {
   position: absolute;
-  top: 12px;
-  left: 12px;
+  top: calc(12px + env(safe-area-inset-top));
+  left: calc(12px + env(safe-area-inset-left));
   padding: 10px 14px;
   background: rgba(16, 20, 26, 0.82);
   border: 1px solid var(--line);
@@ -320,8 +345,8 @@ body {
 
 #gmeter {
   position: absolute;
-  right: 12px;
-  bottom: 12px;
+  right: calc(12px + env(safe-area-inset-right));
+  bottom: calc(12px + env(safe-area-inset-bottom));
   pointer-events: none;
 }
 
@@ -329,4 +354,339 @@ body {
   display: block;
   width: 340px;
   height: 214px;
+}
+
+/* ============================================================
+   タッチ運転台
+   ============================================================ */
+
+/*
+ * 器はタッチを素通しさせる。ここを塞ぐと自由視点の OrbitControls が
+ * 効かなくなる（canvas の上に全面で載っているため）。
+ */
+#touch {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  pointer-events: none;
+}
+
+.touch-console {
+  display: none;
+}
+
+.touch-console.on {
+  display: grid;
+  height: 100%;
+  grid-template-columns: auto 1fr auto;
+  align-items: end;
+  gap: 10px;
+  padding: 0 calc(10px + env(safe-area-inset-right)) calc(10px + env(safe-area-inset-bottom))
+    calc(10px + env(safe-area-inset-left));
+}
+
+/* --- レバー（主幹制御器・ブレーキ設定器） --- */
+
+.touch-lever {
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 84px;
+  /* 高さは画面基準で決める。親のグリッド行は内容で決まるので、% にすると
+     参照先が定まらず高さが暴れる。dvh が使える環境ではアドレスバーの伸縮に追従する。 */
+  height: min(58vh, 420px);
+  height: min(58dvh, 420px);
+}
+
+.touch-lever-title {
+  text-align: center;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/*
+ * 目盛りの帯。指の当たりを外へ逃がさないよう、レバー自身がタッチを全部取る。
+ * `touch-action: none` を当てておかないと、縦ドラッグがページのスクロールに
+ * 取られてノッチが動かせない。
+ */
+.touch-lever-track {
+  position: relative;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background: rgba(13, 17, 23, 0.86);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
+}
+
+.touch-lever-detent {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  color: var(--muted);
+  border-bottom: 1px solid rgba(42, 52, 64, 0.6);
+}
+
+.touch-lever-detent:last-of-type {
+  border-bottom: none;
+}
+
+/* つまみ。段の高さぶんの帯で、現在位置を覆う。 */
+.touch-lever-thumb {
+  position: absolute;
+  left: 3px;
+  right: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 7px;
+  font-weight: 700;
+  font-size: 15px;
+  color: #0d1117;
+  background: var(--accent);
+  transition: top 0.06s linear;
+  pointer-events: none;
+}
+
+.touch-lever.brake .touch-lever-thumb {
+  background: #ffb454;
+}
+
+/* --- 中央のボタン列 --- */
+
+.touch-panel {
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  justify-self: center;
+}
+
+.touch-readout {
+  pointer-events: none;
+  min-width: 4.5em;
+  padding: 2px 10px;
+  text-align: center;
+  font-size: 22px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  background: rgba(16, 20, 26, 0.82);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.touch-readout.danger {
+  color: #ff6b6b;
+  border-color: #5a2b2b;
+}
+
+.touch-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.touch-button {
+  pointer-events: auto;
+  /* 押した指の動きをブラウザに解釈させない（拡大・スクロール・長押しメニュー） */
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
+  /* 走行中に押し外すと事故になるので、当たりは指 1 本ぶんを確保する */
+  min-width: 56px;
+  min-height: 46px;
+  padding: 4px 10px;
+  font: inherit;
+  font-weight: 600;
+  color: var(--text);
+  background: rgba(23, 29, 38, 0.88);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.touch-button.on {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: #24354a;
+}
+
+/* 非常ブレーキは他と間を空け、色と大きさで区別する（押し間違えると事故） */
+.touch-button.danger {
+  min-width: 96px;
+  min-height: 52px;
+  margin-bottom: 2px;
+  color: #ff6b6b;
+  border-color: #5a2b2b;
+  background: rgba(48, 22, 22, 0.9);
+}
+
+/* ============================================================
+   引き出しと画面幅への追従
+   ============================================================ */
+
+/* 引き出しのつまみ。広い画面ではサイドパネルが常に見えているので出さない。 */
+#drawer {
+  display: none;
+  position: absolute;
+  top: calc(10px + env(safe-area-inset-top));
+  right: calc(10px + env(safe-area-inset-right));
+  /* 引き出しより手前に置く。奥にすると、開いたパネルに隠れて閉じられなくなる。 */
+  z-index: 50;
+  width: 42px;
+  height: 42px;
+  font-size: 18px;
+  color: var(--text);
+  background: rgba(23, 29, 38, 0.88);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+/* タッチ運転台を出しているあいだは、指では使えないキー凡例を畳む */
+body.touch-mode #help {
+  display: none;
+}
+
+/* ノートやタブレットの横持ち: サイドパネルを詰める */
+@media (max-width: 1280px) {
+  #app {
+    grid-template-columns: 1fr 340px;
+  }
+
+  .mixer-row {
+    grid-template-columns: 8em 1fr 2em 4.5em;
+  }
+}
+
+/* 携帯・タブレット: 画面を運転台に明け渡し、サイドパネルは引き出しにする */
+@media (max-width: 900px) {
+  #app {
+    grid-template-columns: 1fr;
+  }
+
+  #drawer {
+    display: block;
+  }
+
+  #side {
+    position: absolute;
+    inset: 0 0 0 auto;
+    width: min(92vw, 380px);
+    z-index: 40;
+    transform: translateX(100%);
+    transition: transform 0.18s ease;
+    overflow-y: auto;
+    /* 引き出しの端までスクロールしても背後の画面へ流れないようにする */
+    overscroll-behavior: contain;
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  /* 開閉ボタンのぶんだけ上を空け、走行条件がボタンの下に潜らないようにする */
+  #app.drawer-open #side {
+    transform: none;
+    padding-top: calc(52px + env(safe-area-inset-top));
+  }
+
+  #help {
+    display: none;
+  }
+
+  /* 340x214 の固定寸法で画面を潰すので畳む */
+  #gmeter {
+    display: none;
+  }
+
+  #hud {
+    min-width: 0;
+    max-width: min(60vw, 280px);
+    font-size: 11px;
+    line-height: 1.4;
+  }
+
+  #hud .speed {
+    font-size: 22px;
+  }
+
+  /* 30 行あまりの計器は携帯に入らない。運転に要る行（`data-key`）だけ残す。 */
+  #hud .row:not([data-key]) {
+    display: none;
+  }
+
+  #hud .row {
+    gap: 8px;
+  }
+
+  /* 項目名は折らない（「制限 / パターン」が 2 行に割れる） */
+  #hud .label {
+    white-space: nowrap;
+  }
+}
+
+/* 横持ちで背の低い画面: レバーを伸ばし、ボタンの背を詰める */
+@media (orientation: landscape) and (max-height: 520px) {
+  .touch-lever {
+    width: 76px;
+    height: min(76vh, 330px);
+    height: min(76dvh, 330px);
+  }
+
+  .touch-button {
+    min-height: 38px;
+    min-width: 50px;
+  }
+
+  .touch-button.danger {
+    min-height: 44px;
+  }
+
+  .touch-readout {
+    font-size: 18px;
+  }
+
+  /*
+   * 横持ちでは画面の左右がレバーで埋まる。HUD を左上に置いたままだと
+   * 力行レバーの目盛りに重なって両方読めなくなるので、空いている中央上へ寄せる。
+   */
+  #hud {
+    left: 50%;
+    transform: translateX(-50%);
+    max-width: min(52vw, 330px);
+    font-size: 10px;
+    line-height: 1.35;
+    padding: 6px 10px;
+  }
+
+  #hud .speed {
+    font-size: 20px;
+  }
+}
+
+/* 縦持ちの携帯: レバーを低めにして、下端に指が届くようにする */
+@media (orientation: portrait) and (max-width: 560px) {
+  .touch-lever {
+    width: 72px;
+    height: min(46vh, 330px);
+    height: min(46dvh, 330px);
+  }
+
+  .touch-button {
+    min-width: 48px;
+    padding: 4px 6px;
+    font-size: 12px;
+  }
 }
