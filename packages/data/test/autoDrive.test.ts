@@ -141,6 +141,33 @@ describe('自動運転（ATO）', () => {
     expect(overspeed).toBeLessThanOrEqual(0);
   });
 
+  it('力行ノッチを素早く運ぶ（N から最大段までおおむね 1 秒）', () => {
+    const sim = new Simulation(scenarioOf('test-line-local'));
+    sim.setAutoDrive(true);
+    const maxNotch = sim.scenario.consist.traction.notchCount;
+    let first: number | null = null;
+    let full: number | null = null;
+    for (let i = 0; i < 4000 && full === null; i++) {
+      sim.step(0.02);
+      const notch = sim.effectiveInput.powerNotch;
+      if (notch > 0 && first === null) first = sim.time;
+      if (notch >= maxNotch && first !== null) full = sim.time;
+    }
+    expect(first).not.toBeNull();
+    expect(full).not.toBeNull();
+    // 1 段ずつじりじり上げるのではなく、行き先が決まっているなら一息に運ぶ。
+    expect(full! - first!).toBeLessThan(1.5);
+  });
+
+  it('発車では立っている乗客が足を出さない', () => {
+    // 加速度の**変え方**で決まる量なので、ノッチを速く運ぶほど不利になる。
+    // ブレーキが抜け切る前に力行を立ち上げないこと（`powerReleasePressure`）で
+    // 成り立っている。ここが緩むと発車のたびに車内でたたらを踏むことになる。
+    const { sim } = autoRun('test-line-local', 600);
+    expect(sim.metrics.ride.passengerSteps).toBe(0);
+    expect(sim.metrics.ride.maxStagger).toBeLessThan(1);
+  });
+
   it('制限速度を使い切る（直下まで出すが、決して超えない）', () => {
     const { overspeed, closestApproach } = autoRun('test-line-local', 600);
     // 超えない

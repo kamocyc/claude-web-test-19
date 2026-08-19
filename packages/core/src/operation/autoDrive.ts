@@ -6,7 +6,13 @@ import type { CompiledRoute, Station } from '../route/types.ts';
 import type { SignallingSystem } from '../signalling/system.ts';
 import { NEUTRAL_INPUT, type ControlInput } from '../sim/types.ts';
 import type { TrainDynamics } from '../train/dynamics.ts';
-import type { Meters, MetersPerSecond, MetersPerSecondSquared, Seconds } from '../units.ts';
+import type {
+  Meters,
+  MetersPerSecond,
+  MetersPerSecondSquared,
+  Pascals,
+  Seconds,
+} from '../units.ts';
 import type { ConsistSpec } from '../vehicle/spec.ts';
 
 /** 自動運転装置の動作モード */
@@ -81,8 +87,29 @@ export interface AutoDriveParameters {
   readonly powerResumeBand: MetersPerSecond;
   /** 目標速度のこれだけ手前から力行ノッチを戻し始める [m/s] */
   readonly powerEaseBand: MetersPerSecond;
-  /** 力行ノッチを 1 段動かす間隔 [s] */
+  /**
+   * 力行ノッチを 1 段動かす間隔 [s]。
+   *
+   * 目標速度から離れているとき（発進・再力行・制動へ向けての抜き取り）に使う。
+   * 運転士がハンドルを運ぶのと同じで、行き先が決まっているならためらわずに運ぶ。
+   */
   readonly powerStepTime: Seconds;
+  /**
+   * 目標速度の近くで力行ノッチを 1 段動かす間隔 [s]。
+   *
+   * 制限直下を保っている最中の微調整はこちらを使う。速く動かすと段が行き来する
+   * （`cruise()` の注記を参照）ので、ここだけは間隔をおいて落ち着かせる。
+   */
+  readonly powerHoldTime: Seconds;
+  /**
+   * これ以下までブレーキシリンダ圧が抜けるまで力行を立ち上げない [Pa]。
+   *
+   * ブレーキを込めたまま引張力を立ち上げると、抜け切った瞬間に引張力がそのまま
+   * 加速度として出る。BC 圧はむだ時間と緩め時定数のぶん遅れて抜けるので、
+   * 発車のたびにこの食い違いが起きて、立っている乗客はたたらを踏む。
+   * 運転士がブレーキの緩解を待ってから力行するのと同じ扱いにする。
+   */
+  readonly powerReleasePressure: Pascals;
   /** 速度制限へ寄せるときの設計減速度 [m/s^2] */
   readonly approachDeceleration: MetersPerSecondSquared;
   /** 制動を緩解する必要減速度（設計減速度に対する比） */
@@ -176,7 +203,9 @@ export const DEFAULT_AUTO_DRIVE: AutoDriveParameters = {
   patternMargin: 1.0,
   powerResumeBand: 1.2,
   powerEaseBand: 0.2,
-  powerStepTime: 1.2,
+  powerStepTime: 0.35,
+  powerHoldTime: 1.2,
+  powerReleasePressure: 20_000,
   approachDeceleration: 0.4,
   releaseRatio: 0.45,
   responseTime: 1.2,
@@ -1002,9 +1031,20 @@ export class AutoDriver {
       return this.input(ctx);
     }
 
+    // 目標から離れているうちはためらわずに運び、目標の近くでだけ間隔をおく。
+    //
+    // 戻すかどうかの判断（下の `vAhead`）は、抜き切るのに掛かる時間を通じて
+    // **ノッチ段数そのものに依存する**。段を戻せば `unwind` が縮んで `vAhead` が
+    // 下がり、その場でまた込めてよい条件に戻る——という閉じたループになっている。
+    // 間隔が長ければループが遅くて表に出ないが、速いまま目標の近くで回すと
+    // P1 と N を毎秒何度も行き来することになる。落ち着かせたいのはそこだけなので、
+    // 「目標の内側で釣り合っている」ときだけ間隔を空ける。
+    const settled = !nearStop && !nearBrake && v <= vTarget && v >= vTarget - p.powerResumeBand;
+    const stepTime = settled ? p.powerHoldTime : p.powerStepTime;
+
     if (nearStop || nearBrake) {
       // ノッチを 1 段ずつ戻して惰行へ
-      if (this.powerNotch > 0 && this.powerTimer >= p.powerStepTime) {
+      if (this.powerNotch > 0 && this.powerTimer >= stepTime) {
         this.powerNotch--;
         this.powerTimer = 0;
       }
@@ -1015,6 +1055,9 @@ export class AutoDriver {
     // ノッチを 0 まで戻し切るのに掛かる時間と、そのあいだに伸びるぶん。加速度は
     // 段を抜くにつれ 0 へ向かうので、平均として半分を見込む。この先の勾配ぶんは
     // 平均で引いておく（下り勾配へ入る**前に**ノッチが抜けることになる）。
+    //
+    // ここは操作の間隔ではなく「実際に抜き切るのに掛かる時間」なので、目標付近で
+    // 間隔を空けていても速い側（`powerStepTime`）で見積もる。抜くのは速くできる。
     const unwind = this.powerNotch * p.powerStepTime;
     const lead = unwind + p.responseTime;
     const aTraction = ctx.dynamics.acceleration + this.externalDeceleration(ctx.dynamics);
@@ -1022,7 +1065,7 @@ export class AutoDriver {
     const vAhead = v + 0.5 * Math.max(0, aTraction) * unwind - aExtLead * lead;
 
     if (vAhead > vTarget) {
-      if (this.powerNotch > 0 && this.powerTimer >= p.powerStepTime) {
+      if (this.powerNotch > 0 && this.powerTimer >= stepTime) {
         this.powerNotch--;
         this.powerTimer = 0;
       }
@@ -1039,7 +1082,14 @@ export class AutoDriver {
       return this.input(ctx);
     }
 
-    if (this.powerTimer >= p.powerStepTime) {
+    // ブレーキが抜け切るまでは立ち上げない。込めたまま引張力を育てると、
+    // 抜けた瞬間にそのぶんが加速度として出て、発車のたびに前後衝動になる。
+    if (ctx.brake.averageCylinderPressure() > p.powerReleasePressure) {
+      this.state.mode = this.powerNotch > 0 ? 'power' : 'coast';
+      return this.input(ctx);
+    }
+
+    if (this.powerTimer >= stepTime) {
       this.powerNotch = Math.min(ctx.consist.traction.notchCount, this.powerNotch + 1);
       this.powerTimer = 0;
     }
