@@ -277,7 +277,12 @@ export class TouchConsole {
     this.powerLever.setActive(powerCount - handles.power);
     this.brakeLever.setActive(handles.emergency ? 0 : brakeCount + 1 - handles.brake);
 
-    this.readout.textContent = notchText(handles.power, handles.brake, handles.emergency);
+    this.readout.textContent = notchText(
+      handles.power,
+      handles.brake,
+      handles.emergency,
+      handles.holding,
+    );
     this.readout.classList.toggle('danger', handles.emergency);
     this.doorsButton.textContent = handles.doorsClosed ? '戸閉' : '戸開';
     this.doorsButton.classList.toggle('on', !handles.doorsClosed);

@@ -23,6 +23,8 @@ export interface NotchCounts {
 export interface HandlePosition {
   readonly power: number;
   readonly brake: number;
+  /** 抑速ブレーキの段（0 = 切）。運転台にハンドルは無く、自動運転装置だけが使う。 */
+  readonly holding: number;
   readonly emergency: boolean;
   readonly doorsClosed: boolean;
 }
@@ -157,6 +159,7 @@ export class DriverState {
     return {
       power: this.powerNotch,
       brake: this.brakeNotch,
+      holding: 0,
       emergency: this.emergencyOn,
       doorsClosed: this.doorsClosed,
     };

@@ -550,6 +550,7 @@ export class Simulation {
       power: this.traction.state.power,
       powerNotch: this.traction.state.notch,
       brakeNotch: this.brake.state.command.notch,
+      holdingNotch: this.brake.state.command.holdingNotch,
       emergency: this.brake.state.command.emergency,
       cylinderPressure: this.brake.averageCylinderPressure(),
       electricBrakeForce: this.brake.state.electricForce,
@@ -598,6 +599,14 @@ export interface SimSnapshot {
   power: number;
   powerNotch: number;
   brakeNotch: number;
+  /**
+   * 抑速ブレーキのノッチ（0 = 切）。
+   *
+   * 常用ブレーキとは別系統で、電気ブレーキだけで下り勾配の速度を保つときに使う。
+   * 常用ノッチが 0 のままでも制動力は出ているので、これを出さないと
+   * 「ブレーキが掛かっているのに表示は切」という食い違いになる。
+   */
+  holdingNotch: number;
   emergency: boolean;
   cylinderPressure: number;
   electricBrakeForce: number;

@@ -22,9 +22,23 @@ const ASPECT_TEXT: Record<string, string> = {
 /** 運転士が握っているハンドルの位置（定義は運転台の状態機械が持つ） */
 export type { HandlePosition };
 
-/** ノッチ位置の表示（`非常` / `B7` / `P4` / `切`）。タッチ運転台でも同じ文言を使う。 */
-export const notchText = (power: number, brake: number, emergency: boolean): string =>
-  emergency ? '非常' : brake > 0 ? `B${brake}` : power > 0 ? `P${power}` : '切';
+/**
+ * ノッチ位置の表示（`非常` / `B7` / `抑速4` / `P4` / `切`）。タッチ運転台でも同じ文言を使う。
+ *
+ * 抑速（電気ブレーキだけで下り勾配の速度を保つ段）は常用ブレーキとは別系統で、
+ * 常用ノッチが 0 のまま制動力が出る。これを出さないと、下り勾配で確かに減速して
+ * いるのに表示は `切` のまま、という食い違いになる。
+ */
+export const notchText = (power: number, brake: number, emergency: boolean, holding = 0): string =>
+  emergency
+    ? '非常'
+    : brake > 0
+      ? `B${brake}`
+      : holding > 0
+        ? `抑速${holding}`
+        : power > 0
+          ? `P${power}`
+          : '切';
 
 /** 自動運転装置の動作モードの表示名 */
 const AUTO_MODE_TEXT: Record<string, string> = {
@@ -104,8 +118,13 @@ export class Hud {
     // ハンドル位置（運転士の操作）と実効ノッチ（保安装置・戸閉め条件を通したあと）は
     // 一致しないことがある。取り違えると「ノッチが効かない」と見えるので両方出す。
     const handleLabel = snap.autoDrive ? 'ノッチ（自動）' : 'ノッチ（手元）';
-    const handle = notchText(handles.power, handles.brake, handles.emergency);
-    const effective = notchText(snap.powerNotch, snap.brakeNotch, snap.emergency);
+    const handle = notchText(handles.power, handles.brake, handles.emergency, handles.holding);
+    const effective = notchText(
+      snap.powerNotch,
+      snap.brakeNotch,
+      snap.emergency,
+      snap.holdingNotch,
+    );
     const cutOff = handles.power > 0 && snap.powerNotch === 0;
     rows.push(
       keyRow(

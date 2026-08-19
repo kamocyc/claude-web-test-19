@@ -12,7 +12,13 @@ function makeState(power = 4, brake = 7): DriverState {
 describe('運転台のハンドル位置', () => {
   it('初期状態は切・戸閉め', () => {
     const state = makeState();
-    expect(state.handles).toEqual({ power: 0, brake: 0, emergency: false, doorsClosed: true });
+    expect(state.handles).toEqual({
+      power: 0,
+      brake: 0,
+      holding: 0,
+      emergency: false,
+      doorsClosed: true,
+    });
     expect(state.input.powerNotch).toBe(0);
     expect(state.input.doorsClosed).toBe(true);
   });
@@ -159,7 +165,13 @@ describe('扉と引き継ぎ', () => {
     const state = makeState();
     state.apply('emergency');
     state.takeOver(0, 3, false);
-    expect(state.handles).toEqual({ power: 0, brake: 3, emergency: false, doorsClosed: false });
+    expect(state.handles).toEqual({
+      power: 0,
+      brake: 3,
+      holding: 0,
+      emergency: false,
+      doorsClosed: false,
+    });
   });
 
   it('reset で初期状態へ戻る', () => {
@@ -168,7 +180,13 @@ describe('扉と引き継ぎ', () => {
     state.apply('doorsToggle');
     state.hold('horn');
     state.reset();
-    expect(state.handles).toEqual({ power: 0, brake: 0, emergency: false, doorsClosed: true });
+    expect(state.handles).toEqual({
+      power: 0,
+      brake: 0,
+      holding: 0,
+      emergency: false,
+      doorsClosed: true,
+    });
     expect(state.input.horn).toBe(false);
   });
 });

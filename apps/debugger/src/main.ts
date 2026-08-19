@@ -493,6 +493,7 @@ function frame(now: number): void {
     ? {
         power: held.powerNotch,
         brake: held.brakeNotch,
+        holding: held.holdingNotch,
         emergency: held.emergency,
         doorsClosed: held.doorsClosed,
       }
