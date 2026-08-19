@@ -1,5 +1,6 @@
 import type { BrakeSystem } from '../brake/types.ts';
-import { clamp, firstOrderLag } from '../math/scalar.ts';
+import { clamp, firstOrderLag, inverseLerp, lerp } from '../math/scalar.ts';
+import { gradeAcceleration } from '../physics/resistance.ts';
 import { occupiedSpeedLimit } from '../route/types.ts';
 import type { CompiledRoute, Station } from '../route/types.ts';
 import type { SignallingSystem } from '../signalling/system.ts';
@@ -66,6 +67,14 @@ export interface AutoDriveContext {
 export interface AutoDriveParameters {
   /** 目標速度を制限速度からどれだけ低く取るか [m/s] */
   readonly speedMargin: MetersPerSecond;
+  /**
+   * 制限速度へこれだけ迫ったら、間隔をおかずに力行を切る [m/s]。
+   *
+   * 目標速度の余裕（`speedMargin`）を薄く取るほど、ノッチを 1 段ずつ運ぶ間に
+   * 制限へ届いてしまう余地が残る。制限を越えないことだけは操作の作法より
+   * 優先されるので、ここだけは間隔を無視して即座に抜く。
+   */
+  readonly ceilingGuard: MetersPerSecond;
   /** 保安装置の照査速度からどれだけ低く抑えるか [m/s] */
   readonly patternMargin: MetersPerSecond;
   /** 目標速度からこれだけ落ちたら再力行する [m/s] */
@@ -132,9 +141,27 @@ export interface AutoDriveParameters {
   readonly holdNotch: number;
   /** ブレーキの効き具合を推定する時定数 [s] */
   readonly gainEstimateTime: Seconds;
-  /** ブレーキの効き具合の推定範囲（下限・上限） */
+  /** 効き具合を推定する最低速度 [m/s]（これ以下は誤差が大きい） */
+  readonly gainMinSpeed: MetersPerSecond;
+  /** 緩解しているあいだに効き具合の推定が 1 へ戻る時定数 [s] */
+  readonly gainRelaxTime: Seconds;
+  /**
+   * 効き具合の補正を全量で効かせる下限速度 [m/s]。
+   * ここから `easeSpeed` へ向けて補正を 1 へ戻す。
+   */
+  readonly gainTaperSpeed: MetersPerSecond;
+  /**
+   * ブレーキの効き具合の推定範囲（下限・上限）。
+   *
+   * 上限を 1 の近くに置くと「指令より強く効いている」ことを覚えられない。
+   * 降雪では回生が失効して空気ブレーキが受け持ち、同じノッチで公称の倍近い
+   * 減速度が出ることがある。そこを補正できないと、狙いより強く減速して
+   * 停止位置の手前で速度を失い、残りを這って詰めることになる。
+   */
   readonly minBrakeGain: number;
   readonly maxBrakeGain: number;
+  /** 空転・滑走を検知してから砂を撒き続ける時間 [s] */
+  readonly sandHoldTime: Seconds;
   /** 停止と判定する速度 [m/s] */
   readonly stopSpeed: MetersPerSecond;
   /** 停止してから開扉するまでの間 [s] */
@@ -144,15 +171,16 @@ export interface AutoDriveParameters {
 }
 
 export const DEFAULT_AUTO_DRIVE: AutoDriveParameters = {
-  speedMargin: 0.8,
+  speedMargin: 0.4,
+  ceilingGuard: 0.1,
   patternMargin: 1.0,
-  powerResumeBand: 3.0,
-  powerEaseBand: 0.5,
+  powerResumeBand: 1.2,
+  powerEaseBand: 0.2,
   powerStepTime: 1.2,
-  approachDeceleration: 0.5,
+  approachDeceleration: 0.4,
   releaseRatio: 0.45,
   responseTime: 1.2,
-  limitMargin: 35,
+  limitMargin: 20,
   signalMargin: 45,
   terminusMargin: 40,
   lookahead: 2500,
@@ -161,7 +189,7 @@ export const DEFAULT_AUTO_DRIVE: AutoDriveParameters = {
   easeSpeed: 5.5,
   stopDemandCap: 1.5,
   coastLead: 40,
-  coastLeadTime: 12,
+  coastLeadTime: 10,
   notchHoldTime: 1.4,
   notchHysteresis: 0.8,
   maxNotchStep: 2,
@@ -169,14 +197,18 @@ export const DEFAULT_AUTO_DRIVE: AutoDriveParameters = {
   urgentSteps: 2.5,
   reapplyDelay: 3,
   releaseHoldRatio: 0.5,
-  regulationBand: 0.5,
-  regulationGain: 0.35,
+  regulationBand: 0.08,
+  regulationGain: 0.45,
   holdingDeceleration: 0.5,
   holdingMinSpeed: 8,
   holdNotch: 4,
-  gainEstimateTime: 4,
-  minBrakeGain: 0.55,
-  maxBrakeGain: 1.1,
+  gainEstimateTime: 2,
+  gainMinSpeed: 3,
+  gainRelaxTime: 30,
+  gainTaperSpeed: 11.0,
+  minBrakeGain: 0.7,
+  maxBrakeGain: 2.2,
+  sandHoldTime: 3.0,
   stopSpeed: 0.05,
   doorOpenDelay: 1.5,
   departureDelay: 2.0,
@@ -307,6 +339,8 @@ export class AutoDriver {
   private acknowledged = false;
   /** 抑速ノッチを動かしてからの時間 [s] */
   private holdingTimer = 0;
+  /** 砂を撒き続ける残り時間 [s] */
+  private sandTimer = 0;
   /** 制動を継続中か（必要減速度がわずかに下がっても緩解しないためのラッチ） */
   private braking = false;
   /** 停止位置制御に入っているか、その目標地点 [m] */
@@ -334,6 +368,12 @@ export class AutoDriver {
     this.releaseTimer += dt;
     this.holdingTimer += dt;
     this.applyLag = Math.max(0, this.applyLag - dt);
+    // 空転・滑走を検知したら、収まってからもしばらく撒き続ける。砂が踏面へ届いて
+    // 粘着が戻るまでには間があるので、検知した瞬間だけ撒いても効かない。
+    this.sandTimer =
+      ctx.dynamics.anySlipping || ctx.dynamics.anySliding
+        ? this.params.sandHoldTime
+        : Math.max(0, this.sandTimer - dt);
     this.updateSignalCeiling(ctx);
     this.updateBrakeGain(dt, ctx);
 
@@ -362,6 +402,7 @@ export class AutoDriver {
     this.acknowledge = false;
     this.acknowledged = false;
     this.holdingTimer = 0;
+    this.sandTimer = 0;
     this.braking = false;
     this.stopping = false;
     this.stoppingTarget = null;
@@ -456,7 +497,7 @@ export class AutoDriver {
     // 常用最大が入ってしまう。常に照査速度の内側を走れば、保安装置は動作しない。
     // 制限は在線範囲で引く。先頭が制限区間を抜けても最後部が残っているうちは
     // まだ制限の中なので、そこで力行を始めてはいけない。
-    const ceiling = Math.min(
+    const permitted = Math.min(
       ctx.route.maxSpeed,
       ctx.consist.maxSpeed,
       occupiedSpeedLimit(ctx.route.speedLimits, {
@@ -464,8 +505,17 @@ export class AutoDriver {
         rear: ctx.dynamics.rearPosition,
       }),
       this.signalCeiling,
-      ctx.patternSpeed === null ? Number.POSITIVE_INFINITY : ctx.patternSpeed - p.patternMargin,
     );
+    // 保安装置の照査速度に取る余裕は、パターンが**降りてきているとき**のためのもので
+    // ある。近づくほど下がってくる相手の内側へ入るには、その動くぶんの余裕が要る。
+    // 一方、照査速度が在線の制限と並んでいるあいだ、それは制限そのものを写している
+    // だけで、制限の内側を走っていれば保安装置は動作しない。そこへ余裕を二重に積むと、
+    // 制限より照査余裕ぶん低い速度でしか走れなくなる（制限 80km/h の区間を
+    // 76km/h で走ることになる）。降りてきているときだけ内側へ入る。
+    const ceiling =
+      ctx.patternSpeed !== null && ctx.patternSpeed < permitted
+        ? Math.min(permitted, ctx.patternSpeed - p.patternMargin)
+        : permitted;
     const vTarget = Math.max(0, ceiling - p.speedMargin);
     this.state.targetSpeed = vTarget;
     // 力行の判断だけは少し先の制限も見る。すぐ先で制限に入るのに、そこまでの
@@ -477,8 +527,15 @@ export class AutoDriver {
     );
 
     // --- 2. 前方の速度制限・信号に対する必要減速度 ---
+    // `demand` は正味（勾配・抵抗を含む）、`brakeDemand` はブレーキが受け持つぶん。
+    // 制動に入るかどうかは**正味**で判断し、ノッチは**ブレーキ側**で決める。
+    // 前者は「本当に減速が要るのか」という軌跡の話、後者は「その減速度を出すのに
+    // どの段が要るか」という装置の話で、別のものである。下り勾配ではブレーキ側が
+    // 大きく出るので、ここを取り違えると勾配で必ず常用ブレーキが入ってしまい、
+    // 抑速で保つという運転にならない。
     const ahead = this.approachDemand(ctx, v);
     let demand = ahead.demand;
+    let brakeDemand = ahead.brakeDemand;
     let governing = ahead.label;
 
     // --- 3. 停止目標（駅の停止位置・停止現示・線路終端）に対する停止制動 ---
@@ -504,6 +561,9 @@ export class AutoDriver {
       }
       if (this.stopping && stopDemand > demand) {
         demand = stopDemand;
+        // 停止位置制御だけは形どおりの正味の減速度で走らせるので、足元の勾配を
+        // そのまま打ち消す。勾配の変わり目でノッチは動くが、狙った位置で止まる。
+        brakeDemand = stopDemand - external;
         governing = point.label;
       }
     }
@@ -517,7 +577,7 @@ export class AutoDriver {
     this.state.governing = governing;
 
     if (this.braking || this.stopping) {
-      return this.applyBrake(ctx, demand, external);
+      return this.applyBrake(ctx, brakeDemand);
     }
 
     // --- 5. 速度維持（抑速）と、制動から惰行へ戻す途中の緩解 ---
@@ -531,7 +591,7 @@ export class AutoDriver {
     }
 
     // --- 6. 力行と惰行 ---
-    return this.cruise(ctx, v, vPower, demand, point);
+    return this.cruise(ctx, v, vPower, ceiling, demand, point);
   }
 
   /**
@@ -543,12 +603,27 @@ export class AutoDriver {
    * ノッチを深くして同じ減速度を保てる（＝停止位置が狂わない）。
    *
    * 立ち上がり中と低速域は誤差が大きいので推定しない。
+   *
+   * **滑走防止装置が動作している間も推定しない。** BC 圧を抜いている最中の減速度は
+   * 「ブレーキの効きの悪さ」ではなく過渡であり、滑走はごく短い山として現れるので、
+   * これを平均へ入れると推定は必ず過小へ偏る。過小な推定はそのまま指令の割り増しに
+   * なり、停止目標のはるか手前で速度を落としきってしまう。雪の日に停止直前をだらだら
+   * 這って詰めることになるのは、突き詰めればこの偏りが原因である。
+   *
+   * 緩解しているあいだは、覚えた効きの悪さをゆっくり 1 へ戻す。粘着は区間ごとにも
+   * 速度によっても変わるので（μ = μ₀/(1 + kV)）、1 回の制動で測った値を次の制動まで
+   * そのまま持ち越す理由が無い。
    */
   private updateBrakeGain(dt: Seconds, ctx: AutoDriveContext): void {
     const p = this.params;
     const target = ctx.brake.state.targetDeceleration;
     const v = Math.abs(ctx.speed);
-    if (this.brakeNotch === 0 || this.applyLag > 0 || v < 3 || target < 0.15) {
+    if (this.brakeNotch === 0) {
+      this.brakeGain = firstOrderLag(this.brakeGain, 1, p.gainRelaxTime, dt);
+      this.state.brakeGain = this.brakeGain;
+      return;
+    }
+    if (this.applyLag > 0 || v < p.gainMinSpeed || target < 0.15) {
       this.state.brakeGain = this.brakeGain;
       return;
     }
@@ -556,6 +631,26 @@ export class AutoDriver {
     const ratio = clamp(achieved / target, p.minBrakeGain, p.maxBrakeGain);
     this.brakeGain = firstOrderLag(this.brakeGain, ratio, p.gainEstimateTime, dt);
     this.state.brakeGain = this.brakeGain;
+  }
+
+  /**
+   * 指令に掛ける効き補正（指令をこれで割る）。
+   *
+   * 効きが落ちているぶんの割り増しは高速側だけで効かせ、絞り込み域（止まる直前）へ
+   * 向かって滑らかに 1 へ戻す。割り増しを残したまま粘着が戻ると、過大な減速度が
+   * そのまま停止直前の衝撃になるからで、そもそも粘着は低速ほど良くなるので
+   * （μ = μ₀/(1 + kV)）、高速で測った効きの悪さを低速へ持ち込む理由も無い。
+   *
+   * 速度で切り替えるのではなく渡すのが要点である。段で切り替えると、その速度を
+   * 跨いだ瞬間に減速度が跳ね、停止制動の途中で目標がずれる。
+   *
+   * 効きすぎているとき（gain > 1）は全速度域で補正する。緩めるほうは衝撃にならない。
+   */
+  private correctionGain(v: MetersPerSecond): number {
+    const p = this.params;
+    if (this.brakeGain >= 1) return this.brakeGain;
+    const t = clamp(inverseLerp(p.easeSpeed, p.gainTaperSpeed, v), 0, 1);
+    return lerp(1, this.brakeGain, t);
   }
 
   /**
@@ -572,31 +667,42 @@ export class AutoDriver {
   }
 
   /**
-   * 前方の速度制限・信号に対する必要減速度。
+   * 前方の速度制限・信号に対して**ブレーキが受け持つべき**減速度。
    *
-   * 目標ごとに `a = (v² − v_t²) / 2(d − margin − v·t_lag)` を求め、最も厳しいものを採る。
+   * 目標ごとに正味の必要減速度 `a = (v² − v_t²) / 2(d − margin − v·t_lag)` を求め、
+   * そこから目標までの平均勾配・抵抗が受け持つぶん（`externalAhead`）を差し引く。
+   * 差し引きを目標地点ではなく**目標までの平均**で行うのが要点で、下り勾配の先の
+   * 制限へは早く込め、上り勾配の先の制限へは遅らせる、という運転になる。
    */
   private approachDemand(
     ctx: AutoDriveContext,
     v: MetersPerSecond,
-  ): { demand: MetersPerSecondSquared; label: string | null } {
+  ): {
+    demand: MetersPerSecondSquared;
+    brakeDemand: MetersPerSecondSquared;
+    label: string | null;
+  } {
     const cap = ctx.consist.brake.maxServiceDeceleration;
     const lag = this.brakingLag();
     let demand = 0;
+    let brakeDemand = 0;
     let label: string | null = null;
     for (const target of this.targetsAhead(ctx)) {
       if (v <= target.speed) continue;
-      const gap = target.position - ctx.position - target.margin - v * lag;
-      const a = Math.min(
+      const at = target.position - target.margin;
+      const gap = at - ctx.position - v * lag;
+      const total = Math.min(
         cap,
         (v * v - target.speed * target.speed) / (2 * Math.max(gap, MIN_TARGET_GAP)),
       );
-      if (a > demand) {
-        demand = a;
+      const brake = Math.min(cap, total - this.externalAhead(ctx, at));
+      if (brake > brakeDemand) {
+        brakeDemand = brake;
         label = target.label;
       }
+      if (total > demand) demand = total;
     }
-    return { demand, label };
+    return { demand, brakeDemand, label };
   }
 
   /** 前方 `lead` [m] のあいだに現れる最も低い制限速度（無ければ +∞） */
@@ -668,7 +774,17 @@ export class AutoDriver {
    * 落とすのが早いほど、止まるまでに BC 圧が抜けきる。
    */
   private finalDeceleration(ctx: AutoDriveContext): MetersPerSecondSquared {
-    return Math.min(this.params.finalDeceleration, ctx.brake.decelerationForNotch(1));
+    // 公称値ではなく**実際に出る**減速度で考える。効きが指令より強く出る条件
+    // （降雪で回生が失効し、空気ブレーキが受け持つときなど）では、B1 でも公称の
+    // 倍近い減速度が出る。それを公称値のまま形へ入れると、狙いより強く減速して
+    // 停止位置のかなり手前で速度を失い、残りを這って詰めることになる。しかも
+    // 目標の形は B1 が出せる値より小さいので、ノッチは入切を繰り返すしかない。
+    // 効き推定を掛けておけば、形そのものが「いま出せるいちばん静かな減速度」に
+    // 揃うので、B1 を入れたまま一息に停止位置まで詰められる。
+    return Math.min(
+      this.params.finalDeceleration,
+      ctx.brake.decelerationForNotch(1) * this.brakeGain,
+    );
   }
 
   /** 速度 v に対する目標減速度（止まる直前は絞り込む） */
@@ -687,6 +803,13 @@ export class AutoDriver {
    *     D = ∫₀^v u/(a_f + c·u) du = v/c − (a_f/c²)·ln(1 + c·v/a_f)
    *
    * と解析的に求まる。v_ease を超えるぶんは一定減速度として足す。
+   *
+   * ここでの a(v) は**正味の減速度**（勾配・抵抗を含む）である。停止位置は速度ではなく
+   * 位置の精度が要る話（許容 1m）なので、勾配ぶんはブレーキで打ち消してこの形どおりに
+   * 走らせる。したがって勾配の先読みはここには入らない。下り勾配の駅で制動距離が
+   * 伸びるのは、ノッチが深くなることで吸収される（`applyBrake` が足元の勾配を
+   * 打ち消す）。速度制限へ寄せるときだけ区間平均で先読みするのは、あちらが
+   * 「その地点で何 km/h か」という速度の話で、ノッチを動かさないほうが得だからである。
    */
   private shapeDistance(ctx: AutoDriveContext, v: MetersPerSecond): Meters {
     const p = this.params;
@@ -702,12 +825,16 @@ export class AutoDriver {
   }
 
   /**
-   * 残距離 `distance` で停止するのに必要な減速度。
+   * 残距離 `distance` で停止するのに、**ブレーキが受け持つべき**減速度。
    *
    * 目標減速度の形どおりなら `d = D(v)` なので a(v) がそのまま出る。手前に寄れば
    * その比で強まるが、`stopDemandCap` で頭打ちにする。頭打ちが無いと、残り数十 cm で
    * 速度がわずかに残っているだけで指令が発散し、止まる寸前に深いノッチを
    * 掴むことになる（＝いちばん目立つ衝撃）。数十 cm の誤差はここで捨てる。
+   *
+   * 返すのは**正味の**必要減速度である（`approachDemand` はブレーキ側を返すので、
+   * ここだけ約束が違う）。停止は位置の精度が要るので、勾配は区間平均で先読みせず、
+   * 足元の勾配を `applyBrake` でそのまま打ち消して形どおりに走らせる。
    */
   private stopDemand(
     ctx: AutoDriveContext,
@@ -769,18 +896,8 @@ export class AutoDriver {
    * 差し引いてからノッチへ写す。ノッチは 1 段ずつ・最短間隔つきでしか動かさないので、
    * 細かい誤差でノッチが行き来することはない。
    */
-  private applyBrake(
-    ctx: AutoDriveContext,
-    demand: MetersPerSecondSquared,
-    external: MetersPerSecondSquared,
-  ): ControlInput {
-    // ブレーキの効きが落ちているぶんは指令を割り増して補う。ただし絞り込み域
-    // （止まる直前）では割り増さない。ここでの割り増しは、粘着が戻った瞬間に過大な
-    // 減速度となって現れ、いちばん避けたい停止直前の衝撃になる。効きすぎているとき
-    // （gain > 1）は絞り込み域でも補正する。
-    const gain =
-      Math.abs(ctx.speed) > this.params.easeSpeed ? this.brakeGain : Math.max(this.brakeGain, 1);
-    const commanded = Math.max(0, demand - external) / gain;
+  private applyBrake(ctx: AutoDriveContext, demand: MetersPerSecondSquared): ControlInput {
+    const commanded = Math.max(0, demand) / this.correctionGain(Math.abs(ctx.speed));
     this.state.commandedDeceleration = commanded;
     this.state.mode = this.stopping ? 'stopping' : 'brake';
     this.powerNotch = 0;
@@ -833,18 +950,30 @@ export class AutoDriver {
         this.holdingNotch++;
         this.holdingTimer = 0;
       } else if (v < vTarget - p.regulationBand) {
-        this.holdingNotch--;
+        this.holdingNotch = Math.max(0, this.holdingNotch - 1);
         this.holdingTimer = 0;
       }
     }
     return this.input(ctx);
   }
 
-  /** 力行・惰行 */
+  /**
+   * 力行・惰行・定速。
+   *
+   * 目標速度に届いたらノッチを 0 まで戻す、という運転はしない。それをやると惰行で
+   * `powerResumeBand` ぶん落ちてから込め直すことになり、制限のはるか下を鋸歯状に
+   * 走ることになる。実際の運転士がやるのと同じく、**走行抵抗と釣り合う段で手を止めて
+   * 制限直下を保つ**。段が動かないので、力行の操作回数はむしろ減る。
+   *
+   * 戻すかどうかは、いまの速度ではなく**ノッチを抜き終えたときの速度**で決める。
+   * 加速している最中にいまの速度だけ見て判断すると、抜き終えるまでに伸びるぶんで
+   * 必ず目標を越える。ここが「先を読んで操作する」の中身である。
+   */
   private cruise(
     ctx: AutoDriveContext,
     v: MetersPerSecond,
     vTarget: MetersPerSecond,
+    ceiling: MetersPerSecond,
     demand: MetersPerSecondSquared,
     point: StopPoint | null,
   ): ControlInput {
@@ -863,7 +992,17 @@ export class AutoDriver {
     const nearStop = gap <= p.coastLead + v * p.coastLeadTime;
     const nearBrake = demand >= p.approachDeceleration * p.releaseRatio;
 
-    if (nearStop || nearBrake || v >= vTarget - p.powerEaseBand) {
+    // 制限へ迫ったら間隔をおかずに抜く。制限を越えないことは操作の作法より優先する。
+    if (v >= ceiling - p.ceilingGuard) {
+      if (this.powerNotch > 0) {
+        this.powerNotch = 0;
+        this.powerTimer = 0;
+      }
+      this.state.mode = 'coast';
+      return this.input(ctx);
+    }
+
+    if (nearStop || nearBrake) {
       // ノッチを 1 段ずつ戻して惰行へ
       if (this.powerNotch > 0 && this.powerTimer >= p.powerStepTime) {
         this.powerNotch--;
@@ -873,9 +1012,30 @@ export class AutoDriver {
       return this.input(ctx);
     }
 
-    // 惰行から力行へ戻すのは、目標速度から十分に落ちてから（力行の入切を減らす）
-    if (this.powerNotch === 0 && v > vTarget - p.powerResumeBand) {
-      this.state.mode = 'coast';
+    // ノッチを 0 まで戻し切るのに掛かる時間と、そのあいだに伸びるぶん。加速度は
+    // 段を抜くにつれ 0 へ向かうので、平均として半分を見込む。この先の勾配ぶんは
+    // 平均で引いておく（下り勾配へ入る**前に**ノッチが抜けることになる）。
+    const unwind = this.powerNotch * p.powerStepTime;
+    const lead = unwind + p.responseTime;
+    const aTraction = ctx.dynamics.acceleration + this.externalDeceleration(ctx.dynamics);
+    const aExtLead = this.externalAhead(ctx, ctx.position + v * lead);
+    const vAhead = v + 0.5 * Math.max(0, aTraction) * unwind - aExtLead * lead;
+
+    if (vAhead > vTarget) {
+      if (this.powerNotch > 0 && this.powerTimer >= p.powerStepTime) {
+        this.powerNotch--;
+        this.powerTimer = 0;
+      }
+      this.state.mode = this.powerNotch > 0 ? 'power' : 'coast';
+      return this.input(ctx);
+    }
+
+    // 込めるのは目標から十分に落ちてから。惰行から立ち上げるときだけ広く取るのは、
+    // 力行の入切そのものを減らすため。保っている最中の微調整は狭くてよい。
+    const band = this.powerNotch > 0 ? p.powerEaseBand : p.powerResumeBand;
+    if (v > vTarget - band) {
+      // 釣り合っている。段を動かさない（＝定速）。
+      this.state.mode = this.powerNotch > 0 ? 'power' : 'coast';
       return this.input(ctx);
     }
 
@@ -975,8 +1135,23 @@ export class AutoDriver {
   // ------------------------------------------------------------------
 
   /**
-   * 勾配・走行抵抗・曲線抵抗による減速度 [m/s^2]（正 = 減速を助ける）。
+   * 走行抵抗・曲線抵抗による減速度 [m/s^2]（正 = 減速を助ける）。勾配は含まない。
    * 回転部慣性を含む等価質量で割る（ブレーキ装置の指令減速度と基準を揃えるため）。
+   */
+  private resistanceDeceleration(dyn: TrainDynamics): MetersPerSecondSquared {
+    let force = 0;
+    let mass = 0;
+    for (const veh of dyn.vehicles) {
+      force += veh.runningResistanceForce + veh.curveResistanceForce;
+      mass += veh.mass + veh.spec.rotatingMassFactor * veh.spec.tareMass;
+    }
+    if (mass <= 0) return 0;
+    return clamp(-force / mass, -1, 1);
+  }
+
+  /**
+   * いまの位置の勾配・走行抵抗・曲線抵抗による減速度 [m/s^2]（正 = 減速を助ける）。
+   * 「いまこの瞬間どれだけ助けられているか」なので、速度維持と効きの推定に使う。
    */
   private externalDeceleration(dyn: TrainDynamics): MetersPerSecondSquared {
     let force = 0;
@@ -987,6 +1162,27 @@ export class AutoDriver {
     }
     if (mass <= 0) return 0;
     return clamp(-force / mass, -1, 1);
+  }
+
+  /**
+   * 在線範囲の後端から `to` までの平均的な「減速を助ける加速度」[m/s^2]。
+   *
+   * 運転士は路線の勾配を頭に入れていて、いまの勾配ではなく**制動しているあいだの
+   * 勾配**で手を決める。下り勾配の先にある駅は、いま平坦を走っていても平坦ぶんの
+   * 制動距離では止まれないし、上り勾配の先の制限へは早く込めるだけ無駄になる。
+   * 目標までの平均勾配で必要制動力を求めれば、その両方が自然に出る。
+   *
+   * 「いまここ」の勾配で引くのに比べて、ノッチの入切はむしろ**減る**。勾配境界を
+   * 跨ぐたびに階段状に動く量ではなく、位置に対して滑らかに動く量になるからである。
+   *
+   * 走行抵抗・曲線抵抗はいまの値をそのまま使う。速度の関数なので制動中に減るが、
+   * 勾配に比べれば小さく、先読みしても得るものが無い。
+   */
+  private externalAhead(ctx: AutoDriveContext, to: Meters): MetersPerSecondSquared {
+    const from = ctx.dynamics.rearPosition;
+    const end = Math.max(to, from + 1);
+    const grade = ctx.route.alignment.averageGrade(from, end);
+    return clamp(-gradeAcceleration(grade) + this.resistanceDeceleration(ctx.dynamics), -1, 1);
   }
 
   /**
@@ -1023,7 +1219,7 @@ export class AutoDriver {
       safetyReset: ctx.safetyEmergency && Math.abs(ctx.speed) < this.params.stopSpeed,
       // 空転・滑走を検知したら砂を撒く（粘着が落ちているのは踏面の状態のせいなので、
       // ノッチを緩めるより先にこちらで粘着そのものを回復させる）
-      sanding: ctx.dynamics.anySlipping || ctx.dynamics.anySliding,
+      sanding: this.sandTimer > 0,
     };
   }
 }
