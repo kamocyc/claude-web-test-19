@@ -114,10 +114,22 @@ export class OnePoleHighPass {
  */
 export class OnePoleLowPass {
   private y1 = 0;
-  private readonly a: number;
+  private a: number;
 
-  constructor(sampleRate: number, cutoff: number) {
+  constructor(
+    private readonly sampleRate: number,
+    cutoff: number,
+  ) {
     this.a = 1 - Math.exp((-2 * Math.PI * cutoff) / sampleRate);
+  }
+
+  /**
+   * 遮断周波数を変える。
+   * 距離で高域の失われ方が変わる音（遠くの警報音など）に使う。指数を毎サンプル
+   * 計算するのは重いので、呼ぶのはパラメータの更新時だけにする。
+   */
+  setCutoff(cutoff: number): void {
+    this.a = 1 - Math.exp((-2 * Math.PI * cutoff) / this.sampleRate);
   }
 
   process(x: number): number {

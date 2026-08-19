@@ -1,24 +1,37 @@
 import {
   DEFAULT_NOISE_MIX,
-  SILENT_CHOPPER,
-  SILENT_INVERTER,
-  SILENT_RESISTOR,
+  SILENT_CROSSING,
+  SILENT_PASSING,
   VOICE_COUNT,
-  type ChopperVoiceParams,
-  type InverterVoiceParams,
+  type CrossingVoiceParams,
   type JointImpact,
+  type JointImpactKind,
   type NoiseMix,
-  type ResistorVoiceParams,
+  type PassingVoiceParams,
+  type RemoteTrainParams,
   type TrainNoiseParams,
   type TurnoutImpact,
 } from '@railsim/audio';
 import {
   axleOffsets,
-  bogieSquealDrive,
+  bridgeAcoustics,
   jointCrossings,
-  type BodyMotionState,
+  type Bridge,
+  type BridgeAcoustics,
+  type CompiledRoute,
+  type RailJointKind,
+  type RemoteTrain,
   type Simulation,
+  type TrainDynamics,
 } from '@railsim/core';
+import {
+  DISTANCE_HALF,
+  OTHER_TRAIN_DISTANCE_HALF,
+  TrainSoundParams,
+  consistExtent,
+  gainAt,
+  type Listener,
+} from './params.ts';
 import workletUrl from './trainNoise.worklet.ts?worker&url';
 
 const PROCESSOR = 'train-noise';
@@ -35,31 +48,43 @@ const JOINT_REFERENCE_SPEED = 25;
 const TURNOUT_REFERENCE_SPEED = 18;
 
 /**
- * 運転台から音源までの距離による減衰の効き方 [m]。
- * この距離だけ離れると音量が半分になる。
- */
-const DISTANCE_HALF = 25;
-
-/**
- * 起動抵抗のうなりを正規化する基準電力 [W]。
+ * 路線データの継目の種類から、合成器の音色への対応。
  *
- * 抵抗制御では起動直後に電動機の入力とほぼ同じだけの電力を抵抗で熱にしている
- * （だから直列初段の効率は 5 割を切る）。編成の公称出力と同じ桁を基準にしておくと、
- * 起動でうなりが最大、進段するほど下がり、全短絡で消えるという関係になる。
+ * 音の側（`@railsim/audio`）は物理コアを知らないので、種類の名前を独立に持っている。
+ * ここが唯一の対応表で、踏切板の目地（`panel`）だけは継目ではなく踏切の側から来る。
  */
-const RESISTOR_GRID_REFERENCE_POWER = 800_000;
-
-/** 0..1 に丸める */
-function clamp01(x: number): number {
-  return x < 0 ? 0 : x > 1 ? 1 : x;
-}
+const JOINT_KIND: Readonly<Record<RailJointKind, JointImpactKind>> = {
+  standard: 'standard',
+  insulated: 'insulated',
+  expansion: 'expansion',
+};
 
 /**
- * 左右の空気ばねの間隔の半分 [m]。
- * 台車の幾何で決まる値で、1067mm 軌間の台車なら空気ばねの中心間は 2m 前後。
- * ロール角速度にこの腕の長さを掛けたぶんが、上下速度に加わる。
+ * 隣の線路の列車の音が届く範囲 [m]。
+ * これより遠ければ自分の走行音に埋もれて聞こえない。
  */
-const AIR_SPRING_HALF_SPACING = 1.0;
+const AUDIBLE_RANGE = 400;
+
+/** 線路中心間隔が取れないときの既定値 [m]（在来線の標準） */
+const DEFAULT_SEPARATION = 3.4;
+
+/**
+ * 踏切の警報機の位置。
+ *
+ * 警報機は踏切道の両側、軌道中心から 3.5m ほど離れた道路側に建つ。2 台の線路方向の
+ * 間隔は道路の幅より一回り広い（道路の外側に立つため）。この 2 つの数字が、
+ * すれ違いざまに「片方が近づき、もう片方が遠ざかる」聞こえ方を決めている。
+ */
+const CROSSING_POST = { lateral: 3.5, margin: 3 } as const;
+
+/**
+ * 橋りょうの反響を残響へ送る比率。
+ *
+ * トンネルほど閉じてはいないが、桁と主構は硬い反射面である。下路トラス橋は
+ * 列車が主構のあいだを通るのでよく響き、上路桁では足元だけが返ってくる。
+ * どちらになるかは `bridgeAcoustics()` の反射の強さがそのまま決める。
+ */
+const BRIDGE_WET = 0.4;
 
 /** トンネル内の残響時間 [s]（覆工が硬く、断面が狭いので長め） */
 const TUNNEL_REVERB_TIME = 1.1;
@@ -68,11 +93,26 @@ const TUNNEL_WET = 0.55;
 /** 坑口での切り替わりの滑らかさ [s] */
 const TUNNEL_FADE = 0.35;
 
+/** いちばん近いダイヤ列車と、そこまでの位置関係 */
+interface NearestRemote {
+  readonly id: string;
+  readonly train: RemoteTrain;
+  /** 線路中心間隔 [m]（同じ線路の先行列車なら 0） */
+  readonly lateral: number;
+  /** 運転台から相手の編成のいちばん近いところまでの距離 [m] */
+  readonly distance: number;
+}
+
 /**
  * 走行音の出力。
  *
  * 合成そのものは `@railsim/audio` の素のクラスが AudioWorklet の中で行う。
  * ここはその配線と、シミュレーションの状態から合成パラメータへの写像だけを持つ。
+ *
+ * 写像そのものは `TrainSoundParams`（`params.ts`）にあり、**自列車にも対向列車にも
+ * 同じものを使う**。音の出方は「誰の列車か」ではなく装置の状態で決まるので、
+ * 区別する理由が無い。違うのは聞く場所（`Listener`）と、運転台の中でしか鳴らない
+ * ものだけである。
  *
  * 他のサブシステム（`TrackScene` / `Hud` / `ChartPanel`）と同じく `Simulation` を
  * コンストラクタで抱え込まず、毎フレーム引数で受け取る。シナリオを切り替えると
@@ -103,17 +143,21 @@ export class TrainAudio {
    */
   onClock: ((seconds: number) => void) | null = null;
 
+  /** 自列車と対向列車のパラメータ組み立て（同じ実装を 1 つずつ持つ） */
+  private readonly ownParams = new TrainSoundParams();
+  private remoteParams = new TrainSoundParams();
+  /** いま鳴らしているダイヤ列車の id（変わったら合成器を捨てる） */
+  private remoteId: string | null = null;
+
   /** 各車両の前フレームでの距離程（継目・分岐器の跨ぎ判定に使う） */
-  private previousPositions: number[] = [];
-  private readonly offsetScratch: number[] = [];
+  private readonly ownPositions: number[] = [];
+  private readonly remotePositions: number[] = [];
   private readonly joints: JointImpact[] = [];
   private readonly turnouts: TurnoutImpact[] = [];
-  /** 進段・組替えのカウンタ（増分を撃力の回数として鳴らす） */
-  private lastStepEvents = 0;
-  private lastGroupEvents = 0;
-  /** 扉の戸当たりのカウンタ（増分を撃力の回数として鳴らす） */
-  private lastLatchEvents = 0;
-  private lastOpenEvents = 0;
+  private readonly remoteJoints: JointImpact[] = [];
+  private readonly remoteTurnouts: TurnoutImpact[] = [];
+  /** 橋りょうの音の諸元（桁の寸法から決まるので、橋ごとに 1 度求めれば足りる） */
+  private readonly bridgeCache = new Map<string, BridgeAcoustics>();
 
   get available(): boolean {
     return !this.failed;
@@ -217,283 +261,275 @@ export class TrainAudio {
     if (!worklet) return;
     const snap = sim.snapshot();
     const running = advance > 0;
+    const cab = sim.dynamics.frontPosition;
 
-    const params = this.buildParams(sim, snap, running);
-    if (running) this.collectImpacts(sim, wall);
-    else this.clearImpacts(sim);
+    const listener: Listener = { position: cab, lateral: 0, halfDistance: DISTANCE_HALF };
+    const params: TrainNoiseParams = this.ownParams.build({
+      route: sim.scenario.route,
+      consist: sim.scenario.consist,
+      railCondition: sim.scenario.railCondition,
+      dynamics: sim.dynamics,
+      drive: snap.drive,
+      doors: snap.doors,
+      compressor: snap.compressor,
+      cylinderPressure: snap.cylinderPressure,
+      elapsed: sim.elapsed,
+      speed: snap.speed,
+      running,
+      listener,
+      mix: this.mixValues,
+      body: snap.body,
+      crossing: this.crossingParams(snap, running),
+      passing: this.passingParams(snap, running),
+      // 保安装置の報知音と警笛は運転台の中で鳴るので、距離減衰も走行音による
+      // マスクも受けない。運転士に届かなければ意味が無い装置だからである。
+      alarm: {
+        bell: snap.safety.indication.bell,
+        chime: snap.safety.indication.chime,
+        patternApproach: snap.safety.indication.patternApproach,
+        level: this.mixValues.alarm,
+      },
+      horn: { sounding: sim.input.horn, level: this.mixValues.horn },
+    });
+
+    const nearest = running ? this.nearestRemote(sim, cab) : null;
+    const reset = this.syncRemote(nearest);
+    const remote = this.remoteMessage(sim, nearest, cab, running);
+
+    this.joints.length = 0;
+    this.turnouts.length = 0;
+    this.remoteJoints.length = 0;
+    this.remoteTurnouts.length = 0;
+    if (running) {
+      this.collectImpacts(sim, nearest, cab, wall);
+    } else {
+      this.syncPositions(sim.dynamics, this.ownPositions);
+    }
+
     worklet.port.postMessage({
       params,
+      remote,
+      ...(reset ? { resetRemote: true } : {}),
       ...(this.joints.length > 0 ? { joints: this.joints } : {}),
       ...(this.turnouts.length > 0 ? { turnouts: this.turnouts } : {}),
+      ...(this.remoteJoints.length > 0 ? { remoteJoints: this.remoteJoints } : {}),
+      ...(this.remoteTurnouts.length > 0 ? { remoteTurnouts: this.remoteTurnouts } : {}),
     });
     this.updateTunnel(sim);
   }
 
   /**
-   * トンネル内かどうかで残響の送り量を切り替える。
-   * 坑口では一瞬で変わるのではなく、列車が入りきるまでのあいだに移り変わる。
+   * いま鳴らすべきダイヤ列車。
+   *
+   * 合成器は 1 本ぶんしか持たないので、いちばん近い列車を選ぶ。同じ線路の
+   * 先行列車も対象で、隣の線路かどうかは横の隔たり（`lateral`）の違いにすぎない。
+   */
+  private nearestRemote(sim: Simulation, cab: number): NearestRemote | null {
+    if (sim.remoteTrains.size === 0) return null;
+    const adjacent = sim.scenario.route.adjacentTrack;
+    let best: NearestRemote | null = null;
+    for (const state of sim.signalling.trainStates) {
+      const train = sim.remoteTrains.get(state.train.id);
+      if (!train) continue;
+      const lateral =
+        (state.train.track ?? 'own') === 'adjacent'
+          ? Math.abs(adjacent.offsetAt(state.leadPosition)) || DEFAULT_SEPARATION
+          : 0;
+      const distance = Math.hypot(nearestOffset(train.dynamics, cab), lateral);
+      if (distance > AUDIBLE_RANGE) continue;
+      if (!best || distance < best.distance) {
+        best = { id: state.train.id, train, lateral, distance };
+      }
+    }
+    return best;
+  }
+
+  /** 鳴らす相手が変わったら、前の列車の音を引きずらないよう作り直す */
+  private syncRemote(nearest: NearestRemote | null): boolean {
+    const id = nearest?.id ?? null;
+    if (id === this.remoteId) return false;
+    this.remoteId = id;
+    this.remoteParams = new TrainSoundParams();
+    this.remotePositions.length = 0;
+    return true;
+  }
+
+  /**
+   * 隣の線路（あるいは前方）を走る列車の音。
+   *
+   * 渡すのは**自列車とまったく同じ形のパラメータ**である。相手の装置は
+   * `RemoteTrain` が自列車と同じ実装で回しているので、力行していればゲートの
+   * 開いた音が、ブレーキを掛けていれば空気の音が、そのまま出てくる。
+   *
+   * 運転台の中で鳴る報知音だけは渡さない。あれは相手の運転士のための音であって、
+   * こちらに届く経路が無い。警笛は逆に外へ向けて鳴らす装置なので渡す。
+   */
+  private remoteMessage(
+    sim: Simulation,
+    nearest: NearestRemote | null,
+    cab: number,
+    running: boolean,
+  ): RemoteTrainParams | null {
+    if (!nearest || !running) return null;
+    const train = nearest.train;
+    const listener: Listener = {
+      position: cab,
+      lateral: nearest.lateral,
+      halfDistance: OTHER_TRAIN_DISTANCE_HALF,
+    };
+    return {
+      present: true,
+      train: this.remoteParams.build({
+        route: sim.scenario.route,
+        consist: sim.scenario.consist,
+        railCondition: sim.scenario.railCondition,
+        dynamics: train.dynamics,
+        drive: train.traction.driveState,
+        doors: train.doors.state,
+        compressor: train.compressor.state,
+        cylinderPressure: train.brake.averageCylinderPressure(),
+        elapsed: sim.elapsed,
+        speed: train.speed,
+        running,
+        listener,
+        mix: this.mixValues,
+        horn: { sounding: train.horn, level: this.mixValues.horn },
+      }),
+      distance: nearest.distance,
+      level: this.mixValues.passing,
+    };
+  }
+
+  /**
+   * 反響の送り量を切り替える。
+   *
+   * 硬い面に囲まれるほど響くので、トンネルと橋りょうを同じ経路で扱う。坑口や
+   * 橋台では一瞬で変わるのではなく、列車が入りきるまでのあいだに移り変わる。
    */
   private updateTunnel(sim: Simulation): void {
     const context = this.context;
     const send = this.tunnelSend;
     if (!context || !send) return;
+    const vehicles = sim.dynamics.vehicles;
+    const bridges = sim.scenario.route.bridges;
     let inside = 0;
-    for (const veh of sim.dynamics.vehicles) if (veh.inTunnel) inside++;
-    const ratio = sim.dynamics.vehicles.length > 0 ? inside / sim.dynamics.vehicles.length : 0;
-    send.gain.setTargetAtTime(ratio * TUNNEL_WET, context.currentTime, TUNNEL_FADE);
+    let onBridge = 0;
+    let reflection = 0;
+    for (const veh of vehicles) {
+      if (veh.inTunnel) inside++;
+      const bridge = bridges.at(veh.s);
+      if (!bridge) continue;
+      onBridge++;
+      reflection = Math.max(reflection, this.acousticsOf(bridge).reflection);
+    }
+    const count = vehicles.length > 0 ? vehicles.length : 1;
+    const wet = (inside / count) * TUNNEL_WET + (onBridge / count) * reflection * BRIDGE_WET;
+    send.gain.setTargetAtTime(wet, context.currentTime, TUNNEL_FADE);
+  }
+
+  /** 橋の音の諸元。桁の寸法から決まる値なので、橋ごとに 1 度求めて使い回す。 */
+  private acousticsOf(bridge: Bridge): BridgeAcoustics {
+    const cached = this.bridgeCache.get(bridge.id);
+    if (cached) return cached;
+    const acoustics = bridgeAcoustics(bridge);
+    this.bridgeCache.set(bridge.id, acoustics);
+    return acoustics;
   }
 
   /**
-   * 制御方式に応じて主回路の音源を選ぶ。
+   * 踏切の警報音。
    *
-   * 鳴らない方式には無音のパラメータを渡す。方式は走行中に変わらないので、
-   * 使われない音源は毎フレームそのまま素通りするだけで負荷にならない。
+   * 音源は線路脇に**静止している**ので、渡す量は位置関係と自分の速度だけである。
+   * 距離減衰もドップラーも音源側で決めることは何も無い。鳴っているかどうかは
+   * 踏切保安装置（`LevelCrossingSystem`）が決めていて、対向列車が来れば自分が
+   * 止まっていても鳴る。
    */
-  private mainCircuitParams(
-    drive: ReturnType<Simulation['snapshot']>['drive'],
-    running: boolean,
-    motorGain: number,
-    load: number,
-  ): {
-    inverter: InverterVoiceParams;
-    resistor: ResistorVoiceParams;
-    chopper: ChopperVoiceParams;
-  } {
-    const mix = this.mixValues;
-    const silent = {
-      inverter: SILENT_INVERTER,
-      resistor: SILENT_RESISTOR,
-      chopper: SILENT_CHOPPER,
-    };
-
-    switch (drive.kind) {
-      case 'vvvf': {
-        // 主回路が切れていれば（惰行・ノッチ切）ゲートが閉じる。音量を 0 にするのでは
-        // なく合成器へゲートの状態を渡し、相電圧を 0 にして磁束を自然に減衰させる。
-        const gate = drive.mode !== 'off' && running;
-        // V/f 一定で磁束が保たれるので、実機の磁気音は負荷でそれほど変わらない。
-        // どれだけ追従させるかは耳で決められるようミキサのつまみにしてある。
-        const inverterLoad = 1 - mix.inverterLoadTracking + mix.inverterLoadTracking * load;
-        return {
-          ...silent,
-          inverter: {
-            gate,
-            // ゲートが閉じているあいだも回転子の周波数を渡し続ける。0 へ落とすと、
-            // 磁束が積分であるために消えぎわで利得が跳ね上がって掃引音が出る。
-            fundamental: gate ? drive.fundamentalFrequency : drive.rotorFrequency,
-            carrier: drive.carrierFrequency,
-            modulation: drive.modulationIndex,
-            pulses: drive.pulses,
-            slotFrequency: drive.slotFrequency,
-            level: inverterLoad * motorGain * mix.inverter,
-          },
-        };
-      }
-      case 'resistor': {
-        // 進段は 1 秒に数回までなので、フレーム精度で鳴らせば足りる
-        // （継目や分岐器のようなサンプル精度の予約は要らない）。
-        const steps = running ? Math.max(0, drive.stepEvents - this.lastStepEvents) : 0;
-        const groupChanges = running ? Math.max(0, drive.groupEvents - this.lastGroupEvents) : 0;
-        this.lastStepEvents = drive.stepEvents;
-        this.lastGroupEvents = drive.groupEvents;
-        return {
-          ...silent,
-          resistor: {
-            gate: (drive.gate || drive.dynamicBraking) && running,
-            current: Math.abs(drive.torqueRatio),
-            // 主接触器が切れていても電動機は回っている。周波数は `gate` で止めず、
-            // 惰行でも通風音が残るようにする（消えるのは電流が作る電磁音だけ）。
-            slotFrequency: running ? drive.slotFrequency : 0,
-            commutatorFrequency: running ? drive.commutatorFrequency : 0,
-            ventilationFrequency: running ? drive.ventilationFrequency : 0,
-            // 起動抵抗で捨てている電力を、編成の公称出力で正規化して渡す。
-            // 段が進んで抵抗が短絡されるほど 0 に近づき、うなりが消える。
-            resistorPower: clamp01(drive.resistorPower / RESISTOR_GRID_REFERENCE_POWER),
-            steps,
-            groupChanges,
-            level: motorGain * mix.resistor,
-          },
-        };
-      }
-      case 'chopper':
-        return {
-          ...silent,
-          chopper: {
-            gate: drive.gate && running,
-            current: Math.abs(drive.torqueRatio),
-            duty: drive.duty,
-            chopFrequency: drive.chopFrequency,
-            slotFrequency: running ? drive.slotFrequency : 0,
-            commutatorFrequency: running ? drive.commutatorFrequency : 0,
-            ventilationFrequency: running ? drive.ventilationFrequency : 0,
-            level: motorGain * mix.chopper,
-          },
-        };
-      case 'none':
-        return silent;
-    }
-  }
-
-  private buildParams(
-    sim: Simulation,
+  private crossingParams(
     snap: ReturnType<Simulation['snapshot']>,
     running: boolean,
-  ): TrainNoiseParams {
-    const drive = snap.drive;
-    const indication = snap.safety.indication;
-    const mix = this.mixValues;
-    const speed = running ? Math.abs(snap.speed) : 0;
-    const spec = sim.scenario.consist.vehicles.find((v) => v.traction)?.traction ?? null;
-
-    // 負荷率はどの方式でも「定格に対するトルク比」で表せる。歯車の音はこれで駆動する。
-    const load = Math.min(1, Math.abs(drive.torqueRatio));
-    // 電動機は M 車の床下にある。この編成は Tc 先頭なので、運転士には
-    // 数十メートル後方から聞こえることになる。
-    const motorGain = this.motorDistanceGain(sim);
-
-    // 戸当たりは進段と同じくフレーム精度で足りる（1 回の停車で数回しか鳴らない）。
-    const doorParams = {
-      moving: snap.doors.moving && running,
-      closing: snap.doors.closing,
-      chiming: snap.doors.chiming && running,
-      latches: running ? Math.max(0, snap.doors.latchEvents - this.lastLatchEvents) : 0,
-      opens: running ? Math.max(0, snap.doors.openEvents - this.lastOpenEvents) : 0,
-      // 扉は運転台のすぐ後ろから編成の端までにあるので、距離減衰は掛けない。
-      level: mix.door,
-    };
-    this.lastLatchEvents = snap.doors.latchEvents;
-    this.lastOpenEvents = snap.doors.openEvents;
-
-    const cylinder = spec
-      ? snap.cylinderPressure /
-        (sim.scenario.consist.vehicles[0]?.brake.maxCylinderPressure ?? 400_000)
-      : 0;
-    const pressureRate = this.cylinderRate(snap.cylinderPressure, sim);
-
+  ): CrossingVoiceParams {
+    const crossing = snap.crossing;
+    if (!crossing || !running) return SILENT_CROSSING;
     return {
-      ...this.mainCircuitParams(drive, running, motorGain, load),
-      gear: {
-        // 歯車のかみ合いは主回路が何であろうと同じように鳴るので、
-        // 制御方式に依らない共通の回転量から作る。
-        meshFrequency: running ? drive.gearMeshFrequency : 0,
-        shaftFrequency: running ? drive.motorRpm / 60 : 0,
-        load: 1 - mix.gearLoadTracking + mix.gearLoadTracking * load,
-        // 歯車箱は M 車の床下にしか無いので、電動機と同じだけ遠い
-        level: motorGain * mix.gear,
-      },
-      door: doorParams,
-      // 転動音と風切り音は編成のどこからでも来る。運転台の真下にも軸があるし、
-      // 前面は自分が風を切っている当人なので、距離減衰は掛からない。
-      rolling: {
-        speed,
-        corrugation: sim.scenario.route.railCorrugation.at(sim.dynamics.frontPosition),
-        level: mix.rolling,
-      },
-      wind: { speed, level: mix.wind },
-      brake: {
-        speed,
-        cylinderPressure: cylinder,
-        pressureRate: running ? pressureRate : 0,
-        level: mix.brake,
-      },
-      auxiliary: {
-        compressor: running ? snap.compressor.output : 0,
-        level: mix.auxiliary,
-      },
-      airSpring: {
-        strokeRate: running ? airSpringStrokeRate(snap.body) : 0,
-        level: mix.airSpring,
-      },
-      curveSqueal: {
-        drive: running ? this.squealDrive(sim) : 0,
-        speed,
-        level: mix.curveSqueal,
-      },
-      // 保安装置の報知音と警笛は運転台の中で鳴るので、距離減衰も走行音による
-      // マスクも受けない。運転士に届かなければ意味が無い装置だからである。
-      alarm: {
-        bell: indication.bell,
-        chime: indication.chime,
-        patternApproach: indication.patternApproach,
-        level: mix.alarm,
-      },
-      horn: { sounding: sim.input.horn, level: mix.horn },
+      ringing: crossing.state.ringing,
+      bell: crossing.state.crossing.bell,
+      distance: crossing.distance,
+      lateral: CROSSING_POST.lateral,
+      postSpacing: crossing.state.crossing.roadWidth + CROSSING_POST.margin,
+      speed: snap.speed,
+      level: this.mixValues.crossing,
     };
   }
 
   /**
-   * 編成のうちいちばん強く軋っている台車の駆動の強さ。
+   * すれ違いざまの圧力波。
    *
-   * 判定そのものは `bogieSquealDrive`（コア）にある。ここがやるのは台車の位置を
-   * 並べることと、運転台からの距離で弱めることだけである。
-   *
-   * 足し合わせずに最大を取っているのは、軋りが**その 1 つのモードの自励振動**で
-   * あって、鳴いている台車が増えても音量が線形に増える種類の音ではないためである。
+   * 相手の走行音そのものは `remoteMessage()` の側から出るので、ここに残っているのは
+   * **音として伝わってくるのではない**成分だけである（相手が押しのけた空気が
+   * 自分の車体を直接叩く力）。
    */
-  private squealDrive(sim: Simulation): number {
-    const route = sim.scenario.route;
-    const cab = sim.dynamics.frontPosition;
-    const rail = sim.scenario.railCondition;
-    const adhesion = sim.scenario.consist.adhesion;
-    const lateralAt = (s: number): number =>
-      route.irregularity.lateralAt(s) + route.turnouts.lateralAt(s);
-
-    let worst = 0;
-    for (const veh of sim.dynamics.vehicles) {
-      const spec = veh.spec;
-      const half = spec.bogieSpacing / 2;
-      for (const centre of [veh.s + half, veh.s - half]) {
-        const drive = bogieSquealDrive({
-          adhesion,
-          curvature: route.alignment.curvatureAt(centre),
-          lateralAt,
-          position: centre,
-          bogieWheelbase: spec.bogieWheelbase,
-          speed: veh.v,
-          rail,
-        });
-        // 台車は編成のあちこちにあるので、運転台からの距離で弱まる
-        const gain = 1 / (1 + Math.abs(cab - centre) / DISTANCE_HALF);
-        worst = Math.max(worst, drive * gain);
-      }
-    }
-    return worst;
-  }
-
-  /** 運転台から電動機（M 車）までの距離による減衰 */
-  private motorDistanceGain(sim: Simulation): number {
-    const cab = sim.dynamics.frontPosition;
-    let sum = 0;
-    let count = 0;
-    for (const veh of sim.dynamics.vehicles) {
-      if (!veh.spec.traction) continue;
-      sum += Math.abs(cab - veh.s);
-      count++;
-    }
-    if (count === 0) return 0;
-    return 1 / (1 + sum / count / DISTANCE_HALF);
-  }
-
-  private lastCylinder = 0;
-  private lastCylinderTime = 0;
-
-  /** BC 圧の変化率（最大圧に対する比 / 秒） */
-  private cylinderRate(pressure: number, sim: Simulation): number {
-    const max = sim.scenario.consist.vehicles[0]?.brake.maxCylinderPressure ?? 400_000;
-    const now = sim.elapsed;
-    const dt = now - this.lastCylinderTime;
-    this.lastCylinderTime = now;
-    if (dt <= 0 || dt > 1) {
-      this.lastCylinder = pressure;
-      return 0;
-    }
-    const rate = (pressure - this.lastCylinder) / max / dt;
-    this.lastCylinder = pressure;
-    return rate;
+  private passingParams(
+    snap: ReturnType<Simulation['snapshot']>,
+    running: boolean,
+  ): PassingVoiceParams {
+    const passing = snap.passing;
+    if (!passing || !running) return SILENT_PASSING;
+    return {
+      present: true,
+      headGap: passing.headGap,
+      tailGap: passing.tailGap,
+      closingSpeed: passing.closingSpeed,
+      separation: passing.lateralSeparation,
+      level: this.mixValues.passing,
+    };
   }
 
   /**
-   * この描画フレームのあいだに各軸が踏んだ継目と分岐器を集める。
+   * この描画フレームのあいだに各軸が踏んだ継目・分岐器・踏切板を集める。
+   *
+   * 自列車と対向列車で同じ手続きを使う（`collectTrainImpacts`）。継目は**線路の
+   * 側にあるもの**なので、誰の軸が踏んでも同じ継目が同じように鳴る。違うのは
+   * 鳴った音がどこから届くかだけで、それは音源の側（`RemoteTrainVoice`）が
+   * 遅れと遮音として受け持つ。
+   */
+  private collectImpacts(
+    sim: Simulation,
+    nearest: NearestRemote | null,
+    cab: number,
+    wall: number,
+  ): void {
+    const context = this.context;
+    if (!context || wall <= 0) return;
+    const frameSamples = wall * context.sampleRate;
+    const route = sim.scenario.route;
+
+    this.collectTrainImpacts(
+      route,
+      sim.dynamics,
+      this.ownPositions,
+      { position: cab, lateral: 0, halfDistance: DISTANCE_HALF },
+      frameSamples,
+      this.joints,
+      this.turnouts,
+    );
+
+    if (!nearest) {
+      this.remotePositions.length = 0;
+      return;
+    }
+    this.collectTrainImpacts(
+      route,
+      nearest.train.dynamics,
+      this.remotePositions,
+      { position: cab, lateral: nearest.lateral, halfDistance: OTHER_TRAIN_DISTANCE_HALF },
+      frameSamples,
+      this.remoteJoints,
+      this.remoteTurnouts,
+    );
+  }
+
+  /**
+   * 1 本の列車が踏んだ継目・分岐器・踏切板を集める。
    *
    * 軸ごと・要素ごとに、フレーム内のどの位置で踏んだかを小数で求め、
    * サンプル数に直して予約する。60fps に丸めると 16ms もばらつき、
@@ -502,47 +538,87 @@ export class TrainAudio {
    * 分岐器も同じ扱いで、1 つの分岐器につき軸ごとに 2 回（トングレール先端と
    * クロッシング）鳴る。2 つの間隔はリード長を速度で割った時間そのものなので、
    * 番数の大きい分岐器ほど離れて聞こえる。
+   *
+   * 継目には 3 通りある。
+   *
+   *  - **定尺の継目** — 距離程の周期なので、`jointCrossings()` が跨ぎを数える
+   *  - **個別の継目**（分岐器の前後の絶縁継目・橋の両端の伸縮継目）— そこに
+   *    置く理由がある継目なので、位置を 1 つずつ持つ。ロングレール区間でここだけ
+   *    音がするのはこのため
+   *  - **踏切板の目地** — 踏切道の入口と出口。舗装と踏切板の段差を踏む
+   *
+   * どれも同じ音源（`RailJointVoice`）へ送るが、種類ごとに構造が違うので鳴り方が
+   * 違う。ミキサのつまみを 1 本にしてあるのも「継目の音」として一括りにできるためで、
+   * 音色を分けているのは構造の違いだけである。
+   *
+   * 距離程の減る向きへ走っていても（対向列車）そのまま動く。跨ぎの判定は
+   * 前の位置と今の位置の区間で行っており、向きに依らないためである。
    */
-  private collectImpacts(sim: Simulation, wall: number): void {
-    this.joints.length = 0;
-    this.turnouts.length = 0;
-    const context = this.context;
-    if (!context || wall <= 0) return;
-
-    const route = sim.scenario.route;
-    const speed = Math.abs(sim.speed);
-    const vehicles = sim.dynamics.vehicles;
-    if (speed < 0.3 || this.previousPositions.length !== vehicles.length) {
-      this.syncPositions(sim);
+  private collectTrainImpacts(
+    route: CompiledRoute,
+    dynamics: TrainDynamics,
+    previous: number[],
+    listener: Listener,
+    frameSamples: number,
+    joints: JointImpact[],
+    turnouts: TurnoutImpact[],
+  ): void {
+    const vehicles = dynamics.vehicles;
+    const speed = Math.abs(dynamics.speed);
+    if (speed < 0.3 || previous.length !== vehicles.length) {
+      this.syncPositions(dynamics, previous);
       return;
     }
-    const jointStrength = Math.min(1.2, Math.pow(speed / JOINT_REFERENCE_SPEED, 1.5));
-    const turnoutStrength = Math.min(1.4, Math.pow(speed / TURNOUT_REFERENCE_SPEED, 1.5));
-    const frameSamples = wall * context.sampleRate;
+    // 衝撃は音源側に音量の入り口が無い（撃力そのものを渡すため）ので、
+    // ミキサのつまみはここで強さに掛ける。
+    const jointStrength =
+      Math.min(1.2, Math.pow(speed / JOINT_REFERENCE_SPEED, 1.5)) * this.mixValues.railJoint;
+    const turnoutStrength =
+      Math.min(1.4, Math.pow(speed / TURNOUT_REFERENCE_SPEED, 1.5)) * this.mixValues.turnout;
 
     const crossings: number[] = [];
     for (let i = 0; i < vehicles.length; i++) {
       const veh = vehicles[i]!;
       const offsets = axleOffsets(veh.spec, this.offsetScratch);
-      const dCentre = veh.s - this.previousPositions[i]!;
-      this.previousPositions[i] = veh.s;
-      // 後方の車ほど遠いので弱く聞こえる
-      const distance = i === 0 ? 1 : 0.75 / (1 + i * 0.35);
+      const dCentre = veh.s - previous[i]!;
+      previous[i] = veh.s;
+      // 遠い車の音ほど弱く聞こえる。自列車なら運転台の真下が 1 になる。
+      const distance = gainAt(listener, veh.s);
       for (const offset of offsets) {
         const now = veh.s + offset;
         const prev = now - dCentre;
         const spacing = route.railJointSpacing.at(now);
         jointCrossings(prev, now, spacing, crossings);
         for (const u of crossings) {
-          this.joints.push({
+          joints.push({
             delay: Math.round(u * frameSamples),
             strength: jointStrength * distance,
+            kind: 'standard',
           });
         }
-        if (route.turnouts.length === 0 || dCentre === 0) continue;
+        if (dCentre === 0) continue;
+        // 個別に置かれた継目（絶縁継目・伸縮継目）
+        for (const entry of route.railJoints.crossing(prev, now)) {
+          const u = (entry.s - prev) / dCentre;
+          joints.push({
+            delay: Math.round(u * frameSamples),
+            strength: jointStrength * distance * entry.value.strength,
+            kind: JOINT_KIND[entry.value.kind],
+          });
+        }
+        // 踏切道の入口と出口（舗装と踏切板の目地）
+        for (const entry of route.levelCrossings.crossing(prev, now)) {
+          const u = (entry.s - prev) / dCentre;
+          joints.push({
+            delay: Math.round(u * frameSamples),
+            strength: jointStrength * distance * entry.value.strength,
+            kind: 'panel',
+          });
+        }
+        if (route.turnouts.length === 0) continue;
         for (const entry of route.turnouts.crossing(prev, now)) {
           const u = (entry.s - prev) / dCentre;
-          this.turnouts.push({
+          turnouts.push({
             delay: Math.round(u * frameSamples),
             strength: turnoutStrength * distance * entry.value.strength,
             crossing: entry.value.kind === 'crossing',
@@ -552,27 +628,21 @@ export class TrainAudio {
     }
   }
 
-  private clearImpacts(sim: Simulation): void {
-    this.syncPositions(sim);
-    this.joints.length = 0;
-    this.turnouts.length = 0;
-  }
+  private readonly offsetScratch: number[] = [];
 
-  private syncPositions(sim: Simulation): void {
-    const vehicles = sim.dynamics.vehicles;
-    this.previousPositions.length = vehicles.length;
-    for (let i = 0; i < vehicles.length; i++) this.previousPositions[i] = vehicles[i]!.s;
+  private syncPositions(dynamics: TrainDynamics, out: number[]): void {
+    const vehicles = dynamics.vehicles;
+    out.length = vehicles.length;
+    for (let i = 0; i < vehicles.length; i++) out[i] = vehicles[i]!.s;
   }
 
   /** シナリオを切り替えたときに合成器の内部状態を捨てる */
   reset(): void {
-    this.previousPositions.length = 0;
-    this.lastCylinder = 0;
-    this.lastCylinderTime = 0;
-    this.lastStepEvents = 0;
-    this.lastGroupEvents = 0;
-    this.lastLatchEvents = 0;
-    this.lastOpenEvents = 0;
+    this.ownPositions.length = 0;
+    this.remotePositions.length = 0;
+    this.remoteId = null;
+    this.ownParams.reset();
+    this.remoteParams = new TrainSoundParams();
     this.worklet?.port.postMessage({ reset: true });
   }
 
@@ -583,6 +653,14 @@ export class TrainAudio {
     this.master = null;
     this.tunnelSend = null;
   }
+}
+
+/** 編成のいちばん近いところと `s` との距離程の差 [m] */
+function nearestOffset(dynamics: TrainDynamics, s: number): number {
+  const { lo, hi } = consistExtent(dynamics);
+  if (s < lo) return lo - s;
+  if (s > hi) return s - hi;
+  return 0;
 }
 
 /**
@@ -618,15 +696,4 @@ function createTunnelImpulse(context: BaseAudioContext): AudioBuffer {
     for (let i = 0; i < 64; i++) data[i]! *= i / 64;
   }
   return buffer;
-}
-
-/**
- * 空気ばねが伸縮する速さ [m/s]。
- *
- * 車体の上下動そのものと、ロールによる左右差の両方が効く。左右の空気ばねは
- * 車体中心から `間隔/2` だけ離れているので、ロール角速度にその腕の長さを
- * 掛けたぶんが上下速度に加わる。大きいほうの側が鳴く。
- */
-function airSpringStrokeRate(body: BodyMotionState): number {
-  return Math.abs(body.verticalRate) + AIR_SPRING_HALF_SPACING * Math.abs(body.rollRate);
 }

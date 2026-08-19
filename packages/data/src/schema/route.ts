@@ -105,6 +105,76 @@ export const tunnelSchema = z.object({
   end: z.number(),
 });
 
+/**
+ * 橋りょう。
+ *
+ * 形式（`kind`）と床（`deck`）を書けば、桁の寸法は形式ごとの標準値から作られる。
+ * 音を決めているのは形式そのものではなく寸法なので、寸法を書けばそちらが優先される
+ * （薄い腹板の桁はよく鳴り、厚い床版は鳴らない、というのはどの形式でも同じである）。
+ */
+export const bridgeSchema = z.object({
+  id: z.string(),
+  name: z.string().optional(),
+  /** 橋りょうの始端（橋台の前面）の距離程 [m] */
+  start: z.number(),
+  /** 橋りょうの終端の距離程 [m] */
+  end: z.number(),
+  kind: z.enum(['plate-girder', 'truss', 'concrete']).default('plate-girder'),
+  /**
+   * 床の作り。省略すると形式ごとの標準（鋼桁は無道床、コンクリート桁は有道床）になる。
+   *
+   * - `open`（無道床）— 橋まくらぎを主桁へ直接締結する。加振力がそのまま桁へ入る。
+   * - `ballasted`（有道床）— 床版の上に道床を敷く。砕石が力を食うので静かになる。
+   */
+  deck: z.enum(['open', 'ballasted']).optional(),
+  /** 径間長（支間）[m]。省略すると形式ごとの標準値。 */
+  spanLength: z.number().positive().optional(),
+  /** 主構・主桁の高さ [m]。省略すると支間から求める。 */
+  girderDepth: z.number().positive().optional(),
+  /** 音を出す板（腹板・床版）の厚さ [mm]。省略すると形式ごとの標準値。 */
+  plateThickness: z.number().positive().optional(),
+  /** 補剛材（板を区切る部材）の間隔 [m]。省略すると形式ごとの標準値。 */
+  stiffenerSpacing: z.number().positive().optional(),
+});
+
+/**
+ * 踏切道。
+ *
+ * 警報開始距離を書かなければ「警報時間 × 線路最高速度」で求める。実物の踏切制御子も
+ * この決め方なので、線区の最高速度を上げれば踏切の鳴り始めも自動的に手前へ動く。
+ */
+export const levelCrossingSchema = z.object({
+  id: z.string(),
+  name: z.string().optional(),
+  /** 踏切道の中心の距離程 [m] */
+  at: z.number(),
+  /** 道路の幅 [m]（踏切道の長さ） */
+  roadWidth: z.number().positive().default(6),
+  /** 踏切道の舗装 */
+  surface: z.enum(['rubber', 'concrete']).default('rubber'),
+  /** 警報機の方式（電鐘式 / 電子式） */
+  bell: z.enum(['gong', 'electronic']).default('electronic'),
+  /** 警報時間 [s]（列車が来るまでに最低これだけ鳴らす） */
+  warningTime: z.number().positive().default(30),
+  /** 警報開始距離 [m]（省略時は 警報時間 × 線路最高速度） */
+  warningDistance: z.number().positive().optional(),
+});
+
+/**
+ * 行き違い設備（交換設備）。
+ *
+ * 入口と出口の分岐器を指すだけでよい。線路がどこにあるか（線路中心間隔・隣の線路の
+ * 側）は分岐器の寸法と開通方向から決まるので、書く値は無い。単線の路線で対向列車と
+ * すれ違えるのはこの区間だけである。
+ */
+export const passingLoopSchema = z.object({
+  id: z.string(),
+  /** 入口の分岐器の ID */
+  entry: z.string(),
+  /** 出口の分岐器の ID */
+  exit: z.string(),
+});
+
 export const safetySectionSchema = z.object({
   start: z.number(),
   end: z.number(),
@@ -152,6 +222,9 @@ export const routeSchema = z.object({
   signals: z.array(signalSchema).default([]),
   tunnels: z.array(tunnelSchema).default([]),
   turnouts: z.array(turnoutSchema).default([]),
+  bridges: z.array(bridgeSchema).default([]),
+  levelCrossings: z.array(levelCrossingSchema).default([]),
+  passingLoops: z.array(passingLoopSchema).default([]),
   safetySections: z.array(safetySectionSchema).default([]),
   beacons: z.array(beaconSchema).default([]),
 
@@ -241,6 +314,30 @@ export const routeSchema = z.object({
           }),
         )
         .default([]),
+    })
+    .default({}),
+
+  /**
+   * 個別の継目（絶縁継目・伸縮継目）を自動配置する。
+   *
+   * 継目はロングレール区間にも**置かざるを得ない場所**がある。
+   *
+   *  - 分岐器の前後 — 軌道回路（列車検知）の区切りに絶縁継目が要る
+   *  - 橋りょうの両端 — 桁が温度で伸び縮みするので、その動きをレールから
+   *    切り離す伸縮継目が要る（無道床橋は桁の動きがレールへ直に来るので必須。
+   *    有道床橋は道床が滑って逃がすため、長い橋でだけ要る）
+   *
+   * どちらも「継目を無くせない場所で、継目の衝撃をできるだけ小さくする」ための
+   * 構造なので、突合せ継目より小さい音がする。ロングレール区間を走っていて
+   * 分岐器と橋の前後だけ継目の音が入るのは、実物でもこのためである。
+   */
+  autoRailJoints: z
+    .object({
+      enabled: z.boolean().default(true),
+      /** 分岐器の端から絶縁継目までの距離 [m] */
+      insulatedOffset: z.number().nonnegative().default(3),
+      /** 有道床橋に伸縮継目を置く長さの下限 [m] */
+      ballastedExpansionLength: z.number().positive().default(100),
     })
     .default({}),
 

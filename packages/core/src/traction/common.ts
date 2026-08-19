@@ -1,7 +1,12 @@
 import { clamp } from '../math/scalar.ts';
-import type { MetersPerSecond, Newtons, RadiansPerSecond, Watts } from '../units.ts';
+import type { Hertz, Meters, MetersPerSecond, Newtons, RadiansPerSecond, Watts } from '../units.ts';
 import type { TrainDynamics } from '../train/dynamics.ts';
-import type { ConsistSpec, TractionSpecBase, VehicleSpec } from '../vehicle/spec.ts';
+import type {
+  ConsistSpec,
+  VehicleTractionSpec,
+  TractionSpecBase,
+  VehicleSpec,
+} from '../vehicle/spec.ts';
 import { vehicleMass } from '../vehicle/spec.ts';
 import type { TractionState } from './types.ts';
 
@@ -12,6 +17,40 @@ import type { TractionState } from './types.ts';
  * 車輪周への換算・応荷重補正・各動軸への配分・空転検知と再粘着制御は、VVVF でも
  * 抵抗制御でも一字一句同じことをしている。ここに集めて 1 か所だけ持つ。
  */
+
+/**
+ * 歯車のかみ合い周波数 [Hz] を車速から求める。
+ *
+ *   かみ合い周波数 = 電動機の回転数/60 × 小歯車の歯数
+ *                  = (v / (D/2)) × 歯車比 / 2π × 歯数
+ *
+ * 走っている列車の状態（`DriveState`）から取れるならそちらを使うべきだが、
+ * **位置しか分からない列車**（ダイヤ上の対向列車）についてはこれで見積もる。
+ * 歯車の音は力行しているかどうかに依らず鳴るので、速度だけで決まるこの式で足りる。
+ */
+export function gearMeshFrequencyAt(
+  spec: VehicleTractionSpec,
+  wheelDiameter: Meters,
+  speed: MetersPerSecond,
+): Hertz {
+  const teeth = pinionTeethOf(spec);
+  if (teeth <= 0 || wheelDiameter <= 0) return 0;
+  const motorOmega = (Math.abs(speed) / (wheelDiameter / 2)) * spec.gearRatio;
+  return (motorOmega / (2 * Math.PI)) * teeth;
+}
+
+/** 小歯車の歯数。方式で電動機の持ち方が違うだけで、歯車は同じように付いている。 */
+function pinionTeethOf(spec: VehicleTractionSpec): number {
+  switch (spec.kind) {
+    case 'vvvf':
+      return spec.inverter.pinionTeeth;
+    case 'resistor':
+    case 'chopper':
+      return spec.motor.pinionTeeth;
+    default:
+      return 0;
+  }
+}
 
 /** 電動機トルクから車輪周の引張力 [N] へ換算する（1 両分） */
 export function rimForceFromMotorTorque(

@@ -43,6 +43,54 @@ export const precedingTrain = [
   },
 ];
 
+/**
+ * 対向列車（自列車が 1 番線にいるとき）。
+ *
+ * 単線なので、対向列車とすれ違えるのは交換設備の中だけである。したがってこの列車の
+ * ダイヤは**交換設備を通り抜けるあいだだけ**書いてある（その前後は単線を走っていて、
+ * 自列車が交換を終えるまで来られない）。
+ *
+ * 自列車が 1 番線（本線側）にいるので、対向列車は 2 番線＝分岐側を通ることになり、
+ * 入口・出口の #12 分岐器の制限 45km/h に従う。通過に 36 秒かかるので、
+ * すれ違いはゆっくりで、圧力波よりも警笛のように近づいてくる走行音のほうが目立つ。
+ */
+export const opposingTrainLoop = [
+  {
+    id: 'opposing',
+    length: 80,
+    track: 'adjacent' as const,
+    waypoints: [
+      { time: '10:00:05', position: 470 },
+      { time: '10:00:41', position: 20 },
+    ],
+  },
+];
+
+/**
+ * 対向列車（自列車が 2 番線にいるとき）。
+ *
+ * こちらが副本線へ入っているので、対向列車は**本線側を制限なしで通過**できる。
+ * 一線スルーの交換駅で起きることそのもので、停車しているすぐ隣を 100km/h で
+ * 通り抜けていく。相対速度が 28m/s あるため、
+ *
+ *  - 先頭がすれ違う瞬間に圧力波が「バン」と来る（動圧は速度の 2 乗で効く）
+ *  - すれ違っているあいだ（80m / 28m/s ≒ 2.9 秒）だけ相手の転動音が至近距離で鳴る
+ *  - その音程は、近づくあいだ 1.09 倍・離れるあいだ 0.92 倍（全音以上の落差）
+ *
+ * が続けて起きる。自列車が止まっていて自分の走行音が無いので、いちばん分かりやすい。
+ */
+export const opposingTrainMain = [
+  {
+    id: 'opposing',
+    length: 80,
+    track: 'adjacent' as const,
+    waypoints: [
+      { time: '10:00:08', position: 470 },
+      { time: '10:00:24', position: 20 },
+    ],
+  },
+];
+
 /** 先行列車シナリオ: 前を走る列車に追いつき、信号現示が段階的に変化する。 */
 export const testLineFollowing: ScenarioDefinition = {
   ...testLineLocal,
@@ -147,6 +195,35 @@ export const testLineScale: ScenarioDefinition = {
   vehicleId: 'commuter-4-scale',
 };
 
+/**
+ * すれ違いシナリオ: 2 番線に停まっているところへ、本線を対向列車が通過する。
+ *
+ * 発車時刻（10:00:30）より前に通り抜けるので、停車したまま聴くことになる。
+ * 自分の走行音が無いぶん、圧力波・ドップラー・至近距離の転動音がそのまま届く。
+ */
+export const testLineOpposing: ScenarioDefinition = {
+  ...testLineLocal,
+  id: 'test-line-opposing',
+  name: '試験線 対向列車とすれ違い（2 番線待避）',
+  routeId: 'test-line-loop',
+  scheduledTrains: opposingTrainMain,
+};
+
+/**
+ * 橋りょう・踏切シナリオ: 中原を発車し、ロングレール区間の橋と分岐器を渡る。
+ *
+ * 3700m の電鐘式踏切、3950m の分岐器、4380m の下路トラス橋が続けて来る。継目音の
+ * 無いロングレール区間なので、踏切板の目地・分岐器の絶縁継目・橋の伸縮継目が
+ * それぞれ違う音で入るのが聞き分けられる。
+ */
+export const testLineStructures: ScenarioDefinition = {
+  ...testLineLocal,
+  id: 'test-line-structures',
+  name: '試験線 橋りょうと踏切',
+  startTime: '10:03:50',
+  startPosition: 3500,
+};
+
 export const scenarios = [
   testLineLocal,
   testLineSnow,
@@ -154,6 +231,8 @@ export const scenarios = [
   testLineAtsSn,
   testLineTurnoutThrough,
   testLineLoop,
+  testLineOpposing,
+  testLineStructures,
   testLineResistor,
   testLineResistorSnow,
   testLineChopper,

@@ -10,32 +10,79 @@ import {
   type SignalDefinition,
 } from '../route/types.ts';
 
-/** ダイヤ上の他列車（先行列車）。時刻に対する位置の折れ線で表す。 */
+/**
+ * ダイヤ上の他列車が走る線路。
+ *
+ * - `own` — 自列車と同じ線路。先行列車がこれで、閉塞を占有するので信号現示が変わる。
+ * - `adjacent` — 交換設備の隣の線路。**別の線路なので閉塞は占有しない**。
+ *   対向列車がこれで、影響するのは信号ではなく、すれ違うときの音と踏切の鳴動である。
+ */
+export type ScheduledTrainTrack = 'own' | 'adjacent';
+
+/** ダイヤ上の他列車（先行列車・対向列車）。時刻に対する位置の折れ線で表す。 */
 export interface ScheduledTrain {
   readonly id: string;
   /** 編成長 [m] */
   readonly length: Meters;
-  /** 時刻 [s] と先頭端の距離程 [m] の折れ線（時刻昇順） */
+  /** どの線路を走るか（省略時は自列車と同じ線路） */
+  readonly track?: ScheduledTrainTrack;
+  /**
+   * 時刻 [s] と**先頭端**の距離程 [m] の折れ線（時刻昇順）。
+   *
+   * 距離程が減っていく折れ線を書けば対向列車になる。先頭端はつねに進行方向の
+   * 先の端なので、対向列車では編成が距離程の**大きい側**へ伸びる。
+   */
   readonly waypoints: ReadonlyArray<{ readonly time: Seconds; readonly position: Meters }>;
 }
 
-/** 他列車の在線位置を求める。区間外なら null（在線していない）。 */
-export function scheduledOccupancy(train: ScheduledTrain, time: Seconds): Occupancy | null {
+/** 他列車の走行状態 */
+export interface ScheduledTrainState {
+  readonly train: ScheduledTrain;
+  /** 先頭端の距離程 [m] */
+  readonly leadPosition: Meters;
+  /** 進行の向き（+1 = 距離程が増える向き） */
+  readonly direction: 1 | -1;
+  /** 速度 [m/s]（進行方向の大きさ） */
+  readonly speed: MetersPerSecond;
+  /** 距離程での在線範囲 */
+  readonly occupancy: Occupancy;
+}
+
+/** 折れ線を時刻で内挿して、先頭端の位置と速度を求める */
+export function scheduledTrainState(
+  train: ScheduledTrain,
+  time: Seconds,
+): ScheduledTrainState | null {
   const wp = train.waypoints;
   if (wp.length === 0) return null;
   if (time < wp[0]!.time || time > wp[wp.length - 1]!.time) return null;
-  let front = wp[0]!.position;
+  let lead = wp[0]!.position;
+  let velocity = 0;
   for (let i = 1; i < wp.length; i++) {
     const a = wp[i - 1]!;
     const b = wp[i]!;
     if (time <= b.time) {
-      const t = b.time === a.time ? 0 : (time - a.time) / (b.time - a.time);
-      front = a.position + (b.position - a.position) * t;
+      const span = b.time - a.time;
+      const t = span === 0 ? 0 : (time - a.time) / span;
+      lead = a.position + (b.position - a.position) * t;
+      velocity = span === 0 ? 0 : (b.position - a.position) / span;
       break;
     }
-    front = b.position;
+    lead = b.position;
+    velocity = b.time === a.time ? 0 : (b.position - a.position) / (b.time - a.time);
   }
-  return { front, rear: front - train.length };
+  // 進行の向きは折れ線の向きそのもの。距離程が減っていれば対向列車である。
+  const direction: 1 | -1 = velocity < 0 ? -1 : 1;
+  const occupancy: Occupancy =
+    direction > 0
+      ? { front: lead, rear: lead - train.length }
+      : { front: lead + train.length, rear: lead };
+  return { train, leadPosition: lead, direction, speed: Math.abs(velocity), occupancy };
+}
+
+/** 他列車の在線位置を求める。区間外なら null（在線していない）。 */
+export function scheduledOccupancy(train: ScheduledTrain, time: Seconds): Occupancy | null {
+  return scheduledTrainState(train, time)?.occupancy ?? null;
 }
 
 /** 信号機の現在状態 */
@@ -70,6 +117,11 @@ export class SignallingSystem {
   /** 距離程昇順に並べた信号機 */
   private readonly ordered: SignalDefinition[];
   readonly scheduledTrains: ScheduledTrain[];
+  /**
+   * いま走っているダイヤ列車の状態（`update()` のたびに作り直す）。
+   * 信号のためだけでなく、踏切の鳴動・すれ違いの音・描画もここから読む。
+   */
+  readonly trainStates: ScheduledTrainState[] = [];
 
   constructor(route: CompiledRoute, scheduledTrains: readonly ScheduledTrain[] = []) {
     this.route = route;
@@ -125,10 +177,15 @@ export class SignallingSystem {
   update(own: Occupancy, time: Seconds): void {
     for (const [id, st] of this.states) this.previousAspects.set(id, st.aspect);
 
+    this.trainStates.length = 0;
     const occupancies: Occupancy[] = [own];
     for (const train of this.scheduledTrains) {
-      const occ = scheduledOccupancy(train, time);
-      if (occ) occupancies.push(occ);
+      const state = scheduledTrainState(train, time);
+      if (!state) continue;
+      this.trainStates.push(state);
+      // 閉塞を占有するのは同じ線路を走る列車だけ。隣の線路（交換設備）の
+      // 対向列車は、こちらの信号現示には関係しない。
+      if ((train.track ?? 'own') === 'own') occupancies.push(state.occupancy);
     }
 
     // 1. 各閉塞の在線判定

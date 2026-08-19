@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import type { CompiledRoute } from '@railsim/core';
+import { turnoutMergePoint, type CompiledRoute, type Turnout } from '@railsim/core';
 import { BALLAST, POINT_MACHINE, RAIL, SLEEPER } from './dimensions.ts';
 import type { TrackFrame } from './frame.ts';
 import {
@@ -142,24 +142,20 @@ export function buildTrack(
   }
 
   // --- 道床・路盤 ---
-  const bed = stationsAlong(route.length, 5, frameAt);
+  // 無道床橋の上には道床が無い（まくらぎが桁へ直接締結される）。音の側で
+  // 「加振力がそのまま桁へ入る」と扱っているのと同じことを、絵でもそのまま描く。
   const section = ballastSection();
   // 道床（まくらぎ端から肩まで）と、その外の路盤・盛土のり面を別の材質にして
   // バラストと土の境目が見えるようにする。砕石は 1 粒 40mm 前後になるよう
   // テクスチャ 1 枚を 1.2m で貼る。
   const ballastFaces = section.slice(1, section.length - 1);
-  out.push(
-    new THREE.Mesh(
-      sweepSection(bed, ballastFaces),
-      new THREE.MeshStandardMaterial({
-        color: BALLAST_COLOR,
-        ...ballastSurface().maps(1.2),
-        normalScale: new THREE.Vector2(1.5, 1.5),
-        roughness: 1,
-        side: THREE.DoubleSide,
-      }),
-    ),
-  );
+  const ballastMaterial = new THREE.MeshStandardMaterial({
+    color: BALLAST_COLOR,
+    ...ballastSurface().maps(1.2),
+    normalScale: new THREE.Vector2(1.5, 1.5),
+    roughness: 1,
+    side: THREE.DoubleSide,
+  });
   // 盛土のり面は同じ砕石を土の色で使う（実物ものり面には細かい砕石が撒かれている）
   const slope = new THREE.MeshStandardMaterial({
     color: FORMATION_COLOR,
@@ -168,20 +164,142 @@ export function buildTrack(
     roughness: 1,
     side: THREE.DoubleSide,
   });
-  out.push(new THREE.Mesh(sweepSection(bed, [section[0]!, section[1]!]), slope));
-  out.push(
-    new THREE.Mesh(
-      sweepSection(bed, [section[section.length - 2]!, section[section.length - 1]!]),
-      slope,
-    ),
-  );
+  for (const [start, end] of ballastedSpans(route)) {
+    const bed = stationsBetween(start, end, 5, frameAt);
+    out.push(new THREE.Mesh(sweepSection(bed, ballastFaces), ballastMaterial));
+    out.push(new THREE.Mesh(sweepSection(bed, [section[0]!, section[1]!]), slope));
+    out.push(
+      new THREE.Mesh(
+        sweepSection(bed, [section[section.length - 2]!, section[section.length - 1]!]),
+        slope,
+      ),
+    );
+  }
 
   // --- まくらぎ ---
   out.push(buildSleepers(route, frameAt, offset));
 
-  // --- レール継目（定尺レール区間のみ。音が鳴る位置と同じところに置く） ---
+  // --- レール継目（音が鳴る位置と同じところに置く） ---
   out.push(...buildRailJoints(route, frameAt, offset));
 
+  // --- 交換設備の隣の線路 ---
+  out.push(...buildAdjacentTrack(route, frameAt, offset, rail, railhead));
+
+  return out;
+}
+
+/**
+ * 道床のある区間。
+ *
+ * 無道床橋（`deck === 'open'`）の上には道床が無いので、そこで途切れる。橋の
+ * 前後で道床が切れて桁の上にまくらぎだけが並ぶのは、実物の無道床橋そのものである。
+ */
+function ballastedSpans(route: CompiledRoute): Array<[number, number]> {
+  const gaps = route.bridges.bridges
+    .filter((b) => b.deck === 'open')
+    .map((b) => [b.start, b.end] as const)
+    .sort((a, b) => a[0] - b[0]);
+  const spans: Array<[number, number]> = [];
+  let cursor = 0;
+  for (const [start, end] of gaps) {
+    if (start > cursor) spans.push([cursor, start]);
+    cursor = Math.max(cursor, end);
+  }
+  if (cursor < route.length) spans.push([cursor, route.length]);
+  return spans;
+}
+
+/** 区間 [start, end] を刻んだステーション。終端はかならず含める。 */
+function stationsBetween(
+  start: number,
+  end: number,
+  step: number,
+  frameAt: (s: number) => TrackFrame,
+): SweepStation[] {
+  const n = Math.max(1, Math.ceil((end - start) / step));
+  const out: SweepStation[] = [];
+  for (let i = 0; i <= n; i++) out.push({ frame: frameAt(start + ((end - start) * i) / n) });
+  return out;
+}
+
+/**
+ * 交換設備の隣の線路。
+ *
+ * 単線なので、線路が 2 本あるのは行き違い設備の中だけである。横のずれは
+ * `AdjacentTrack.offsetAt()`（分岐器の寸法から決まる）をそのまま使うので、
+ * 対向列車が走る位置と絵がずれることがない。
+ */
+function buildAdjacentTrack(
+  route: CompiledRoute,
+  frameAt: (s: number) => TrackFrame,
+  railOffset: number,
+  rail: THREE.Material,
+  railhead: THREE.Material,
+): THREE.Object3D[] {
+  const out: THREE.Object3D[] = [];
+  for (const loop of route.adjacentTrack.loops) {
+    const stations: SweepStation[] = [];
+    for (let s = loop.entry; s <= loop.exit; s += 2) {
+      stations.push({ frame: frameAt(s), lateral: route.adjacentTrack.offsetAt(s) });
+    }
+    if (stations.length < 2) continue;
+
+    for (const side of [-1, 1] as const) {
+      out.push(
+        new THREE.Mesh(
+          sweepSection(
+            stations.map((st) => ({ ...st, lateral: (st.lateral ?? 0) + side * railOffset })),
+            RAIL_SECTION,
+            { closed: true },
+          ),
+          rail,
+        ),
+      );
+      out.push(
+        new THREE.Mesh(
+          sweepSection(
+            stations.map((st) => ({
+              ...st,
+              lateral: (st.lateral ?? 0) + side * railOffset,
+              vertical: 0.002,
+            })),
+            [
+              [-RAIL.headWidth / 2 + 0.006, 0],
+              [RAIL.headWidth / 2 - 0.006, 0],
+            ],
+          ),
+          railhead,
+        ),
+      );
+    }
+
+    // まくらぎは 1 番線と 2 番線で共用ではないので、隣の線路のぶんを別に置く
+    const count = Math.floor((loop.exit - loop.entry) / SLEEPER.spacing);
+    if (count <= 0) continue;
+    const sleeper = new THREE.InstancedMesh(
+      taperedBoxGeometry(SLEEPER.topWidth, SLEEPER.bottomWidth, SLEEPER.height, SLEEPER.length),
+      new THREE.MeshStandardMaterial({
+        color: SLEEPER_COLOR,
+        ...sleeperSurface().maps(0.9),
+        normalScale: new THREE.Vector2(0.7, 0.7),
+        roughness: 0.92,
+      }),
+      count,
+    );
+    const m = new THREE.Matrix4();
+    const p = new THREE.Vector3();
+    const one = new THREE.Vector3(1, 1, 1);
+    for (let i = 0; i < count; i++) {
+      const s = loop.entry + i * SLEEPER.spacing;
+      const f = frameAt(s);
+      p.copy(f.position)
+        .addScaledVector(f.cantRight, route.adjacentTrack.offsetAt(s))
+        .addScaledVector(f.up, -RAIL.height - SLEEPER.height / 2);
+      sleeper.setMatrixAt(i, m.compose(p, frameQuaternion(f), one));
+    }
+    sleeper.instanceMatrix.needsUpdate = true;
+    out.push(sleeper);
+  }
   return out;
 }
 
@@ -410,6 +528,14 @@ export function buildTurnouts(
     roughness: 0.28,
   });
 
+  /** 行き違い設備の分岐器か（枝は「隣の線路」として別に描いてある） */
+  const inLoop = (turnout: Turnout): boolean =>
+    route.adjacentTrack.loops.some(
+      (loop) =>
+        Math.abs(turnoutMergePoint(turnout) - loop.entry) < 1e-6 ||
+        Math.abs(turnoutMergePoint(turnout) - loop.exit) < 1e-6,
+    );
+
   for (const turnout of route.turnouts.turnouts) {
     // 分岐側を走っているときは、分かれていくのは本線（反対側へ離れる）
     const away = (turnout.side === 'right' ? 1 : -1) * (turnout.route === 'through' ? 1 : -1);
@@ -432,18 +558,22 @@ export function buildTurnouts(
     if (stations.length < 2) continue;
 
     // 枝の 2 本のレール。基本レールから離れていく側は途中からしか要らないが、
-    // 先端まで描いても密着したトングレールとして自然に見える
-    for (const side of [-1, 1] as const) {
-      out.push(
-        new THREE.Mesh(
-          sweepSection(
-            stations.map((st) => ({ ...st, lateral: (st.lateral ?? 0) + side * offset })),
-            RAIL_SECTION,
-            { closed: true },
+    // 先端まで描いても密着したトングレールとして自然に見える。
+    // 行き違い設備の分岐器では、枝がそのまま隣の線路（`buildAdjacentTrack`）
+    // なので、ここでは描かない。
+    if (!inLoop(turnout)) {
+      for (const side of [-1, 1] as const) {
+        out.push(
+          new THREE.Mesh(
+            sweepSection(
+              stations.map((st) => ({ ...st, lateral: (st.lateral ?? 0) + side * offset })),
+              RAIL_SECTION,
+              { closed: true },
+            ),
+            rail,
           ),
-          rail,
-        ),
-      );
+        );
+      }
     }
 
     // トングレール: 先端 0 → 後端でレール断面と同じ厚さになる細い刃

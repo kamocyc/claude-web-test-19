@@ -37,6 +37,7 @@ const vehicleSelect = document.querySelector<HTMLSelectElement>('#vehicle')!;
 const weatherSelect = document.querySelector<HTMLSelectElement>('#weather')!;
 const safetyGroup = document.querySelector<HTMLElement>('#safety')!;
 const precedingCheck = document.querySelector<HTMLInputElement>('#preceding')!;
+const opposingCheck = document.querySelector<HTMLInputElement>('#opposing')!;
 const platformCheck = document.querySelector<HTMLInputElement>('#platform')!;
 const restartButton = document.querySelector<HTMLButtonElement>('#restart')!;
 const pauseButton = document.querySelector<HTMLButtonElement>('#pause')!;
@@ -115,6 +116,7 @@ function readOptions(): RunOptions {
     weather: weatherSelect.value as WeatherChoice,
     divergingPlatform: platformCheck.checked,
     precedingTrain: precedingCheck.checked,
+    opposingTrain: opposingCheck.checked,
     safety: (safety?.value ?? DEFAULT_RUN_OPTIONS.safety) as SafetyChoice,
   };
 }
@@ -125,6 +127,7 @@ function showOptions(options: RunOptions): void {
   weatherSelect.value = options.weather;
   platformCheck.checked = options.divergingPlatform;
   precedingCheck.checked = options.precedingTrain;
+  opposingCheck.checked = options.opposingTrain;
   for (const radio of safetyGroup.querySelectorAll<HTMLInputElement>('input')) {
     radio.checked = radio.value === options.safety;
   }
@@ -343,7 +346,14 @@ muteButton.addEventListener('click', () => {
   setMuted(!audio.isMuted);
 });
 // 走行条件はどれを触っても、その組み合わせのシナリオで走り直す
-for (const control of [vehicleSelect, weatherSelect, safetyGroup, precedingCheck, platformCheck]) {
+for (const control of [
+  vehicleSelect,
+  weatherSelect,
+  safetyGroup,
+  precedingCheck,
+  opposingCheck,
+  platformCheck,
+]) {
   control.addEventListener('change', () => {
     releaseFocus(control);
     restart(runScenarioId(readOptions()));

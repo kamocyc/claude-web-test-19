@@ -4,6 +4,7 @@ import { peakAdhesion } from '../physics/adhesion.ts';
 import { computeAxleLoads, solveAxle, type AxleSolveResult } from '../physics/axle.ts';
 import { couplerForce } from '../physics/coupler.ts';
 import { SMOOTH_TRACK, type TrackIrregularity } from '../physics/irregularity.ts';
+import { NO_LEVEL_CROSSINGS, type LevelCrossingTrack } from '../track/levelCrossing.ts';
 import { NO_TURNOUTS, type TurnoutTrack } from '../track/turnout.ts';
 import { CarBodyMotion, type BodyMotionState } from './bodyMotion.ts';
 import {
@@ -101,6 +102,8 @@ export interface DynamicsOptions {
   readonly irregularity?: TrackIrregularity;
   /** 分岐器（省略時は分岐器なし）。局所的な軌道狂いとして軌道狂いに重なる。 */
   readonly turnouts?: TurnoutTrack;
+  /** 踏切（省略時は踏切なし）。踏切板と舗装の段差が同じく局所的な狂いになる。 */
+  readonly levelCrossings?: LevelCrossingTrack;
 }
 
 const scratchResult: AxleSolveResult = { omega: 0, creepForce: 0, slip: 0 };
@@ -155,6 +158,8 @@ export class TrainDynamics {
   readonly irregularity: TrackIrregularity;
   /** 分岐器（同じく距離程の関数。トングレールと欠線が局所的な狂いになる） */
   readonly turnouts: TurnoutTrack;
+  /** 踏切（同じく距離程の関数。踏切板の段差が局所的な狂いになる） */
+  readonly levelCrossings: LevelCrossingTrack;
   /** 編成の総質量 [kg] */
   readonly totalMass: number;
 
@@ -165,6 +170,7 @@ export class TrainDynamics {
     this.loadFactor = options.loadFactor ?? 0;
     this.irregularity = options.irregularity ?? SMOOTH_TRACK;
     this.turnouts = options.turnouts ?? NO_TURNOUTS;
+    this.levelCrossings = options.levelCrossings ?? NO_LEVEL_CROSSINGS;
 
     const n = consist.vehicles.length;
     this.couplerForces = new Float64Array(Math.max(0, n - 1));
@@ -450,10 +456,10 @@ export class TrainDynamics {
   /**
    * 各車の車体動揺を進める。
    *
-   * 励振源は「曲線通過による非平衡横加速度」「前後加速度」「軌道狂い」「分岐器」の 4 つ。
-   * 軌道狂いは前後の台車位置で別々に読み取るので、前後台車の高低差がピッチングを、
-   * 通り狂いの差がヨーイングを生む。分岐器のトングレールと欠線も、その場所にだけ
-   * ある軌道狂いとして同じ経路で効く。
+   * 励振源は「曲線通過による非平衡横加速度」「前後加速度」「軌道狂い」「分岐器」
+   * 「踏切」の 5 つ。軌道狂いは前後の台車位置で別々に読み取るので、前後台車の
+   * 高低差がピッチングを、通り狂いの差がヨーイングを生む。分岐器のトングレールと
+   * 欠線、踏切板と舗装の段差も、その場所にだけある軌道狂いとして同じ経路で効く。
    */
   private updateBodyMotion(dt: number): void {
     const gauge = this.alignment.gauge;
@@ -464,14 +470,15 @@ export class TrainDynamics {
       const rear = veh.s - half;
       const irr = this.irregularity;
       const to = this.turnouts;
+      const xg = this.levelCrossings;
       this.bodyMotions[i]!.step(dt, {
         unbalancedLateral: this.alignment.lateralAcceleration(veh.s, veh.v),
         cantAngle: this.alignment.cantAngleAt(veh.s),
         // 車体長にわたって平均した勾配（先頭が勾配へ入りかけている状態も表せる）
         gradeAngle: Math.atan(veh.grade),
         longitudinalAcceleration: veh.a,
-        frontVertical: irr.verticalAt(front) + to.verticalAt(front),
-        rearVertical: irr.verticalAt(rear) + to.verticalAt(rear),
+        frontVertical: irr.verticalAt(front) + to.verticalAt(front) + xg.verticalAt(front),
+        rearVertical: irr.verticalAt(rear) + to.verticalAt(rear) + xg.verticalAt(rear),
         frontLateral: irr.lateralAt(front) + to.lateralAt(front),
         rearLateral: irr.lateralAt(rear) + to.lateralAt(rear),
         crossLevel: irr.crossLevelAt(veh.s) + to.crossLevelAt(veh.s),

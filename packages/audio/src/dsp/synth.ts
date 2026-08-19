@@ -8,6 +8,9 @@ import { CurveSquealVoice, type CurveSquealParams } from './curveSquealVoice.ts'
 import { DoorVoice, type DoorVoiceParams } from './doorVoice.ts';
 import { InverterVoice, type InverterVoiceParams } from './inverterVoice.ts';
 import { ResistorVoice, type ResistorVoiceParams } from './resistorVoice.ts';
+import { BridgeVoice, type BridgeVoiceParams } from './bridgeVoice.ts';
+import { CrossingVoice, type CrossingVoiceParams } from './crossingVoice.ts';
+import { PassingVoice, type PassingVoiceParams } from './passingVoice.ts';
 import { RailJointVoice, type JointImpact } from './railJointVoice.ts';
 import { TurnoutVoice, type TurnoutImpact } from './turnoutVoice.ts';
 import {
@@ -18,6 +21,18 @@ import {
   type RollingParams,
   type WindParams,
 } from './runningGear.ts';
+
+/**
+ * `TrainNoiseSynth` へ追加で混ぜられる音源。
+ *
+ * 隣の線路の列車（`RemoteTrainVoice`）がこれにあたる。あちらは中で
+ * `TrainNoiseSynth` をもう 1 つ持つので、型が循環しないようここで細く切ってある。
+ */
+export interface ExtraVoice {
+  /** バッファへ**加算**する */
+  render(out: Float32Array): void;
+  reset(): void;
+}
 
 /** 走行音全体を決める量。シミュレーションのスナップショットから素直に写せる。 */
 export interface TrainNoiseParams {
@@ -36,6 +51,12 @@ export interface TrainNoiseParams {
   readonly auxiliary: AuxiliaryParams;
   readonly airSpring: AirSpringParams;
   readonly curveSqueal: CurveSquealParams;
+  /** 橋りょう（桁の寸法から出てくる諸元をそのまま渡す） */
+  readonly bridge: BridgeVoiceParams;
+  /** 踏切の警報音（線路脇に静止した音源として鳴る） */
+  readonly crossing: CrossingVoiceParams;
+  /** 対向列車とのすれ違い */
+  readonly passing: PassingVoiceParams;
   readonly door: DoorVoiceParams;
   readonly alarm: AlarmParams;
   readonly horn: HornParams;
@@ -66,9 +87,21 @@ export class TrainNoiseSynth {
   readonly turnout: TurnoutVoice;
   readonly airSpring: AirSpringVoice;
   readonly curveSqueal: CurveSquealVoice;
+  readonly bridge: BridgeVoice;
+  readonly crossing: CrossingVoice;
+  readonly passing: PassingVoice;
   readonly door: DoorVoice;
   readonly alarm: AlarmVoice;
   readonly horn: HornVoice;
+
+  /**
+   * ここへ混ぜる外部の音源（隣の線路を走る列車）。
+   *
+   * 相手の列車の音は**この合成器をもう 1 つ**回して作る（`RemoteTrainVoice`）。
+   * その入れ子を型の上で閉じるために、ここでは最小限の形だけを見ている。
+   * 飽和の前に混ぜるので、遠くの列車が近づいても全体の音量が破綻しない。
+   */
+  extra: ExtraVoice | null = null;
 
   /** 音源ごとの 2 乗和（`readLevels` で実効値に直して読み出す） */
   private readonly squareSum = new Float64Array(VOICE_COUNT);
@@ -88,6 +121,9 @@ export class TrainNoiseSynth {
     this.turnout = new TurnoutVoice(sampleRate);
     this.airSpring = new AirSpringVoice(sampleRate);
     this.curveSqueal = new CurveSquealVoice(sampleRate);
+    this.bridge = new BridgeVoice(sampleRate);
+    this.crossing = new CrossingVoice(sampleRate);
+    this.passing = new PassingVoice(sampleRate);
     this.door = new DoorVoice(sampleRate);
     this.alarm = new AlarmVoice(sampleRate);
     this.horn = new HornVoice(sampleRate);
@@ -104,6 +140,9 @@ export class TrainNoiseSynth {
     this.auxiliary.setParams(params.auxiliary);
     this.airSpring.setParams(params.airSpring);
     this.curveSqueal.setParams(params.curveSqueal);
+    this.bridge.setParams(params.bridge);
+    this.crossing.setParams(params.crossing);
+    this.passing.setParams(params.passing);
     this.door.setParams(params.door);
     this.alarm.setParams(params.alarm);
     this.horn.setParams(params.horn);
@@ -137,6 +176,11 @@ export class TrainNoiseSynth {
     this.mix(out, VOICE.turnout, (b) => this.turnout.render(b));
     this.mix(out, VOICE.airSpring, (b) => this.airSpring.render(b));
     this.mix(out, VOICE.curveSqueal, (b) => this.curveSqueal.render(b));
+    this.mix(out, VOICE.bridge, (b) => this.bridge.render(b));
+    this.mix(out, VOICE.crossing, (b) => this.crossing.render(b));
+    this.mix(out, VOICE.passing, (b) => this.passing.render(b));
+    // 隣の線路の列車。すれ違いの圧力波と同じメータに入れる（どちらも「すれ違い」）。
+    if (this.extra) this.mix(out, VOICE.passing, (b) => this.extra!.render(b));
     this.mix(out, VOICE.door, (b) => this.door.render(b));
     this.mix(out, VOICE.alarm, (b) => this.alarm.render(b));
     this.mix(out, VOICE.horn, (b) => this.horn.render(b));
@@ -186,9 +230,13 @@ export class TrainNoiseSynth {
     this.turnout.reset();
     this.airSpring.reset();
     this.curveSqueal.reset();
+    this.bridge.reset();
+    this.crossing.reset();
+    this.passing.reset();
     this.door.reset();
     this.alarm.reset();
     this.horn.reset();
+    this.extra?.reset();
     this.squareSum.fill(0);
     this.measured = 0;
   }

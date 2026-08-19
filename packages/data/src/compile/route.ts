@@ -1,24 +1,38 @@
 import {
+  AdjacentTrack,
+  BridgeTrack,
   GRAVITY,
+  LevelCrossingTrack,
   PointTable,
+  RAIL_JOINT_STRENGTH,
   SpanTable,
   StepTable,
   TrackIrregularity,
   TurnoutTrack,
+  bridgeLength,
   buildAlignment,
   crossingAngle,
   leadLengthOf,
+  loopSpacingOf,
   standardLeadRadius,
   turnoutLengthOf,
+  turnoutMergePoint,
   kmhToMps,
   mmToM,
   parseClock,
+  warningDistanceOf,
   type AspectSpeeds,
   type BeaconPayload,
   type BlockSection,
+  type Bridge,
+  type BridgeDeck,
+  type BridgeKind,
   type CompiledRoute,
   type HorizontalSegment,
+  type LevelCrossing,
+  type PassingLoop,
   type PointEntry,
+  type RailJointFeature,
   type SafetySystemKind,
   type SignalDefinition,
   type SpeedLimitEntry,
@@ -63,6 +77,69 @@ function roundDownSpeed(speed: number, stepKmh: number): number {
   const kmh = speed * 3.6;
   return kmhToMps(stepKmh > 0 ? Math.floor(kmh / stepKmh) * stepKmh : kmh);
 }
+
+/**
+ * 橋りょうの形式ごとの標準寸法。
+ *
+ * 実在の在来線の橋りょうから採った代表値である。同じ形式でも寸法を書けばそちらが
+ * 優先されるので、これは「何も書かなければこうなる」という値でしかない。
+ *
+ * | 形式             | 床       | 標準支間 | 桁高       | 音を出す板 |
+ * | ---------------- | -------- | -------- | ---------- | ---------- |
+ * | プレートガーダー | 無道床   | 30m      | 支間の 1/12 | 腹板 12mm（垂直補剛材で区切られる） |
+ * | トラス           | 無道床   | 70m      | 支間の 1/8  | 床組の縦桁 9mm（横桁で区切られる） |
+ * | コンクリート桁   | 有道床   | 25m      | 支間の 1/15 | 床版 250mm（主桁間 3.6m × 支間） |
+ */
+const BRIDGE_STANDARD: Readonly<
+  Record<
+    BridgeKind,
+    {
+      readonly deck: BridgeDeck;
+      readonly spanLength: number;
+      readonly depthRatio: number;
+      /** 板厚 [mm] */
+      readonly plateThickness: number;
+      /** 音を出す板 1 区画の高さ（短辺）[m] */
+      readonly panelHeight: (span: number, depth: number) => number;
+      /** 1 区画の幅（長辺）[m] */
+      readonly panelWidth: (span: number, depth: number) => number;
+      /** まくらぎ間隔 [m] */
+      readonly sleeperSpacing: number;
+    }
+  >
+> = {
+  // 腹板は垂直補剛材で区切られる。間隔は桁高の 0.7 倍前後が普通。
+  'plate-girder': {
+    deck: 'open',
+    spanLength: 30,
+    depthRatio: 1 / 12,
+    plateThickness: 12,
+    panelHeight: (_span, depth) => depth,
+    panelWidth: (_span, depth) => depth * 0.7,
+    sleeperSpacing: 0.58,
+  },
+  // トラスで音を出すのは主構ではなく床組である。主構は太い部材で動かない。
+  truss: {
+    deck: 'open',
+    spanLength: 70,
+    depthRatio: 1 / 8,
+    plateThickness: 9,
+    panelHeight: () => 0.9,
+    panelWidth: () => 1.4,
+    sleeperSpacing: 0.55,
+  },
+  // 床版は厚く重いので、同じ力で叩いてもほとんど動かない。
+  concrete: {
+    deck: 'ballasted',
+    spanLength: 25,
+    depthRatio: 1 / 15,
+    plateThickness: 250,
+    // 床版は主桁のあいだ（3.6m）で支えられ、線路方向には支間いっぱいに続く
+    panelHeight: () => 3.6,
+    panelWidth: (span) => span,
+    sleeperSpacing: 25 / 44,
+  },
+};
 
 /** 平面線形の区間境界（距離程）を求める */
 function segmentBoundaries(segments: ParsedRoute['horizontal']): number[] {
@@ -192,6 +269,113 @@ export function compileRoute(definition: RouteDefinition): CompiledRoute {
       crossingPosition: facing ? t.at + leadLength : t.at,
     } satisfies Turnout;
   });
+
+  const turnoutById = new Map(turnouts.map((t) => [t.id, t]));
+
+  // --- 行き違い設備（隣の線路） ---
+  // 線路中心間隔も、隣の線路がどちら側にあるかも、分岐器の寸法と開通方向で決まる。
+  // 分岐側を通っているなら本線は反対側にあるので、符号がそのまま入れ替わる。
+  const passingLoops: PassingLoop[] = def.passingLoops.map((loop) => {
+    const entry = turnoutById.get(loop.entry);
+    const exit = turnoutById.get(loop.exit);
+    if (!entry || !exit) {
+      throw new Error(
+        `行き違い設備 ${loop.id} の分岐器が見つかりません: ${loop.entry} / ${loop.exit}`,
+      );
+    }
+    const tailLength = entry.length - entry.leadLength;
+    const side: 1 | -1 =
+      (entry.side === 'right' ? 1 : -1) * (entry.route === 'through' ? 1 : -1) > 0 ? 1 : -1;
+    return {
+      id: loop.id,
+      entry: turnoutMergePoint(entry),
+      exit: turnoutMergePoint(exit),
+      radius: entry.radius,
+      angle: entry.crossingAngle,
+      tailLength,
+      spacing: loopSpacingOf(entry.radius, entry.crossingAngle, tailLength),
+      side,
+    } satisfies PassingLoop;
+  });
+
+  // --- 橋りょう ---
+  const bridges: Bridge[] = def.bridges.map((b) => {
+    const standard = BRIDGE_STANDARD[b.kind];
+    const deck = b.deck ?? standard.deck;
+    const spanLength = b.spanLength ?? Math.min(standard.spanLength, Math.abs(b.end - b.start));
+    const girderDepth = b.girderDepth ?? spanLength * standard.depthRatio;
+    const thickness = mmToM(b.plateThickness ?? standard.plateThickness);
+    return {
+      id: b.id,
+      name: b.name ?? b.id,
+      start: b.start,
+      end: b.end,
+      kind: b.kind,
+      deck,
+      spanLength,
+      girderDepth,
+      panel: {
+        thickness,
+        height: standard.panelHeight(spanLength, girderDepth),
+        width: b.stiffenerSpacing ?? standard.panelWidth(spanLength, girderDepth),
+      },
+      // 有道床橋のまくらぎは明かり区間と同じ並びになる（道床がそのまま続くため）
+      sleeperSpacing: deck === 'open' ? standard.sleeperSpacing : 25 / 44,
+    } satisfies Bridge;
+  });
+
+  // --- 踏切 ---
+  const levelCrossings: LevelCrossing[] = def.levelCrossings.map((c) => ({
+    id: c.id,
+    name: c.name ?? c.id,
+    position: c.at,
+    roadWidth: c.roadWidth,
+    surface: c.surface,
+    bell: c.bell,
+    // 警報時間を確保できる距離は、その区間でいちばん速い列車で決まる
+    warningDistance: c.warningDistance ?? warningDistanceOf(c.warningTime, lineSpeed),
+    barrierDelay: 5,
+    barrierFall: 7,
+    barrierRise: 6,
+  }));
+
+  // --- 個別の継目（絶縁継目・伸縮継目）---
+  const railJoints: PointEntry<RailJointFeature>[] = [];
+  if (def.autoRailJoints.enabled) {
+    const offset = def.autoRailJoints.insulatedOffset;
+    for (const t of turnouts) {
+      // 分岐器は軌道回路の境目なので、前後に絶縁継目が入る
+      for (const s of [t.position - offset, t.position + t.length + offset]) {
+        if (s < 0 || s > routeLength) continue;
+        railJoints.push({
+          s,
+          value: {
+            kind: 'insulated',
+            strength: RAIL_JOINT_STRENGTH.insulated,
+            reason: `turnout-${t.id}`,
+          },
+        });
+      }
+    }
+    for (const b of bridges) {
+      // 無道床橋は桁の伸縮がレールへ直に来るので、長さに依らず伸縮継目が要る。
+      // 有道床橋は道床が滑って逃がすため、長い橋でだけ要る。
+      const needed =
+        b.deck === 'open' || bridgeLength(b) >= def.autoRailJoints.ballastedExpansionLength;
+      if (!needed) continue;
+      for (const s of [b.start, b.end]) {
+        if (s < 0 || s > routeLength) continue;
+        railJoints.push({
+          s,
+          value: {
+            kind: 'expansion',
+            strength: RAIL_JOINT_STRENGTH.expansion,
+            reason: `bridge-${b.id}`,
+          },
+        });
+      }
+    }
+  }
 
   // --- 速度制限 ---
   const spans: LimitSpan[] = [];
@@ -394,6 +578,10 @@ export function compileRoute(definition: RouteDefinition): CompiledRoute {
     safetySections,
     irregularity,
     turnouts: new TurnoutTrack(turnouts),
+    bridges: new BridgeTrack(bridges),
+    levelCrossings: new LevelCrossingTrack(levelCrossings),
+    adjacentTrack: new AdjacentTrack(passingLoops),
+    railJoints: new PointTable(railJoints),
     railJointSpacing: new StepTable(
       def.rail.sections.map((s) => ({ s: s.start, value: s.spacing })),
       def.rail.spacing,

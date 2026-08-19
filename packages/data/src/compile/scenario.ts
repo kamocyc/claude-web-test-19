@@ -30,6 +30,7 @@ export function compileScenario(
   const scheduledTrains: ScheduledTrain[] = def.scheduledTrains.map((t) => ({
     id: t.id,
     length: t.length,
+    track: t.track,
     waypoints: t.waypoints
       .map((w) => ({ time: parseClock(w.time), position: w.position }))
       .sort((a, b) => a.time - b.time),

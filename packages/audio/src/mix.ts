@@ -23,10 +23,28 @@ export interface NoiseMix {
   readonly rolling: number;
   /** 風切り音（高速でだけ効く） */
   readonly wind: number;
-  /** レール継目 */
+  /**
+   * レール継目。
+   *
+   * 継目は線路の側にあるものなので、**自列車の軸が踏んだ音も、隣の線路の対向列車が
+   * 踏んだ音も同じ音源**から出る（違うのは距離と伝わり方だけ）。
+   */
   readonly railJoint: number;
   /** 分岐器（トングレール・クロッシング） */
   readonly turnout: number;
+  /** 橋りょう（桁の放射と反射） */
+  readonly bridge: number;
+  /** 踏切の警報音 */
+  readonly crossing: number;
+  /**
+   * 対向列車（と前方のダイヤ列車）。
+   *
+   * 相手の列車は自列車とまったく同じ合成器で鳴っているので、これは**相手の列車の
+   * 音全体**に掛かるつまみになる（主回路も歯車も転動音も継目も扉も）。音源ごとの
+   * つまみ（`inverter` や `railJoint`）はその内側で先に効く。すれ違いざまの圧力波も
+   * ここに入る。
+   */
+  readonly passing: number;
   /** ブレーキ（摩擦・鳴き・空気） */
   readonly brake: number;
   /** 補機（空気圧縮機） */
@@ -70,6 +88,9 @@ export const DEFAULT_NOISE_MIX: NoiseMix = {
   wind: 1,
   railJoint: 1,
   turnout: 1,
+  bridge: 1,
+  crossing: 1,
+  passing: 1,
   brake: 1,
   auxiliary: 1,
   airSpring: 1,
@@ -109,12 +130,15 @@ export const VOICE = {
   chopper: 12,
   door: 13,
   curveSqueal: 14,
+  bridge: 15,
+  crossing: 16,
+  passing: 17,
 } as const;
 
 export type VoiceIndex = (typeof VOICE)[keyof typeof VOICE];
 
 /** 音源の数（メータの配列長） */
-export const VOICE_COUNT = 15;
+export const VOICE_COUNT = 18;
 
 /** 音量のつまみ */
 export const NOISE_MIX_LEVELS: readonly NoiseMixControl[] = [
@@ -127,6 +151,9 @@ export const NOISE_MIX_LEVELS: readonly NoiseMixControl[] = [
   { key: 'wind', label: '風切り', voice: VOICE.wind },
   { key: 'railJoint', label: 'レール継目', voice: VOICE.railJoint },
   { key: 'turnout', label: '分岐器', voice: VOICE.turnout },
+  { key: 'bridge', label: '橋りょう', voice: VOICE.bridge },
+  { key: 'crossing', label: '踏切の警報音', voice: VOICE.crossing },
+  { key: 'passing', label: '対向列車のすれ違い', voice: VOICE.passing },
   { key: 'brake', label: 'ブレーキ', voice: VOICE.brake },
   { key: 'auxiliary', label: '補機（空気圧縮機）', voice: VOICE.auxiliary },
   { key: 'airSpring', label: '空気ばねのきしみ', voice: VOICE.airSpring },

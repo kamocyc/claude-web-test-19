@@ -34,7 +34,19 @@ export const scenarioSchema = z.object({
         id: z.string(),
         /** 編成長 [m] */
         length: z.number().positive().default(80),
-        /** 時刻 "H:MM:SS" と先頭端の距離程 [m] */
+        /**
+         * 走る線路。
+         *
+         * - `own` — 自列車と同じ線路。閉塞を占有するので信号現示が変わる（先行列車）。
+         * - `adjacent` — 交換設備の隣の線路。閉塞は占有せず、すれ違いの音と踏切の
+         *   鳴動にだけ効く（対向列車）。単線なので、隣に線路があるのは交換設備の
+         *   区間だけである。
+         */
+        track: z.enum(['own', 'adjacent']).default('own'),
+        /**
+         * 時刻 "H:MM:SS" と**先頭端**の距離程 [m]。
+         * 距離程が減っていく折れ線を書けば対向列車になる。
+         */
         waypoints: z.array(z.object({ time: z.string(), position: z.number() })).min(2),
       }),
     )
