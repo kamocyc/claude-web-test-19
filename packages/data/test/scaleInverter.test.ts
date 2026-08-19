@@ -11,6 +11,18 @@ const vvvfSpecOf = (definition: typeof commuter4ScaleVehicle): VvvfTractionSpec 
 
 const scale = () => vvvfSpecOf(commuter4ScaleVehicle);
 
+/**
+ * 車速 [km/h] → インバータ出力周波数 [Hz]（力行ノッチ最大＝すべりは定格値）。
+ * 音階が「どの速度で」鳴るかを見るのに使う。
+ */
+function outputFrequencyAt(kmh: number): number {
+  const car = compileVehicle(commuter4ScaleVehicle).vehicles[1]!;
+  const spec = car.traction;
+  if (spec?.kind !== 'vvvf') throw new Error('VVVF の仕様が取れません');
+  const motorOmega = (kmh / 3.6 / (car.wheelDiameter / 2)) * spec.gearRatio;
+  return (spec.inverter.polePairs * motorOmega) / (2 * Math.PI) + spec.inverter.ratedSlipFrequency;
+}
+
 /** 平均律の半音比 */
 const SEMITONE = Math.pow(2, 1 / 12);
 
@@ -79,6 +91,42 @@ describe('音階インバータ', () => {
     expect(deltas.every((d) => d > -0.01)).toBe(true);
   });
 
+  it('音階は 10km/h までに鳴り終わる（実車と同じですぐ通り過ぎる）', () => {
+    const spec = scale();
+    const notes = [...new Set(spec.inverter.asyncCarrier.map(([, c]) => c))];
+    const modulation = new InverterModulation(spec);
+
+    // 停止していても力行していればすべり周波数のぶんだけ出力周波数がある。
+    // 最初の段を広く取ってあるので、そこでもまだ最低音であること。
+    const standing = settledCarrier(modulation, spec, spec.inverter.ratedSlipFrequency);
+    expect(standing.carrierFrequency).toBe(notes[0]);
+
+    // 10km/h に達するまでに 12 音すべてが現れる
+    const heard = new Set<number>();
+    for (let kmh = 0; kmh <= 10; kmh += 0.05) {
+      const state = settledCarrier(modulation, spec, outputFrequencyAt(kmh));
+      if (notes.includes(state.carrierFrequency)) heard.add(state.carrierFrequency);
+    }
+    expect(heard.size).toBe(notes.length);
+
+    // 10km/h では最終段に達している（＝もう上らない）
+    expect(settledCarrier(modulation, spec, outputFrequencyAt(10)).carrierFrequency).toBe(
+      notes.at(-1),
+    );
+    // かといって一瞬で駆け上がってしまうわけでもない（3km/h ではまだ途中）
+    expect(settledCarrier(modulation, spec, outputFrequencyAt(3)).carrierFrequency).toBeLessThan(
+      notes.at(-1)!,
+    );
+
+    // 音階が終わったあとも非同期のまま最終段が伸びる。同期へ移るのは音階の都合では
+    // なく、キャリアと出力周波数の比が下がるからである。
+    for (const kmh of [15, 20, 25]) {
+      const state = settledCarrier(modulation, spec, outputFrequencyAt(kmh));
+      expect(state.mode).toBe('async');
+      expect(state.carrierFrequency).toBe(notes.at(-1));
+    }
+  });
+
   it('減速すると同じ階段を下りてくる（キャリアは出力周波数の関数）', () => {
     const spec = scale();
     const modulation = new InverterModulation(spec);
@@ -87,7 +135,12 @@ describe('音階インバータ', () => {
     const down = [...points]
       .reverse()
       .map((f) => settledCarrier(modulation, spec, f).carrierFrequency);
-    expect(down.reverse()).toEqual(up);
+    down.reverse();
+    // 段の変わり目そのものを踏むと、すべり指令の平滑の残りぶんだけ出力周波数が
+    // 最下位ビットで揺れて傾斜の途中に落ちる。上下で同じ値かを見たいので許容を置く。
+    for (let i = 0; i < points.length; i++) {
+      expect(down[i]!).toBeCloseTo(up[i]!, 6);
+    }
   });
 
   it('走りは既定の通勤形とまったく同じ（変調は引張力に関与しない）', () => {
