@@ -20,8 +20,9 @@
         <div id="touch"></div>
         <div id="help">
           <strong>操作</strong>
-          <div>Z / A（↑ / ↓）: 力行ノッチ +/−（切より先は抑速）</div>
-          <div>. / ,（→ / ←）: ブレーキノッチ +/−</div>
+          <div>Z / A（↑ / ↓）: 力行 N → P1 → …</div>
+          <div>. / ,（→ / ←）: ブレーキ N → 抑速 → B1 → … → 非常</div>
+          <div class="note">ワンハンドルでは 4 キーとも 1 本の軸を上下に動かす</div>
           <div>Space: 非常ブレーキ</div>
           <div>Enter: 確認扱い / R: 保安装置復帰</div>
           <div>S: 砂撒き / H: 警笛 / D: 戸閉め</div>
@@ -43,6 +44,7 @@
           <label class="toggle"><input id="preceding" type="checkbox" />先行列車</label>
           <label class="toggle"><input id="opposing" type="checkbox" />対向列車</label>
           <label class="toggle"><input id="platform" type="checkbox" />2 番線から発車</label>
+          <label class="toggle"><input id="onehandle" type="checkbox" />ワンハンドルマスコン</label>
         </div>
         <div id="controls">
           <button id="restart" type="button">再スタート</button>

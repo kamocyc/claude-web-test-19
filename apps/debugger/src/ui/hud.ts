@@ -23,22 +23,30 @@ const ASPECT_TEXT: Record<string, string> = {
 export type { HandlePosition };
 
 /**
- * ノッチ位置の表示（`非常` / `B7` / `抑速4` / `P4` / `切`）。タッチ運転台でも同じ文言を使う。
+ * ノッチ位置の表示（`非常` / `B7` / `抑速` / `P4` / `N`）。タッチ運転台でも同じ文言を使う。
  *
- * 抑速（電気ブレーキだけで下り勾配の速度を保つ段）は常用ブレーキとは別系統で、
+ * 段の並びは実車と同じ `N → P1 → …`（力行）と `N → 抑速 → B1 → … → 非常`（ブレーキ）。
+ * 抑速（電気ブレーキだけで下り勾配の速度を保つ位置）は常用ブレーキとは別系統で、
  * 常用ノッチが 0 のまま制動力が出る。これを出さないと、下り勾配で確かに減速して
- * いるのに表示は `切` のまま、という食い違いになる。
+ * いるのに表示は `N` のまま、という食い違いになる。
+ *
+ * `holding` に段数を渡すと `抑速3` のように段まで出す。運転士の手元は抑速位置の
+ * 入切だけなので `true` を渡し、装置が実際に選んでいる段を出すときだけ数を渡す。
+ * 抑速位置でも装置が 0 段を選んでいれば実効は `N` になる（速度が目標より低く、
+ * 電気ブレーキを出す必要が無い状態）。手元と実効が食い違って見えるのは正しい。
  */
-export const notchText = (power: number, brake: number, emergency: boolean, holding = 0): string =>
-  emergency
-    ? '非常'
-    : brake > 0
-      ? `B${brake}`
-      : holding > 0
-        ? `抑速${holding}`
-        : power > 0
-          ? `P${power}`
-          : '切';
+export const notchText = (
+  power: number,
+  brake: number,
+  emergency: boolean,
+  holding: number | boolean = 0,
+): string => {
+  if (emergency) return '非常';
+  if (brake > 0) return `B${brake}`;
+  if (holding === true) return '抑速';
+  if (typeof holding === 'number' && holding > 0) return `抑速${holding}`;
+  return power > 0 ? `P${power}` : 'N';
+};
 
 /** 自動運転装置の動作モードの表示名 */
 const AUTO_MODE_TEXT: Record<string, string> = {

@@ -813,3 +813,86 @@ describe('ATC（車内信号方式）', () => {
     expect(snap.safety.indication.patternSpeed).not.toBeNull();
   });
 });
+
+describe('抑速ブレーキ（運転士の抑速位置）', () => {
+  /** 33‰ の下り勾配（4600〜6000m）の途中から、抑速位置に入れたまま走らせる */
+  function runHolding(seconds: number, startSpeedKmh = 70) {
+    const sim = new Simulation({
+      ...scenarioOf('test-line-local'),
+      startPosition: 4750,
+      startSpeed: kmhToMps(startSpeedKmh),
+    });
+    sim.input = input({ holding: true });
+    const notches: number[] = [];
+    run(sim, seconds, (s) => notches.push(s.snapshot().holdingNotch));
+    return { sim, notches };
+  }
+
+  it('段を指示しなくても、装置が電気ブレーキの段を選んで速度を保つ', () => {
+    const { sim, notches } = runHolding(60);
+    const snap = sim.snapshot();
+    // 33‰ を下りながら、入れた時点の速度（70km/h）付近に収まっている
+    expect(mpsToKmh(sim.speed)).toBeGreaterThan(66);
+    expect(mpsToKmh(sim.speed)).toBeLessThan(76);
+    // 運転士は段を指示していないが、装置は段を選んでいる
+    expect(sim.input.holdingNotch).toBe(0);
+    expect(Math.max(...notches)).toBeGreaterThan(0);
+    // 抑速は電気ブレーキだけで受け持つ（空気ブレーキは立たない）
+    expect(snap.brakeNotch).toBe(0);
+    expect(snap.electricBrakeForce).toBeGreaterThan(0);
+    expect(snap.airBrakeForce).toBeLessThan(1000);
+  });
+
+  it('平坦線では段を出さない（抑速は勾配を抑える装置であって、止める装置ではない）', () => {
+    // 目標速度を上回らないかぎり段は出ない。したがって平坦線で抑速位置に入れっぱなしに
+    // しても、走行抵抗だけで減っていく惰行とまったく同じ走りになる。
+    const base = {
+      ...scenarioOf('test-line-local'),
+      startPosition: 700,
+      startSpeed: kmhToMps(70),
+    };
+    const holding = new Simulation(base);
+    holding.input = input({ holding: true });
+    run(holding, 60);
+
+    const coasting = new Simulation(base);
+    coasting.input = input();
+    run(coasting, 60);
+
+    expect(holding.snapshot().holdingNotch).toBe(0);
+    expect(holding.snapshot().electricBrakeForce).toBe(0);
+    expect(mpsToKmh(holding.speed)).toBeCloseTo(mpsToKmh(coasting.speed), 6);
+  });
+
+  it('常用ブレーキを込めると抑速は外れる', () => {
+    const sim = new Simulation({
+      ...scenarioOf('test-line-local'),
+      startPosition: 4750,
+      startSpeed: kmhToMps(70),
+    });
+    sim.input = input({ holding: true });
+    run(sim, 20);
+    expect(sim.snapshot().holdingNotch).toBeGreaterThan(0);
+
+    sim.input = input({ holding: true, brakeNotch: 3 });
+    run(sim, 2);
+    const snap = sim.snapshot();
+    expect(snap.holdingNotch).toBe(0);
+    expect(snap.brakeNotch).toBe(3);
+  });
+
+  it('抑速ブレーキを持たない車両では効かない', () => {
+    const base = scenarioOf('test-line-local');
+    const sim = new Simulation({
+      ...base,
+      consist: { ...base.consist, brake: { ...base.consist.brake, hasHoldingBrake: false } },
+      startPosition: 4750,
+      startSpeed: kmhToMps(70),
+    });
+    sim.input = input({ holding: true });
+    run(sim, 30);
+    expect(sim.snapshot().holdingNotch).toBe(0);
+    // 抑えるものが無いので 33‰ で加速していく
+    expect(mpsToKmh(sim.speed)).toBeGreaterThan(72);
+  });
+});

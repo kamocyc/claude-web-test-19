@@ -1,5 +1,6 @@
 import { AirCompressor, type CompressorState } from '../brake/compressor.ts';
 import { ElectroPneumaticBrakeSystem } from '../brake/electroPneumatic.ts';
+import { HoldingBrakeRegulator } from '../brake/holdingRegulator.ts';
 import type { BrakeCommand } from '../brake/types.ts';
 import { Rng } from '../math/rng.ts';
 import { clamp, firstOrderLag } from '../math/scalar.ts';
@@ -138,6 +139,13 @@ export class Simulation {
   /** 実際に装置へ渡っている指令（自動運転中は装置が組み立てたもの） */
   private activeInput: ControlInput = NEUTRAL_INPUT;
   private lastCylinderPressure = 0;
+  /**
+   * 抑速ブレーキの調速器。
+   *
+   * 運転士の抑速位置は段を 1 つしか持たないので、実際に出す段はこれが選ぶ。
+   * 自動運転装置のように段まで指定してくる指令（`holdingNotch`）はそのまま通す。
+   */
+  private readonly holdingRegulator = new HoldingBrakeRegulator();
   /** ダイヤ列車の前周期の速度と、均した加速度（列車 id で引く） */
   private readonly remoteSpeeds = new Map<string, number>();
   private readonly remoteAccelerations = new Map<string, number>();
@@ -453,10 +461,29 @@ export class Simulation {
         ? 0
         : this.activeInput.powerNotch;
 
+    // 抑速位置は段を持たないので、装置が速度を見て段を選ぶ。常用ブレーキを込めたら
+    // 抑速は外れる（ブレーキ装置は常用が切のときだけ抑速を見る）ので、そこも渡す
+    // 条件に含める。切れた時点で調速器は目標速度を忘れ、入れ直しで取り直す。
+    const notchCount = this.scenario.consist.brake.notchCount;
+    const serviceNotch = clamp(brakeNotch, 0, notchCount);
+    const holdingEngaged =
+      this.activeInput.holding &&
+      this.scenario.consist.brake.hasHoldingBrake &&
+      powerNotch === 0 &&
+      serviceNotch === 0 &&
+      !emergency;
+    const regulated = this.holdingRegulator.update(
+      dt,
+      holdingEngaged,
+      Math.abs(this.dynamics.speed),
+      notchCount,
+    );
+
     const brakeCommand: BrakeCommand = {
-      notch: clamp(brakeNotch, 0, this.scenario.consist.brake.notchCount),
+      notch: serviceNotch,
       emergency,
-      holdingNotch: powerNotch > 0 ? 0 : this.activeInput.holdingNotch,
+      holdingNotch:
+        powerNotch > 0 ? 0 : this.activeInput.holding ? regulated : this.activeInput.holdingNotch,
       backup: this.activeInput.backupBrake,
     };
 

@@ -22,6 +22,7 @@ const sameInput = (a: ControlInput, b: ControlInput): boolean =>
   a.powerNotch === b.powerNotch &&
   a.brakeNotch === b.brakeNotch &&
   a.emergency === b.emergency &&
+  a.holding === b.holding &&
   a.holdingNotch === b.holdingNotch &&
   a.reverser === b.reverser &&
   a.acknowledge === b.acknowledge &&

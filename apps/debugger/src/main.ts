@@ -40,6 +40,7 @@ const safetyGroup = document.querySelector<HTMLElement>('#safety')!;
 const precedingCheck = document.querySelector<HTMLInputElement>('#preceding')!;
 const opposingCheck = document.querySelector<HTMLInputElement>('#opposing')!;
 const platformCheck = document.querySelector<HTMLInputElement>('#platform')!;
+const oneHandleCheck = document.querySelector<HTMLInputElement>('#onehandle')!;
 const restartButton = document.querySelector<HTMLButtonElement>('#restart')!;
 const pauseButton = document.querySelector<HTMLButtonElement>('#pause')!;
 const rateLabel = document.querySelector<HTMLElement>('#rate')!;
@@ -159,9 +160,8 @@ let autoDrive = false;
 const notchCounts = {
   powerNotchCount: () => scenario.consist.traction.notchCount,
   brakeNotchCount: () => scenario.consist.brake.notchCount,
-  // 抑速を持たない車両では 0 段＝切より先へは入らない
-  holdingNotchCount: () =>
-    scenario.consist.brake.hasHoldingBrake ? scenario.consist.brake.notchCount : 0,
+  // 抑速を持たない車両では、ブレーキハンドルに抑速位置そのものが無い
+  hasHoldingBrake: () => scenario.consist.brake.hasHoldingBrake,
 };
 
 /**
@@ -371,6 +371,17 @@ for (const control of [
     restart(runScenarioId(readOptions()));
   });
 }
+/**
+ * 運転台の型（ツーハンドル / ワンハンドル）。
+ *
+ * 走行条件ではないので、切り替えても走り直さない。段の並びはどちらも同じなので、
+ * 走行中に替えても手元のノッチは動かない。
+ */
+oneHandleCheck.addEventListener('change', () => {
+  releaseFocus(oneHandleCheck);
+  deskState.setLayout(oneHandleCheck.checked ? 'one-handle' : 'two-handle');
+});
+
 restartButton.addEventListener('click', () => {
   releaseFocus(restartButton);
   restart();
@@ -515,7 +526,8 @@ function frame(now: number): void {
     ? {
         power: held.powerNotch,
         brake: held.brakeNotch,
-        holding: held.holdingNotch,
+        // 装置は段まで決めているが、運転台の表示は抑速位置の入切だけを持つ
+        holding: held.holdingNotch > 0,
         emergency: held.emergency,
         doorsClosed: held.doorsClosed,
       }
@@ -526,7 +538,9 @@ function frame(now: number): void {
   audio.update(sim, advance, wall);
   mixer.update(audio.levels);
   scene.update(sim);
-  if (cameraRig.mode === 'cab') cabInterior.update(sim, handles);
+  if (cameraRig.mode === 'cab') {
+    cabInterior.update(sim, { ...handles, oneHandle: deskState.layout === 'one-handle' });
+  }
   const frontFrame = scene.frontFrame(sim);
   cameraRig.update({
     frame: frontFrame,

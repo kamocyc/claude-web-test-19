@@ -214,9 +214,11 @@ class Gauge {
 export interface CabHandles {
   readonly power: number;
   readonly brake: number;
-  /** 抑速ブレーキの段（0 = 切）。主幹制御器の切より先（力行の反対側） */
-  readonly holding: number;
+  /** 抑速位置にあるか。ブレーキ側の切と B1 のあいだにある。 */
+  readonly holding: boolean;
   readonly emergency: boolean;
+  /** ワンハンドル運転台か（true ならハンドルは 1 本だけ立つ） */
+  readonly oneHandle: boolean;
 }
 
 export interface CabInterior {
@@ -249,6 +251,36 @@ function buildHandle(x: number, y: number, z: number, grip: number, color: numbe
   );
   knob.position.set(0, 0.09, grip);
   pivot.add(hub, arm, knob);
+  pivot.position.set(x, y, z);
+  return pivot;
+}
+
+/**
+ * ワンハンドルの主幹制御器。
+ *
+ * ツーハンドルの 2 本と違い、**前後に倒すレバー**である。手前へ引くほど強い
+ * ブレーキ、向こうへ倒すほど強い力行で、切はその中間にある。力行とブレーキが
+ * 1 本の軸に並ぶので、両方を同時に入れることが機構として起こり得ない。
+ */
+function buildOneHandle(x: number, y: number, z: number): THREE.Group {
+  const pivot = new THREE.Group();
+  const hub = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.055, 0.065, 0.05, 16),
+    new THREE.MeshStandardMaterial({ color: 0x22262b, roughness: 0.7, metalness: 0.2 }),
+  );
+  hub.rotation.z = Math.PI / 2;
+  const stem = new THREE.Mesh(
+    new THREE.BoxGeometry(0.035, 0.16, 0.035),
+    new THREE.MeshStandardMaterial({ color: 0x8f959c, roughness: 0.4, metalness: 0.7 }),
+  );
+  stem.position.y = 0.08;
+  const knob = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.038, 0.042, 0.11, 12),
+    new THREE.MeshStandardMaterial({ color: 0x2f6fb5, roughness: 0.6, metalness: 0.2 }),
+  );
+  knob.position.y = 0.17;
+  knob.rotation.z = Math.PI / 2;
+  pivot.add(hub, stem, knob);
   pivot.position.set(x, y, z);
   return pivot;
 }
@@ -471,14 +503,24 @@ export function createCabInterior(): CabInterior {
   const brakeHandle = buildHandle(0.52, handleY, handleZ, 0.2, 0x9aa0a8);
   group.add(mascon, brakeHandle);
   // ノッチの刻み目を示す台座（ハンドルの回る扇形の板）
+  const twoHandlePlates: THREE.Object3D[] = [];
   for (const x of [-0.42, 0.52]) {
     const plate = new THREE.Mesh(
       new THREE.CylinderGeometry(0.19, 0.19, 0.02, 20),
       new THREE.MeshStandardMaterial({ color: 0x1c2025, roughness: 0.8, metalness: 0.05 }),
     );
     plate.position.set(x, CAB.deskY + 0.02, handleZ);
+    twoHandlePlates.push(plate);
     group.add(plate);
   }
+  // ワンハンドルはツーハンドルの主幹制御器の位置に立て、選ばれた側だけを見せる
+  const oneHandle = buildOneHandle(-0.42, CAB.deskY + 0.05, handleZ);
+  const oneHandleBase = new THREE.Mesh(
+    new THREE.BoxGeometry(0.17, 0.05, 0.26),
+    new THREE.MeshStandardMaterial({ color: 0x1c2025, roughness: 0.8, metalness: 0.05 }),
+  );
+  oneHandleBase.position.set(-0.42, CAB.deskY + 0.025, handleZ);
+  group.add(oneHandle, oneHandleBase);
 
   // 運転士の椅子（背もたれの上端だけが視界の下に入る）
   group.add(panel(0.52, 0.5, 0.08, 0.0, CAB.floorY + 0.85, 0.34, 0x2a2f35));
@@ -499,16 +541,24 @@ export function createCabInterior(): CabInterior {
 
       // ハンドルの角度は「手元の位置」に連動させる。実効ノッチ（保安装置で
       // 力行がカットされた後の値）を使うと、動かしたハンドルが動かなく見えてしまう。
-      // 抑速は切を挟んで力行の反対側にあるので、負の比として同じ軸へ乗せる
-      const powerRatio =
-        handles.power / Math.max(1, sim.scenario.consist.traction.notchCount) -
-        handles.holding / Math.max(1, sim.scenario.consist.brake.notchCount);
+      const brakeCount = Math.max(1, sim.scenario.consist.brake.notchCount);
+      const powerRatio = handles.power / Math.max(1, sim.scenario.consist.traction.notchCount);
+      // 抑速は切と B1 のあいだにある位置なので、半段ぶんとして同じ軸へ乗せる
       const brakeRatio = handles.emergency
         ? 1.15
-        : handles.brake / Math.max(1, sim.scenario.consist.brake.notchCount);
-      // 縦軸まわりに回すので Y 軸の回転。ノッチが進むほど握りが外へ回る
+        : (handles.holding ? 0.5 : handles.brake) / brakeCount;
+
+      mascon.visible = !handles.oneHandle;
+      brakeHandle.visible = !handles.oneHandle;
+      for (const plate of twoHandlePlates) plate.visible = !handles.oneHandle;
+      oneHandle.visible = handles.oneHandle;
+      oneHandleBase.visible = handles.oneHandle;
+
+      // ツーハンドルは縦軸まわりに回すので Y 軸の回転。ノッチが進むほど握りが外へ回る
       mascon.rotation.y = powerRatio * 0.85;
       brakeHandle.rotation.y = -brakeRatio * 0.9;
+      // ワンハンドルは前後に倒すレバー。力行で向こうへ、ブレーキで手前へ傾く
+      oneHandle.rotation.x = (brakeRatio - powerRatio) * 0.5;
 
       // 表示灯: 進行（緑）・警報/パターン接近（橙）・非常（赤）
       const ind = snap.safety.indication;

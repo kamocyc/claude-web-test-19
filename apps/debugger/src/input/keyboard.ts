@@ -12,8 +12,8 @@ export interface DriverDeskOptions {
   powerNotchCount(): number;
   /** 常用ブレーキノッチ段数 */
   brakeNotchCount(): number;
-  /** 抑速ブレーキの段数（抑速を持たない車両では 0） */
-  holdingNotchCount(): number;
+  /** 抑速位置を持つか（抑速ブレーキを持たない車両には無い） */
+  hasHoldingBrake(): boolean;
   onCameraChange?(mode: CameraMode): void;
   /** 自動運転の入切 */
   onAutoDriveToggle?(): void;
