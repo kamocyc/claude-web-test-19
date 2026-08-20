@@ -174,7 +174,17 @@ export class Hud {
         `${(snap.electricBrakeForce / 1000).toFixed(0)} / ${(snap.airBrakeForce / 1000).toFixed(0)} kN`,
       ),
     );
-    rows.push(row('BC 圧', `${paToKpa(snap.cylinderPressure).toFixed(0)} kPa`));
+    // BC 圧と、雪の噛み込みで落ちている制動力。込めているのに減速しないときの
+    // 理由がここで読める（耐雪ブレーキを入れておけば噛み込みは進まない）。
+    rows.push(
+      row(
+        'BC 圧',
+        `${paToKpa(snap.cylinderPressure).toFixed(0)} kPa` +
+          (snap.snowLoss > 0.05
+            ? ` <span class="warn">雪 −${(snap.snowLoss * 100).toFixed(0)}%</span>`
+            : ''),
+      ),
+    );
     // 元空気溜め圧とコンプレッサ。運転操作と無関係な周期で回り出すので、
     // 音が鳴り始めた理由がここで読み取れる。
     rows.push(

@@ -500,6 +500,7 @@ export class Simulation {
       loadFactor: this.scenario.loadFactor,
       regenerationReceptivity: this.scenario.regenerationReceptivity,
       lineVoltage: 1500,
+      railCondition: this.scenario.railCondition,
     };
     this.brake.setCommand(brakeCommand);
     this.brake.update(dt, brakeCtx);
@@ -716,6 +717,7 @@ export class Simulation {
       airBrakeForce: this.brake.state.airForceActual,
       regenerationLost: this.brake.state.regenerationLost,
       antiSkidActive: this.brake.state.antiSkidActive,
+      snowLoss: this.brake.state.snowLoss,
       reAdhesionFactor: this.traction.state.reAdhesionFactor,
       drive: this.traction.driveState,
       doors: this.doors.state,
@@ -782,6 +784,8 @@ export interface SimSnapshot {
   airBrakeForce: number;
   regenerationLost: boolean;
   antiSkidActive: boolean;
+  /** 雪の噛み込みで落ちている制動力の割合 0..1 */
+  snowLoss: number;
   reAdhesionFactor: number;
   /** 制御方式ごとの駆動装置の状態（変調 / 進段 / 通流率） */
   drive: DriveState;
