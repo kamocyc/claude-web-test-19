@@ -1,13 +1,18 @@
 import type { RailCondition, SafetySystemKind } from '@railsim/core';
-import { precedingTrain, testLineLocal } from './assets/scenarios.ts';
+import {
+  opposingTrainLoop,
+  opposingTrainMain,
+  precedingTrain,
+  testLineLocal,
+} from './assets/scenarios.ts';
 import type { ScenarioDefinition } from './schema/scenario.ts';
 
 /**
  * 走行条件の組み合わせ。
  *
- * ビューアの選択肢はこの 5 つで、**互いに独立**である。同梱シナリオのように
+ * ビューアの選択肢はこの 6 つで、**互いに独立**である。同梱シナリオのように
  * 「降雪の抵抗制御車」といった組み合わせをあらかじめ数え上げるのではなく、
- * 選んだ条件からシナリオ定義をその場で組み立てる（4 × 4 × 2 × 2 × 2 = 128 通り）。
+ * 選んだ条件からシナリオ定義をその場で組み立てる（4 × 4 × 2 × 2 × 2 × 2 = 256 通り）。
  *
  * 車両と天気は択一なのでプルダウン、残りは入切なのでチェックボックスにあたる。
  */
@@ -19,6 +24,14 @@ export interface RunOptions {
   readonly divergingPlatform: boolean;
   /** 先行列車を走らせるか */
   readonly precedingTrain: boolean;
+  /**
+   * 対向列車と行き違うか。
+   *
+   * 単線なのですれ違えるのは起点駅の交換設備だけである。自列車が 1 番線なら
+   * 対向列車は 2 番線（分岐制限 45km/h）を、2 番線に入っていれば本線を制限なしで
+   * 通過するので、**どちらの番線を選んだかですれ違いの速さが変わる**。
+   */
+  readonly opposingTrain: boolean;
   readonly safety: SafetyChoice;
 }
 
@@ -69,6 +82,7 @@ export const DEFAULT_RUN_OPTIONS: RunOptions = {
   weather: 'clear',
   divergingPlatform: false,
   precedingTrain: false,
+  opposingTrain: false,
   safety: 'ats-p',
 };
 
@@ -87,14 +101,16 @@ export function runScenarioId(options: RunOptions): string {
     options.divergingPlatform ? 'loop' : 'main',
     options.safety,
     options.precedingTrain ? 'following' : 'solo',
+    options.opposingTrain ? 'meeting' : 'clear',
   ].join('/');
 }
 
 /** `runScenarioId()` の逆。知らない組み合わせなら null。 */
 export function parseRunScenarioId(id: string): RunOptions | null {
   const parts = id.split('/');
-  if (parts.length !== 6 || parts[0] !== 'run') return null;
-  const [, vehicleId, weather, platform, safety, following] = parts as [
+  if (parts.length !== 7 || parts[0] !== 'run') return null;
+  const [, vehicleId, weather, platform, safety, following, meeting] = parts as [
+    string,
     string,
     string,
     string,
@@ -107,11 +123,13 @@ export function parseRunScenarioId(id: string): RunOptions | null {
   if (!SAFETY_CHOICES.some((s) => s.id === safety)) return null;
   if (platform !== 'main' && platform !== 'loop') return null;
   if (following !== 'following' && following !== 'solo') return null;
+  if (meeting !== 'meeting' && meeting !== 'clear') return null;
   return {
     vehicleId,
     weather: weather as WeatherChoice,
     divergingPlatform: platform === 'loop',
     precedingTrain: following === 'following',
+    opposingTrain: meeting === 'meeting',
     safety: safety as SafetyChoice,
   };
 }
@@ -125,6 +143,7 @@ export function runScenarioName(options: RunOptions): string {
     labelOf(SAFETY_CHOICES, options.safety),
   ];
   if (options.precedingTrain) parts.push('先行列車あり');
+  if (options.opposingTrain) parts.push('対向列車あり');
   return `試験線 各駅停車（${parts.join('・')}）`;
 }
 
@@ -146,6 +165,16 @@ export function runScenarioDefinition(options: RunOptions): ScenarioDefinition {
     railCondition: weather.rail,
     regenerationReceptivity: weather.regeneration,
     safetySystems: [options.safety],
-    ...(options.precedingTrain ? { scheduledTrains: precedingTrain } : {}),
+    // 先行列車は自分と同じ線路、対向列車は交換設備の隣の線路を走る。役割が違うので
+    // 同時に走らせられる。対向列車のダイヤは、自分がどちらの番線にいるかで変わる
+    // （相手が通るのが本線か分岐側かで、制限速度がまるで違うため）。
+    scheduledTrains: [
+      ...(options.precedingTrain ? precedingTrain : []),
+      ...(options.opposingTrain
+        ? options.divergingPlatform
+          ? opposingTrainMain
+          : opposingTrainLoop
+        : []),
+    ],
   };
 }

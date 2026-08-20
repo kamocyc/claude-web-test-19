@@ -201,6 +201,66 @@ export const POINT_MACHINE = {
 } as const;
 
 /**
+ * 橋りょう。
+ *
+ * 桁の高さ・支間は路線データが持っている（音を決める寸法でもあるため）ので、
+ * ここにあるのは形式ごとに決まっている「見た目の寸法」だけである。
+ */
+export const BRIDGE = {
+  /** 主桁の中心間隔（2 主桁のプレートガーダー橋） */
+  girderSpacing: 1.8,
+  /** 腹板の厚さ（描画上は実物より厚く見せないと見えない） */
+  webThickness: 0.05,
+  /** 上下フランジの幅と厚さ */
+  flangeWidth: 0.52,
+  flangeThickness: 0.05,
+  /** 桁の上面（まくらぎの下）の高さ */
+  deckTop: -0.35,
+  /** トラスの主構の中心間隔（下路。列車がこのあいだを通る） */
+  trussSpacing: 4.4,
+  /** 弦材・斜材の太さ */
+  memberSize: 0.32,
+  /** 橋脚の幅（線路方向）と長さ（線路直角方向） */
+  pierWidth: 1.6,
+  pierLength: 4.2,
+  /** 高欄（橋の上の手すり）の高さと軌道中心からの位置 */
+  parapetHeight: 1.05,
+  parapetOffset: 2.4,
+  /** 桁下の余裕（谷底から桁の下端まで） */
+  clearance: 2.5,
+} as const;
+
+/**
+ * 踏切。
+ *
+ * 第 1 種踏切道（警報機と遮断機を備えるもの）の寸法。警報機は道路の両側に建ち、
+ * 遮断桿は道路の半分を塞ぐ（両側から挟んで全幅を塞ぐ）。
+ */
+export const CROSSING = {
+  /** 道路が線路の左右へ伸びる長さ */
+  roadLength: 30,
+  /** 舗装の厚さ */
+  pavementThickness: 0.02,
+  /** 踏切板の上面（レール頭頂面よりわずかに低い） */
+  panelTop: -0.02,
+  /** 警報機の柱の高さと直径 */
+  postHeight: 3.3,
+  postDiameter: 0.12,
+  /** 警報灯の直径と間隔 */
+  lampDiameter: 0.3,
+  lampSpacing: 0.55,
+  /** 警報灯の高さ（地面から） */
+  lampHeight: 2.9,
+  /** 警報機の軌道中心からの距離 */
+  postOffset: 3.5,
+  /** 遮断桿の高さ（下りきったとき）と太さ */
+  barrierHeight: 0.85,
+  barrierDiameter: 0.09,
+  /** 遮断桿の根元の軌道中心からの距離 */
+  barrierOffset: 3.9,
+} as const;
+
+/**
  * 単線トンネル（電化区間）の内空断面。
  *
  * 架線を張るため、非電化より高い断面を取る。側壁は起拱線まで垂直、

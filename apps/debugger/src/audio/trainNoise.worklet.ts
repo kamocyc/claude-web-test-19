@@ -1,7 +1,9 @@
 import {
+  RemoteTrainVoice,
   TrainNoiseSynth,
   VOICE_COUNT,
   type JointImpact,
+  type RemoteTrainParams,
   type TrainNoiseParams,
   type TurnoutImpact,
 } from '@railsim/audio';
@@ -21,6 +23,12 @@ interface TrainNoiseMessage {
   readonly params?: TrainNoiseParams;
   readonly joints?: readonly JointImpact[];
   readonly turnouts?: readonly TurnoutImpact[];
+  /** 隣の線路（あるいは前方）を走る列車。誰も居なければ null。 */
+  readonly remote?: RemoteTrainParams | null;
+  readonly remoteJoints?: readonly JointImpact[];
+  readonly remoteTurnouts?: readonly TurnoutImpact[];
+  /** 鳴らす相手が入れ替わったので、前の列車の音を捨てる */
+  readonly resetRemote?: boolean;
   readonly reset?: boolean;
 }
 
@@ -44,6 +52,11 @@ const LEVEL_PERIOD = 2880;
 
 class TrainNoiseProcessor extends AudioWorkletProcessor {
   private readonly synth = new TrainNoiseSynth(sampleRate);
+  /**
+   * 隣の線路の列車。中で `TrainNoiseSynth` をもう 1 つ回しており、そこへ
+   * 伝搬の遅れ（＝ドップラー効果）・空気の吸収・車体の遮音を掛けて混ぜる。
+   */
+  private readonly remote = new RemoteTrainVoice(sampleRate);
   private scratch = new Float32Array(128);
   private readonly levels = new Float32Array(VOICE_COUNT);
   private sinceLevels = 0;
@@ -52,19 +65,33 @@ class TrainNoiseProcessor extends AudioWorkletProcessor {
     super(options);
     // 生成時に渡された初期値。`postMessage` は最初のブロックに間に合わないことが
     // あるため、鳴り始めを取りこぼさないようここでも受け取れるようにしておく。
+    this.synth.extra = this.remote;
     this.apply(options?.processorOptions as TrainNoiseMessage | undefined);
     this.port.onmessage = (event: MessageEvent<TrainNoiseMessage>) => this.apply(event.data);
   }
 
   private apply(message: TrainNoiseMessage | undefined): void {
     if (!message) return;
-    if (message.reset) this.synth.reset();
+    if (message.reset) {
+      this.synth.reset();
+      this.remote.reset();
+    }
     if (message.params) this.synth.setParams(message.params);
     if (message.joints) {
       for (const impact of message.joints) this.synth.triggerJoint(impact);
     }
     if (message.turnouts) {
       for (const impact of message.turnouts) this.synth.triggerTurnout(impact);
+    }
+    if (message.resetRemote) this.remote.reset();
+    if (message.remote !== undefined) {
+      this.remote.setParams(message.remote ?? null);
+    }
+    if (message.remoteJoints) {
+      for (const impact of message.remoteJoints) this.remote.triggerJoint(impact);
+    }
+    if (message.remoteTurnouts) {
+      for (const impact of message.remoteTurnouts) this.remote.triggerTurnout(impact);
     }
   }
 

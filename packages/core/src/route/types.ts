@@ -1,6 +1,10 @@
 import type { PointTable, SpanTable, StepTable } from '../math/table.ts';
 import type { TrackIrregularity } from '../physics/irregularity.ts';
+import type { RailJointFeature } from '../physics/railJoint.ts';
 import type { Alignment } from '../track/alignment.ts';
+import type { BridgeTrack } from '../track/bridge.ts';
+import type { LevelCrossingTrack } from '../track/levelCrossing.ts';
+import type { AdjacentTrack } from '../track/passingLoop.ts';
 import type { TurnoutTrack } from '../track/turnout.ts';
 import type { Meters, MetersPerSecond, Seconds } from '../units.ts';
 
@@ -137,10 +141,30 @@ export interface CompiledRoute {
    */
   readonly turnouts: TurnoutTrack;
   /**
+   * 橋りょう。桁の寸法から音が決まるので、形式ではなく寸法を持つ。
+   */
+  readonly bridges: BridgeTrack;
+  /** 踏切道 */
+  readonly levelCrossings: LevelCrossingTrack;
+  /**
+   * 交換設備の「隣の線路」。単線なのでここにしか無く、対向列車とすれ違えるのも
+   * ここだけである。
+   */
+  readonly adjacentTrack: AdjacentTrack;
+  /**
    * 距離程 -> レールの継目間隔 [m]（0 = ロングレール）。
    * 定尺レール区間では軸が継目を踏むたびに衝撃音が出る。
    */
   readonly railJointSpacing: StepTable<number>;
+  /**
+   * 個別に置かれた継目（絶縁継目・伸縮継目）。
+   *
+   * `railJointSpacing` が周期として持つ定尺の継目とは別に、**そこに置く理由が
+   * ある継目**を 1 つずつ持つ。分岐器の前後には軌道回路を区切る絶縁継目が、
+   * 橋りょうの両端には桁の伸縮を逃がす伸縮継目がある。したがって
+   * ロングレール区間でも、分岐器と橋の前後だけは継目の音がする。
+   */
+  readonly railJoints: PointTable<RailJointFeature>;
   /**
    * 距離程 -> レール波状摩耗（コルゲーション）の深さ 0..1。
    *

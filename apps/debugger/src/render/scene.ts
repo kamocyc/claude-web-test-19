@@ -1,11 +1,22 @@
 import * as THREE from 'three';
-import type { CompiledRoute, Meters, Simulation } from '@railsim/core';
+import {
+  scheduledTrainState,
+  type CompiledRoute,
+  type Meters,
+  type Simulation,
+} from '@railsim/core';
 import { buildCatenary } from './catenary.ts';
 import { makeFrameAt, type TrackFrame } from './frame.ts';
 import { buildScenery, buildTunnels } from './scenery.ts';
 import { createDaylight, createSky, SUN_DIRECTION } from './sky.ts';
 import { coatMaterial, surfaceCoat, weatherLook, type WeatherLook } from './weather.ts';
 import { buildTrack, buildTurnouts } from './track.ts';
+import {
+  buildBridges,
+  buildLevelCrossings,
+  groundDepressionAt,
+  type CrossingHandle,
+} from './structures.ts';
 import { buildCar } from './vehicle.ts';
 import {
   buildBeacons,
@@ -52,6 +63,9 @@ export class TrackScene {
   private readonly sky: THREE.Mesh;
   private readonly vehicleMeshes: THREE.Object3D[] = [];
   private readonly signalHandles: Map<string, SignalHandle>;
+  private readonly crossingHandles: Map<string, CrossingHandle>;
+  /** ダイヤ列車（先行列車・対向列車）の車体 */
+  private readonly scheduledTrains: ScheduledTrainView[] = [];
   private readonly route: CompiledRoute;
   private readonly frameAt: (s: number) => TrackFrame;
   private readonly sun: THREE.DirectionalLight;
@@ -100,6 +114,10 @@ export class TrackScene {
     this.add(buildStations(route, this.frameAt), true);
     this.add(buildBeacons(route, this.frameAt), false);
     this.add(buildTunnels(route, this.frameAt), false);
+    this.add(buildBridges(route, this.frameAt), true);
+    const crossings = buildLevelCrossings(route, this.frameAt);
+    this.add(crossings.objects, true);
+    this.crossingHandles = crossings.handles;
     this.add(buildCatenary(route, this.frameAt, inTunnel), true);
     this.add(buildScenery(route, this.frameAt), true);
 
@@ -108,6 +126,7 @@ export class TrackScene {
     this.signalHandles = signals.handles;
 
     this.buildTrain(sim);
+    this.buildScheduledTrains(sim);
     this.update(sim);
   }
 
@@ -151,7 +170,10 @@ export class TrackScene {
       previous = f.position.clone();
       const l = f.position.clone().addScaledVector(f.right, -halfWidth);
       const r = f.position.clone().addScaledVector(f.right, halfWidth);
-      positions.push(l.x, l.y - 1.2, l.z, r.x, r.y - 1.2, r.z);
+      // 橋の下は谷か川なので、桁の下端より深く掘る。掘らないと地表の板が桁を
+      // 突き抜けて「地面の上に架かった橋」になってしまう。
+      const level = -1.2 - groundDepressionAt(this.route, s);
+      positions.push(l.x, l.y + level, l.z, r.x, r.y + level, r.z);
       // UV は m 単位。草の模様が線路の近くでも遠くでも同じ大きさになる
       uvs.push(u, -halfWidth, u, halfWidth);
     }
@@ -194,6 +216,65 @@ export class TrackScene {
       const { group } = buildCar(veh.spec, lead, i === 0);
       this.add([group], true);
       this.vehicleMeshes.push(group);
+    }
+  }
+
+  /**
+   * ダイヤ列車の車体を組む。
+   *
+   * 先行列車は自分と同じ線路、対向列車は交換設備の隣の線路を走る。編成長から
+   * 両数を割り出し、自分と同じ形式の車体を並べる（同じ路線を走る列車なので）。
+   */
+  private buildScheduledTrains(sim: Simulation): void {
+    const spec = sim.scenario.consist.vehicles[0];
+    if (!spec) return;
+    for (const train of sim.scenario.scheduledTrains) {
+      const cars = Math.max(1, Math.round(train.length / spec.length));
+      const view = new ScheduledTrainView(train.id, train.track ?? 'own', spec.length);
+      for (let i = 0; i < cars; i++) {
+        const { group } = buildCar(spec, i === 0 || i === cars - 1, false);
+        this.add([group], true);
+        group.visible = false;
+        view.cars.push(group);
+      }
+      this.scheduledTrains.push(view);
+    }
+  }
+
+  /**
+   * ダイヤ列車を時刻どおりの位置へ置く。
+   *
+   * 位置も向きも `scheduledTrainState()`（コア）が返すものをそのまま使う。
+   * 距離程が減っていく列車は対向列車なので、車体も逆を向く。
+   */
+  private updateScheduledTrains(sim: Simulation): void {
+    const adjacent = this.route.adjacentTrack;
+    const flip = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI);
+    for (const view of this.scheduledTrains) {
+      const train = sim.scenario.scheduledTrains.find((t) => t.id === view.id);
+      const state = train ? scheduledTrainState(train, sim.time) : null;
+      if (!state) {
+        for (const car of view.cars) car.visible = false;
+        continue;
+      }
+      for (let i = 0; i < view.cars.length; i++) {
+        const car = view.cars[i]!;
+        // 先頭端は進行方向の先。編成はそこから後ろへ伸びる。
+        const centre = state.leadPosition - state.direction * (i + 0.5) * view.carLength;
+        const offset = view.track === 'adjacent' ? adjacent.offsetAt(centre) : 0;
+        // 隣の線路が無いところ（交換設備の外）は単線なので、そこには置けない
+        car.visible =
+          centre >= 0 &&
+          centre <= this.route.length &&
+          (view.track === 'own' || adjacent.has(centre));
+        if (!car.visible) continue;
+        const f = this.frameAt(centre);
+        car.quaternion.setFromRotationMatrix(
+          new THREE.Matrix4().makeBasis(f.forward, f.up, f.cantRight),
+        );
+        if (state.direction < 0) car.quaternion.multiply(flip);
+        car.position.copy(f.position).addScaledVector(f.cantRight, offset);
+      }
     }
   }
 
@@ -243,6 +324,16 @@ export class TrackScene {
       this.signalHandles.get(s.id)?.setAspect(s.aspect);
     }
 
+    // 踏切の遮断桿と警報灯。鳴動も遮断も装置（`LevelCrossingSystem`）が決めていて、
+    // ここはその状態を絵にするだけである。
+    for (const state of sim.levelCrossings.states) {
+      this.crossingHandles
+        .get(state.crossing.id)
+        ?.update(state.barrier, state.ringing, sim.elapsed);
+    }
+
+    this.updateScheduledTrains(sim);
+
     // 影を焼く範囲を列車に追従させる。路線全体を 1 枚の影の地図に収めることは
     // できないので、列車の周り 100m ほどだけを高い解像度で焼く。
     const lead = this.vehicleMeshes[0];
@@ -278,4 +369,15 @@ export class TrackScene {
   frontFrame(sim: Simulation): TrackFrame {
     return this.frameAt(sim.dynamics.vehicles[0]!.s);
   }
+}
+
+/** ダイヤ列車 1 本ぶんの車体 */
+class ScheduledTrainView {
+  readonly cars: THREE.Object3D[] = [];
+
+  constructor(
+    readonly id: string,
+    readonly track: 'own' | 'adjacent',
+    readonly carLength: number,
+  ) {}
 }
