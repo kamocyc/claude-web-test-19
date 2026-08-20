@@ -24,6 +24,12 @@ import { GMeter } from './ui/gmeter.ts';
 import { Hud } from './ui/hud.ts';
 import { Mixer } from './ui/mixer.ts';
 import { TouchConsole } from './ui/touchConsole.ts';
+import {
+  NO_OVERRIDE,
+  parseStartOverride,
+  withStartOverride,
+  type StartOverride,
+} from './startOverride.ts';
 
 const RATES = [0.1, 0.25, 0.5, 1, 2, 4, 8];
 /** グラフのサンプリング周期 [s]（描画フレームごとだと細かすぎる） */
@@ -142,8 +148,12 @@ function showOptions(options: RunOptions): void {
 }
 showOptions(DEFAULT_RUN_OPTIONS);
 
+/** URL で指定された開始位置・速度（確認用の入口。`startOverride.ts`） */
+const startOverride = parseStartOverride(window.location.search);
+if (startOverride.hideUi) document.body.classList.add('ui-hidden');
+
 let scenarioId = runScenarioId(DEFAULT_RUN_OPTIONS);
-let scenario: Scenario = library.scenario(scenarioId);
+let scenario: Scenario = withStartOverride(library.scenario(scenarioId), startOverride);
 let sim = new Simulation(scenario);
 let scene = new TrackScene(scenario.route, sim, renderer);
 charts.setDriveKind(sim.traction.driveState.kind);
@@ -268,9 +278,9 @@ function updateRateLabel(): void {
   rateLabel.textContent = `${RATES[rateIndex]!.toFixed(2)}x`;
 }
 
-function restart(id = scenarioId): void {
+function restart(id = scenarioId, override: StartOverride = startOverride): void {
   scenarioId = id;
-  scenario = library.scenario(scenarioId);
+  scenario = withStartOverride(library.scenario(scenarioId), override);
   sim = new Simulation(scenario);
   scene = new TrackScene(scenario.route, sim, renderer);
   // カメラの子（運転席内装）を描画させるため、カメラをシーングラフに入れる
@@ -418,7 +428,8 @@ loadInput.addEventListener('change', async () => {
     loadInput.value = '';
     return;
   }
-  restart(recording.scenarioId);
+  // 記録は「どこから走ったか」まで含んでいるので、URL の開始位置は効かせない
+  restart(recording.scenarioId, NO_OVERRIDE);
   // 記録の ID には走行条件が入っているので、画面の選択もそこへ戻す
   const options = parseRunScenarioId(recording.scenarioId);
   if (options) showOptions(options);
