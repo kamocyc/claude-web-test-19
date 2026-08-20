@@ -17,10 +17,11 @@ import {
   groundDepressionAt,
   type CrossingHandle,
 } from './structures.ts';
-import { buildCar } from './vehicle.ts';
+import { buildCar, type FrontLights } from './vehicle.ts';
 import {
   buildBeacons,
   buildDistancePosts,
+  buildCurvePosts,
   buildGradePosts,
   buildSignals,
   buildStations,
@@ -62,6 +63,8 @@ export class TrackScene {
   readonly look: WeatherLook;
   private readonly sky: THREE.Mesh;
   private readonly vehicleMeshes: THREE.Object3D[] = [];
+  private frontLights: FrontLights | undefined;
+  private rearLights: FrontLights | undefined;
   private readonly signalHandles: Map<string, SignalHandle>;
   private readonly crossingHandles: Map<string, CrossingHandle>;
   /** ダイヤ列車（先行列車・対向列車）の車体 */
@@ -111,6 +114,7 @@ export class TrackScene {
     this.add(buildTurnouts(route, this.frameAt), false);
     this.add(buildDistancePosts(route, this.frameAt), true);
     this.add(buildGradePosts(route, this.frameAt), true);
+    this.add(buildCurvePosts(route, this.frameAt), true);
     this.add(buildStations(route, this.frameAt), true);
     this.add(buildBeacons(route, this.frameAt), false);
     this.add(buildTunnels(route, this.frameAt), false);
@@ -213,10 +217,29 @@ export class TrackScene {
     for (let i = 0; i < cars.length; i++) {
       const veh = cars[i]!;
       const lead = i === 0 || i === cars.length - 1;
-      const { group } = buildCar(veh.spec, lead, i === 0);
+      const { group, lights } = buildCar(veh.spec, lead, i === 0);
       this.add([group], true);
       this.vehicleMeshes.push(group);
+      // 灯火は編成の前端・後端だけが持つ。どちらを前照灯にするかは逆転機で決まる。
+      if (lights && i === 0) this.frontLights = lights;
+      if (lights && i === cars.length - 1) this.rearLights = lights;
     }
+  }
+
+  /**
+   * 前照灯と尾灯。
+   *
+   * 灯火は「列車が向いている先」に点ける。逆転機が前位なら前端が前照灯・後端が
+   * 尾灯で、後位ならその逆になる（車体の向きは変わらない）。中立では前位の扱い。
+   */
+  setLights(on: boolean, high: boolean, reverser: 1 | 0 | -1): void {
+    const backwards = reverser === -1;
+    const head = backwards ? this.rearLights : this.frontLights;
+    const tail = backwards ? this.frontLights : this.rearLights;
+    head?.setHeadlight(on, high);
+    head?.setTail(false);
+    tail?.setHeadlight(false, high);
+    tail?.setTail(on);
   }
 
   /**

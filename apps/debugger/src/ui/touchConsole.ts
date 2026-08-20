@@ -1,4 +1,4 @@
-import type { DriverState, HandlePosition, HeldCommand } from '../input/driverState.ts';
+import type { DeskLayout, DriverState, HandlePosition, HeldCommand } from '../input/driverState.ts';
 import { notchText } from './hud.ts';
 
 export interface TouchConsoleOptions {
@@ -6,8 +6,8 @@ export interface TouchConsoleOptions {
   state: DriverState;
   powerNotchCount(): number;
   brakeNotchCount(): number;
-  /** 抑速ブレーキの段数（抑速を持たない車両では 0） */
-  holdingNotchCount(): number;
+  /** 抑速位置を持つか（抑速ブレーキを持たない車両には無い） */
+  hasHoldingBrake(): boolean;
   /** 画面のどこを触っても音声の自動再生規制を解く */
   onUserGesture(): void;
   /** カメラを次の視点へ送る */
@@ -34,7 +34,7 @@ class Lever {
   private pointerId: number | null = null;
 
   constructor(
-    role: 'power' | 'brake',
+    role: 'power' | 'brake' | 'single',
     title: string,
     private readonly options: { onPick(index: number): void; onGesture(): void },
   ) {
@@ -135,21 +135,40 @@ class Lever {
   };
 }
 
-/** 力行レバーの目盛り（上ほど強い）。`['P4','P3','P2','P1','切']` */
-function powerLabels(count: number, holdingCount: number): string[] {
+/** 力行レバーの目盛り（上ほど強い）。`['P4','P3','P2','P1','N']` */
+function powerLabels(count: number): string[] {
   const labels: string[] = [];
   for (let notch = count; notch >= 1; notch -= 1) labels.push(`P${notch}`);
-  labels.push('切');
-  // 抑速は切より先（力行の反対側）に並ぶ。実車のマスコンと同じ並び。
-  for (let notch = 1; notch <= holdingCount; notch += 1) labels.push(`抑${notch}`);
+  labels.push('N');
   return labels;
 }
 
-/** ブレーキレバーの目盛り（上ほど強い）。`['非常','B7',…,'B1','切']` */
-function brakeLabels(count: number): string[] {
+/**
+ * ブレーキレバーの目盛り（上ほど強い）。`['非常','B7',…,'B1','抑速','N']`
+ *
+ * 抑速は常用の手前、切のすぐ隣にある。段は無く、位置が 1 つあるだけである。
+ */
+function brakeLabels(count: number, holding: boolean): string[] {
   const labels: string[] = ['非常'];
   for (let notch = count; notch >= 1; notch -= 1) labels.push(`B${notch}`);
-  labels.push('切');
+  if (holding) labels.push('抑速');
+  labels.push('N');
+  return labels;
+}
+
+/**
+ * ワンハンドルの目盛り（上ほど強いブレーキ、下ほど強い力行）。
+ * `['非常','B7',…,'B1','抑速','N','P1',…,'P4']`
+ *
+ * 実物のワンハンドルは手前へ引くほど強い力行、向こうへ押すほど強いブレーキなので、
+ * 画面のレバーも下（手前）が力行、上（向こう）がブレーキになる。
+ */
+function singleLabels(power: number, brake: number, holding: boolean): string[] {
+  const labels: string[] = ['非常'];
+  for (let notch = brake; notch >= 1; notch -= 1) labels.push(`B${notch}`);
+  if (holding) labels.push('抑速');
+  labels.push('N');
+  for (let notch = 1; notch <= power; notch += 1) labels.push(`P${notch}`);
   return labels;
 }
 
@@ -158,7 +177,8 @@ function brakeLabels(count: number): string[] {
  *
  * 実車の運転台（`render/cab.ts`）と同じツーハンドルに合わせ、左手に主幹制御器、
  * 右手にブレーキ設定器を置く。両レバーとも**上ほど強い**で揃えてある
- * （左右で向きが逆だと、咄嗟のときに間違える）。
+ * （左右で向きが逆だと、咄嗟のときに間違える）。ワンハンドルを選んだときは、
+ * 2 本を畳んで真ん中に 1 本だけ立てる。
  *
  * ノッチの進め方そのものは `DriverState` が持っていて、キーボードと共有する。
  * ここは指の位置を段へ量子化して渡すだけで、相互排他の規則は書かない。
@@ -167,6 +187,7 @@ export class TouchConsole {
   readonly element: HTMLDivElement;
   private readonly powerLever: Lever;
   private readonly brakeLever: Lever;
+  private readonly singleLever: Lever;
   private readonly readout: HTMLDivElement;
   private readonly doorsButton: HTMLButtonElement;
   private readonly cameraButton: HTMLButtonElement;
@@ -185,15 +206,17 @@ export class TouchConsole {
     this.powerLever = new Lever('power', '力行', {
       onGesture: () => options.onUserGesture(),
       // 目盛りは上が最大段。段数は掴むたびに読み直す（車両を替えても追従する）。
-      // 切より下は抑速なので、そのまま負の位置になる。
-      onPick: (index) => state.setHandle(options.powerNotchCount() - index),
+      onPick: (index) => state.setPower(options.powerNotchCount() - index),
     });
     this.brakeLever = new Lever('brake', 'ブレーキ', {
       onGesture: () => options.onUserGesture(),
-      onPick: (index) => {
-        if (index === 0) state.setEmergency(true);
-        else state.setBrake(options.brakeNotchCount() + 1 - index);
-      },
+      // 目盛りの下端が切、そこから上へ抑速 → B1 → … → 非常。位置をそのまま渡す。
+      onPick: (index) => state.setBrakePosition(this.brakeSteps() - 1 - index),
+    });
+    this.singleLever = new Lever('single', 'マスコン', {
+      onGesture: () => options.onUserGesture(),
+      // 1 本の軸に力行とブレーキが並ぶ。上端が非常、下端が最大力行。
+      onPick: (index) => state.setLever(index - state.brakePositionCount),
     });
 
     const panel = document.createElement('div');
@@ -223,7 +246,12 @@ export class TouchConsole {
     taps.append(this.doorsButton, this.cameraButton, this.autoButton, this.pauseButton, drawer);
 
     panel.append(this.readout, emergency, holds, taps);
-    this.element.append(this.powerLever.element, panel, this.brakeLever.element);
+    this.element.append(
+      this.powerLever.element,
+      this.singleLever.element,
+      panel,
+      this.brakeLever.element,
+    );
     host.append(this.element);
   }
 
@@ -272,16 +300,37 @@ export class TouchConsole {
     return button;
   }
 
+  /** ブレーキレバーの目盛りの数（切 → 抑速 → B1 … Bn → 非常） */
+  private brakeSteps(): number {
+    return this.options.brakeNotchCount() + (this.options.hasHoldingBrake() ? 1 : 0) + 2;
+  }
+
   /** フレームごとに呼び、レバーと押しボタンの表示を手元のハンドルへ合わせる */
   update(handles: HandlePosition, cameraLabel: string, autoDrive: boolean, paused: boolean): void {
     if (!this.visible) return;
+    const { state } = this.options;
     const powerCount = this.options.powerNotchCount();
     const brakeCount = this.options.brakeNotchCount();
-    const holdingCount = this.options.holdingNotchCount();
-    this.powerLever.setPositions(powerLabels(powerCount, holdingCount));
-    this.brakeLever.setPositions(brakeLabels(brakeCount));
-    this.powerLever.setActive(powerCount - handles.power + handles.holding);
-    this.brakeLever.setActive(handles.emergency ? 0 : brakeCount + 1 - handles.brake);
+    const holding = this.options.hasHoldingBrake();
+    const layout: DeskLayout = state.layout;
+    const single = layout === 'one-handle';
+
+    // ワンハンドルでは 2 本のレバーを畳んで 1 本に替える。段の並びは同じなので、
+    // 走行中に切り替えても手元の位置は動かない。
+    this.element.classList.toggle('one-handle', single);
+    this.powerLever.element.hidden = single;
+    this.brakeLever.element.hidden = single;
+    this.singleLever.element.hidden = !single;
+
+    if (single) {
+      this.singleLever.setPositions(singleLabels(powerCount, brakeCount, holding));
+      this.singleLever.setActive(state.lever + state.brakePositionCount);
+    } else {
+      this.powerLever.setPositions(powerLabels(powerCount));
+      this.brakeLever.setPositions(brakeLabels(brakeCount, holding));
+      this.powerLever.setActive(powerCount - handles.power);
+      this.brakeLever.setActive(this.brakeSteps() - 1 - state.brakePosition);
+    }
 
     this.readout.textContent = notchText(
       handles.power,

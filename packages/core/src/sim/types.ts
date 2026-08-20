@@ -12,7 +12,20 @@ export interface ControlInput {
   readonly brakeNotch: number;
   /** 非常ブレーキ */
   readonly emergency: boolean;
-  /** 抑速ブレーキノッチ */
+  /**
+   * 抑速ブレーキ位置。
+   *
+   * 運転士のブレーキハンドルにある抑速位置は**段が 1 つしかない**。入れると装置
+   * （`HoldingBrakeRegulator`）が速度を見て適切な段を選び続けるので、運転士が
+   * 段を数えて込め直す必要は無い。
+   */
+  readonly holding: boolean;
+  /**
+   * 抑速ブレーキの段を直接指定する（0 = 切）。
+   *
+   * 自動運転装置のように「何段を出すか」まで決めている使い手のための入口で、
+   * `holding` が true のときはそちらが優先される（装置が段を選ぶ）。
+   */
   readonly holdingNotch: number;
   /** 逆転機（1 = 前、0 = 中立、-1 = 後） */
   readonly reverser: 1 | 0 | -1;
@@ -28,12 +41,21 @@ export interface ControlInput {
   readonly doorsClosed: boolean;
   /** 直通予備ブレーキ */
   readonly backupBrake: boolean;
+  /**
+   * 耐雪ブレーキ。
+   *
+   * 降雪時に制輪子と踏面のあいだへ雪が入って利きが落ちるのを防ぐため、走行中に
+   * 低い圧力を込め続けておく装置。常用ブレーキを込めればそちらが上回るので、
+   * 運転士は入れっぱなしにしておく。
+   */
+  readonly snowproofBrake: boolean;
 }
 
 export const NEUTRAL_INPUT: ControlInput = {
   powerNotch: 0,
   brakeNotch: 0,
   emergency: false,
+  holding: false,
   holdingNotch: 0,
   reverser: 1,
   acknowledge: false,
@@ -42,6 +64,7 @@ export const NEUTRAL_INPUT: ControlInput = {
   sanding: false,
   doorsClosed: true,
   backupBrake: false,
+  snowproofBrake: false,
 };
 
 /** シナリオ（路線 + 車両 + 初期条件） */

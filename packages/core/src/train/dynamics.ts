@@ -1,6 +1,6 @@
 import type { Alignment } from '../track/alignment.ts';
 import type { AdhesionConditions } from '../physics/adhesion.ts';
-import { peakAdhesion } from '../physics/adhesion.ts';
+import { peakAdhesion, travelSign } from '../physics/adhesion.ts';
 import { computeAxleLoads, solveAxle, type AxleSolveResult } from '../physics/axle.ts';
 import { couplerForce } from '../physics/coupler.ts';
 import { SMOOTH_TRACK, type TrackIrregularity } from '../physics/irregularity.ts';
@@ -354,8 +354,11 @@ export class TrainDynamics {
         ax.creepForce = res.creepForce;
         ax.adhesionLimit = mu * ax.load;
         const slipMag = Math.abs(res.slip) / this.consist.adhesion.peakCreep;
-        ax.slipping = res.slip > 0 && slipMag > 1;
-        ax.sliding = res.slip < 0 && slipMag > 1;
+        // 空転（車輪が速い）と滑走（車輪が遅い）は進行方向に対して見る。
+        // 後退中はすべり率の符号が裏返るので、進行方向の符号を掛けてそろえる。
+        const signedSlip = res.slip * travelSign(veh.v);
+        ax.slipping = signedSlip > 0 && slipMag > 1;
+        ax.sliding = signedSlip < 0 && slipMag > 1;
         railForce += res.creepForce;
       }
       veh.railForce = railForce;

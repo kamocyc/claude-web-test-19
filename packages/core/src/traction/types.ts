@@ -34,6 +34,13 @@ export interface TractionContext {
   readonly regenerationReceptivity: number;
   /** 架線電圧 [V] */
   readonly lineVoltage: number;
+  /**
+   * 逆転機の向き（1 = 前、-1 = 後）。省略時は前。
+   *
+   * 力行トルクの向きだけを決める。電気ブレーキは実際に回っている向きから
+   * 逆向きのトルクを出すので、この値では切り替えない。
+   */
+  readonly direction?: 1 | -1;
 }
 
 /**

@@ -14,7 +14,7 @@ import {
 } from '@railsim/data';
 import { TrainAudio } from './audio/engine.ts';
 import { ChartPanel } from './charts/panel.ts';
-import { DriverState } from './input/driverState.ts';
+import { DriverState, type HandlePosition } from './input/driverState.ts';
 import { DriverDesk } from './input/keyboard.ts';
 import { createCabInterior } from './render/cab.ts';
 import { Precipitation } from './render/precipitation.ts';
@@ -24,6 +24,12 @@ import { GMeter } from './ui/gmeter.ts';
 import { Hud } from './ui/hud.ts';
 import { Mixer } from './ui/mixer.ts';
 import { TouchConsole } from './ui/touchConsole.ts';
+import {
+  NO_OVERRIDE,
+  parseStartOverride,
+  withStartOverride,
+  type StartOverride,
+} from './startOverride.ts';
 
 const RATES = [0.1, 0.25, 0.5, 1, 2, 4, 8];
 /** グラフのサンプリング周期 [s]（描画フレームごとだと細かすぎる） */
@@ -40,6 +46,7 @@ const safetyGroup = document.querySelector<HTMLElement>('#safety')!;
 const precedingCheck = document.querySelector<HTMLInputElement>('#preceding')!;
 const opposingCheck = document.querySelector<HTMLInputElement>('#opposing')!;
 const platformCheck = document.querySelector<HTMLInputElement>('#platform')!;
+const oneHandleCheck = document.querySelector<HTMLInputElement>('#onehandle')!;
 const restartButton = document.querySelector<HTMLButtonElement>('#restart')!;
 const pauseButton = document.querySelector<HTMLButtonElement>('#pause')!;
 const rateLabel = document.querySelector<HTMLElement>('#rate')!;
@@ -141,8 +148,12 @@ function showOptions(options: RunOptions): void {
 }
 showOptions(DEFAULT_RUN_OPTIONS);
 
+/** URL で指定された開始位置・速度（確認用の入口。`startOverride.ts`） */
+const startOverride = parseStartOverride(window.location.search);
+if (startOverride.hideUi) document.body.classList.add('ui-hidden');
+
 let scenarioId = runScenarioId(DEFAULT_RUN_OPTIONS);
-let scenario: Scenario = library.scenario(scenarioId);
+let scenario: Scenario = withStartOverride(library.scenario(scenarioId), startOverride);
 let sim = new Simulation(scenario);
 let scene = new TrackScene(scenario.route, sim, renderer);
 charts.setDriveKind(sim.traction.driveState.kind);
@@ -159,9 +170,11 @@ let autoDrive = false;
 const notchCounts = {
   powerNotchCount: () => scenario.consist.traction.notchCount,
   brakeNotchCount: () => scenario.consist.brake.notchCount,
-  // 抑速を持たない車両では 0 段＝切より先へは入らない
-  holdingNotchCount: () =>
-    scenario.consist.brake.hasHoldingBrake ? scenario.consist.brake.notchCount : 0,
+  // 抑速を持たない車両では、ブレーキハンドルに抑速位置そのものが無い
+  hasHoldingBrake: () => scenario.consist.brake.hasHoldingBrake,
+  // 逆転ハンドルは停止中しか動かせない。運転台の状態機械は速度を知らないので、
+  // 判定だけをここから貸す（タッチ運転台にも同じものが渡る）。
+  canMoveReverser: () => Math.abs(sim.speed) < 0.05,
 };
 
 /**
@@ -173,7 +186,8 @@ const deskState = new DriverState(notchCounts);
 const desk = new DriverDesk(
   {
     ...notchCounts,
-    onCameraChange: (mode: CameraMode) => applyCameraMode(mode),
+    onCameraCycle: () => cycleCamera(),
+    onUiToggle: () => document.body.classList.toggle('ui-hidden'),
     onAutoDriveToggle: () => setAutoDrive(!autoDrive),
     onPauseToggle: () => setPaused(!paused),
     onSingleStep: () => {
@@ -264,9 +278,9 @@ function updateRateLabel(): void {
   rateLabel.textContent = `${RATES[rateIndex]!.toFixed(2)}x`;
 }
 
-function restart(id = scenarioId): void {
+function restart(id = scenarioId, override: StartOverride = startOverride): void {
   scenarioId = id;
-  scenario = library.scenario(scenarioId);
+  scenario = withStartOverride(library.scenario(scenarioId), override);
   sim = new Simulation(scenario);
   scene = new TrackScene(scenario.route, sim, renderer);
   // カメラの子（運転席内装）を描画させるため、カメラをシーングラフに入れる
@@ -371,6 +385,19 @@ for (const control of [
     restart(runScenarioId(readOptions()));
   });
 }
+/**
+ * 運転台の型（ワンハンドル / ツーハンドル）。既定はワンハンドル。
+ *
+ * 走行条件ではないので、切り替えても走り直さない。段の並びはどちらも同じなので、
+ * 走行中に替えても手元のノッチは動かない。型を持っているのは運転台
+ * （`DriverState`）のほうなので、チェックボックスはその位置に合わせて起こす。
+ */
+oneHandleCheck.checked = deskState.layout === 'one-handle';
+oneHandleCheck.addEventListener('change', () => {
+  releaseFocus(oneHandleCheck);
+  deskState.setLayout(oneHandleCheck.checked ? 'one-handle' : 'two-handle');
+});
+
 restartButton.addEventListener('click', () => {
   releaseFocus(restartButton);
   restart();
@@ -401,7 +428,8 @@ loadInput.addEventListener('change', async () => {
     loadInput.value = '';
     return;
   }
-  restart(recording.scenarioId);
+  // 記録は「どこから走ったか」まで含んでいるので、URL の開始位置は効かせない
+  restart(recording.scenarioId, NO_OVERRIDE);
   // 記録の ID には走行条件が入っているので、画面の選択もそこへ戻す
   const options = parseRunScenarioId(recording.scenarioId);
   if (options) showOptions(options);
@@ -479,7 +507,10 @@ document.addEventListener('visibilitychange', () => {
   hidden = document.visibilityState === 'hidden';
   // 背面へ回ると指もキーも離した通知が来ない。押しっぱなしのまま残ると、
   // 見えないところで警笛が鳴り続けることになる。
-  if (hidden) deskState.releaseAll();
+  if (hidden) {
+    deskState.releaseAll();
+    desk.releaseKeys();
+  }
   // 戻ってきた瞬間に「背面にいたあいだ」ぶんの大きな dt を作らないよう、
   // 実時間の基準を引き直す。
   if (!hidden) previous = performance.now();
@@ -500,6 +531,7 @@ audio.onClock = (seconds) => {
 
 function frame(now: number): void {
   requestAnimationFrame(frame);
+  // 背面から戻った直後などに一息で何秒も進めないよう、幅に上限を設ける
   const wall = Math.min((now - previous) / 1000, 0.25);
   previous = now;
   // 背面のあいだに呼ばれた場合（ブラウザによっては低頻度で呼ばれる）は
@@ -507,17 +539,23 @@ function frame(now: number): void {
   if (hidden) return;
   resize();
 
+  // ノッチキーの長押し。実時間で送るので、一時停止していてもハンドルは動かせる。
+  desk.tick(now / 1000);
+
   const advance = advanceSimulation(wall);
 
   // 自動運転中は装置が動かしているノッチを「手元」として表示・描画する
   const held = sim.effectiveInput;
-  const handles = autoDrive
+  const handles: HandlePosition = autoDrive
     ? {
+        ...desk.handles,
         power: held.powerNotch,
         brake: held.brakeNotch,
-        holding: held.holdingNotch,
+        // 装置は段まで決めているが、運転台の表示は抑速位置の入切だけを持つ
+        holding: held.holdingNotch > 0,
         emergency: held.emergency,
         doorsClosed: held.doorsClosed,
+        // 逆転機・灯火・ワイパー・耐雪は自動運転装置が触らないので手元のまま
       }
     : desk.handles;
 
@@ -526,7 +564,10 @@ function frame(now: number): void {
   audio.update(sim, advance, wall);
   mixer.update(audio.levels);
   scene.update(sim);
-  if (cameraRig.mode === 'cab') cabInterior.update(sim, handles);
+  scene.setLights(handles.headlight, handles.headlightHigh, handles.reverser);
+  if (cameraRig.mode === 'cab') {
+    cabInterior.update(sim, { ...handles, oneHandle: deskState.layout === 'one-handle' }, advance);
+  }
   const frontFrame = scene.frontFrame(sim);
   cameraRig.update({
     frame: frontFrame,

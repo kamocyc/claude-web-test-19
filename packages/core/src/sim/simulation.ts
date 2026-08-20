@@ -1,5 +1,6 @@
 import { AirCompressor, type CompressorState } from '../brake/compressor.ts';
 import { ElectroPneumaticBrakeSystem } from '../brake/electroPneumatic.ts';
+import { HoldingBrakeRegulator } from '../brake/holdingRegulator.ts';
 import type { BrakeCommand } from '../brake/types.ts';
 import { Rng } from '../math/rng.ts';
 import { clamp, firstOrderLag } from '../math/scalar.ts';
@@ -138,6 +139,13 @@ export class Simulation {
   /** 実際に装置へ渡っている指令（自動運転中は装置が組み立てたもの） */
   private activeInput: ControlInput = NEUTRAL_INPUT;
   private lastCylinderPressure = 0;
+  /**
+   * 抑速ブレーキの調速器。
+   *
+   * 運転士の抑速位置は段を 1 つしか持たないので、実際に出す段はこれが選ぶ。
+   * 自動運転装置のように段まで指定してくる指令（`holdingNotch`）はそのまま通す。
+   */
+  private readonly holdingRegulator = new HoldingBrakeRegulator();
   /** ダイヤ列車の前周期の速度と、均した加速度（列車 id で引く） */
   private readonly remoteSpeeds = new Map<string, number>();
   private readonly remoteAccelerations = new Map<string, number>();
@@ -391,11 +399,16 @@ export class Simulation {
     //     でなくダイヤ列車も検知するので、対向列車が来れば自分が止まっていても鳴る。
     this.levelCrossings.update(dt, this.trainPresences());
 
-    // 2. 地上子の通過処理（区間交差で判定するため取りこぼしがない）
+    // 2. 地上子の通過処理（区間交差で判定するため取りこぼしがない）。
+    //    後退しているあいだは踏まない。地上子は列車が進む向きに読ませる前提で
+    //    並んでいるので、逆戻りで踏むと ATS のパターンが後ろ向きに立ってしまう。
+    //    後退は入換相当の扱いで、保安装置の対象外とする。
     const ctx = this.safetyContext(front, this.lastControlFront);
-    const crossed = this.scenario.route.beacons.crossing(this.lastControlFront, front);
-    for (const entry of crossed) {
-      this.safety.onBeacon(entry.value as BeaconPayload, entry.s, ctx);
+    if (front > this.lastControlFront) {
+      const crossed = this.scenario.route.beacons.crossing(this.lastControlFront, front);
+      for (const entry of crossed) {
+        this.safety.onBeacon(entry.value as BeaconPayload, entry.s, ctx);
+      }
     }
 
     // 3. 保安装置
@@ -453,11 +466,31 @@ export class Simulation {
         ? 0
         : this.activeInput.powerNotch;
 
+    // 抑速位置は段を持たないので、装置が速度を見て段を選ぶ。常用ブレーキを込めたら
+    // 抑速は外れる（ブレーキ装置は常用が切のときだけ抑速を見る）ので、そこも渡す
+    // 条件に含める。切れた時点で調速器は目標速度を忘れ、入れ直しで取り直す。
+    const notchCount = this.scenario.consist.brake.notchCount;
+    const serviceNotch = clamp(brakeNotch, 0, notchCount);
+    const holdingEngaged =
+      this.activeInput.holding &&
+      this.scenario.consist.brake.hasHoldingBrake &&
+      powerNotch === 0 &&
+      serviceNotch === 0 &&
+      !emergency;
+    const regulated = this.holdingRegulator.update(
+      dt,
+      holdingEngaged,
+      Math.abs(this.dynamics.speed),
+      notchCount,
+    );
+
     const brakeCommand: BrakeCommand = {
-      notch: clamp(brakeNotch, 0, this.scenario.consist.brake.notchCount),
+      notch: serviceNotch,
       emergency,
-      holdingNotch: powerNotch > 0 ? 0 : this.activeInput.holdingNotch,
+      holdingNotch:
+        powerNotch > 0 ? 0 : this.activeInput.holding ? regulated : this.activeInput.holdingNotch,
       backup: this.activeInput.backupBrake,
+      snowproof: this.activeInput.snowproofBrake,
     };
 
     // 6. ブレーキ → 動力の順に更新する（電空協調で電気ブレーキ量が決まるため）
@@ -467,6 +500,7 @@ export class Simulation {
       loadFactor: this.scenario.loadFactor,
       regenerationReceptivity: this.scenario.regenerationReceptivity,
       lineVoltage: 1500,
+      railCondition: this.scenario.railCondition,
     };
     this.brake.setCommand(brakeCommand);
     this.brake.update(dt, brakeCtx);
@@ -477,6 +511,8 @@ export class Simulation {
       loadFactor: this.scenario.loadFactor,
       regenerationReceptivity: this.scenario.regenerationReceptivity,
       lineVoltage: 1500,
+      // 逆転機が後位なら牽引力の向きを反転する（入換程度の低速後退を想定）
+      direction: this.activeInput.reverser === -1 ? -1 : 1,
     });
 
     // 7. 補機（空気圧縮機）。ブレーキの物理には影響しないが、BC へ込めたぶん
@@ -681,6 +717,7 @@ export class Simulation {
       airBrakeForce: this.brake.state.airForceActual,
       regenerationLost: this.brake.state.regenerationLost,
       antiSkidActive: this.brake.state.antiSkidActive,
+      snowLoss: this.brake.state.snowLoss,
       reAdhesionFactor: this.traction.state.reAdhesionFactor,
       drive: this.traction.driveState,
       doors: this.doors.state,
@@ -747,6 +784,8 @@ export interface SimSnapshot {
   airBrakeForce: number;
   regenerationLost: boolean;
   antiSkidActive: boolean;
+  /** 雪の噛み込みで落ちている制動力の割合 0..1 */
+  snowLoss: number;
   reAdhesionFactor: number;
   /** 制御方式ごとの駆動装置の状態（変調 / 進段 / 通流率） */
   drive: DriveState;

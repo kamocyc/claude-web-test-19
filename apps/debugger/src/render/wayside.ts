@@ -182,15 +182,13 @@ export function buildSignals(
 
     // 番号板（閉塞信号機の番号。白地に黒文字）
     const number = signal.id.replace(/[^0-9]/g, '') || '1';
-    const plate = new THREE.Mesh(
-      new THREE.PlaneGeometry(0.24, 0.3),
-      new THREE.MeshStandardMaterial({
-        map: plateTexture([number], { background: '#f2f4f6', color: '#15191d', aspect: 0.8 }),
-        roughness: 0.7,
-        side: THREE.DoubleSide,
-      }),
+    const plate = textPlate(
+      plateTexture([number], { background: '#f2f4f6', color: '#15191d', aspect: 0.8 }),
+      0.24,
+      0.3,
+      -1,
+      0xf2f4f6,
     );
-    plate.rotation.y = -Math.PI / 2;
     plate.position.set(-0.05, SIGNAL.bottomLampHeight - 0.5, 0);
     group.add(plate);
 
@@ -261,24 +259,15 @@ export function buildDistancePosts(
     pole.position.y = 0.6;
     const rim = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.46, 0.56), dark);
     rim.position.set(-0.01, 1.35, 0);
-    // 板の両面に同じキロ程を書く（上下どちらの列車からも読める）
-    for (const sign of [-1, 1] as const) {
-      const face = new THREE.Mesh(
-        new THREE.PlaneGeometry(0.5, 0.4),
-        new THREE.MeshStandardMaterial({
-          map: plateTexture([`${km}`], {
-            background: '#f0f2f4',
-            color: '#15191d',
-            aspect: 1.25,
-          }),
-          roughness: 0.75,
-        }),
-      );
-      face.rotation.y = (sign * Math.PI) / 2;
-      face.position.set(sign * 0.02, 1.35, 0);
-      group.add(face);
-    }
-    group.add(pole, rim);
+    const face = textPlate(
+      plateTexture([`${km}`], { background: '#f0f2f4', color: '#15191d', aspect: 1.25 }),
+      0.5,
+      0.4,
+      -1,
+      0xf0f2f4,
+    );
+    face.position.y = 1.35;
+    group.add(pole, rim, face);
     group.quaternion.copy(frameQuaternion(f, false));
     group.position
       .copy(f.position)
@@ -290,11 +279,33 @@ export function buildDistancePosts(
 }
 
 /**
+ * 勾配標の腕木の傾き [rad]。
+ *
+ * 勾配そのものの角度では付けない。25‰ は角度にすれば 1.4° しかなく、そのまま
+ * 作っても水平にしか見えないからで、実物の腕木も離れて見て向きが分かる角度まで
+ * 起こしてある。緩い勾配ほど強く誇張し、きつい勾配では頭打ちになるよう当てる
+ * （勾配の値そのものは腕木に載せた数字が伝える）。
+ */
+function gradeArmTilt(grade: number): number {
+  /** 倒しきったときの角度 [rad] */
+  const MAX_TILT = 0.42;
+  /** この勾配 [m/m] でおよそ 8 割まで倒れる */
+  const REFERENCE = 0.012;
+  return MAX_TILT * Math.tanh(grade / REFERENCE);
+}
+
+/**
  * 勾配標。
  *
- * 勾配が変わる地点に建て、これから先の勾配を示す。上り勾配は右上がり、
- * 下り勾配は右下がりの腕木で表すのが実物の形なので、腕を傾けて置く。
+ * 勾配が変わる地点に建て、これから先の勾配を示す。柱の頂部から腕木が片持ちで
+ * 出ていて、上り勾配なら右上がり、下り勾配なら右下がりに斜めに傾くのが実物の
+ * 形なので、そのとおり組む。腕木には勾配の値（‰、平坦は "L"）を書いた板を載せる。
  * 距離標と重ならないよう、こちらは左側の路盤の肩に建てる。
+ *
+ * 建てる場所は `Alignment.gradeChanges` が返す勾配変化点そのもので、縦曲線が
+ * あるときはその中心（前後の勾配線の交点）になる。縦曲線の中は勾配が連続的に
+ * 変化しているので、距離程を一定間隔でサンプルして勾配の差を見ると 1 か所の
+ * 変化点が何本もの標識に化けてしまう。実物と同じく **1 か所につき 1 本**である。
  */
 export function buildGradePosts(
   route: CompiledRoute,
@@ -302,35 +313,42 @@ export function buildGradePosts(
 ): THREE.Object3D[] {
   const out: THREE.Object3D[] = [];
   const white = new THREE.MeshStandardMaterial({ color: 0xeef1f4, roughness: 0.75 });
-  const step = 20;
-  let previous = route.alignment.gradeAt(0);
-  for (let s = step; s <= route.length; s += step) {
-    const grade = route.alignment.gradeAt(s);
-    if (Math.abs(grade - previous) < 0.002) continue;
-    previous = grade;
+  /** 腕木の長さ [m] */
+  const armLength = 0.72;
+  for (const change of route.alignment.gradeChanges) {
+    if (change.s < 0 || change.s > route.length) continue;
+    // 標識に書くのも腕木の傾きで示すのも、これから走る側の勾配である
+    const grade = change.to;
 
-    const f = frameAt(s);
+    const f = frameAt(change.s);
     const group = new THREE.Group();
-    const pole = new THREE.Mesh(new THREE.BoxGeometry(0.08, 1.4, 0.08), white);
-    pole.position.y = 0.7;
-    // 腕木は勾配の値（‰）を書いた板にする。実物も数字が読めるようになっている
+    const pole = new THREE.Mesh(new THREE.BoxGeometry(0.08, 1.5, 0.08), white);
+    pole.position.y = 0.75;
+
+    // 腕木は柱の頂部を支点にして、線路と反対側（-Z）へ出す。線路側へ出すと
+    // 建築限界を侵すためで、実物も車両から逃げる側に腕を張り出している。
+    // 上り勾配では線路側の端が上がるので、運転士からはやはり右上がりに見える。
+    const arm = new THREE.Group();
+    const bar = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.06, armLength), white);
+    bar.position.z = -armLength / 2;
+    // 勾配の値を書いた板は、腕木の先寄りに脚を立てて載せる
+    const brace = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.16, 0.05), white);
+    brace.position.set(0, 0.11, -armLength * 0.6);
     const permille = Math.abs(grade * 1000);
-    const arm = new THREE.Mesh(
-      new THREE.PlaneGeometry(0.85, 0.24),
-      new THREE.MeshStandardMaterial({
-        map: plateTexture([permille < 0.5 ? 'L' : permille.toFixed(0)], {
-          background: '#eef1f4',
-          color: '#15191d',
-          aspect: 3.5,
-        }),
-        roughness: 0.75,
-        side: THREE.DoubleSide,
+    const plate = textPlate(
+      plateTexture([permille < 0.5 ? 'L' : permille.toFixed(0)], {
+        background: '#eef1f4',
+        color: '#15191d',
+        aspect: 1.4,
       }),
+      0.4,
+      0.28,
     );
-    arm.rotation.y = Math.PI / 2;
-    arm.position.y = 1.4;
-    // 腕木の傾きで勾配の向きを示す（誇張しないと見えないので 6 倍）
-    arm.rotation.x = Math.atan(grade * 6);
+    plate.position.set(0, 0.33, -armLength * 0.6);
+    arm.add(bar, brace, plate);
+    arm.position.y = 1.5;
+    arm.rotation.x = -gradeArmTilt(grade);
+
     group.add(pole, arm);
     group.quaternion.copy(frameQuaternion(f, false));
     group.position
@@ -338,6 +356,153 @@ export function buildGradePosts(
       .addScaledVector(f.right, -SHOULDER.lateral)
       .add(new THREE.Vector3(0, SHOULDER.level, 0));
     out.push(group);
+  }
+  return out;
+}
+
+/**
+ * 曲線に関する標識を建てる場所。
+ *
+ * 勾配標・距離標より一段外へ寄せる。曲線標とカント標は路盤の肩のさらに外、
+ * 緩和曲線の始終端標は肩の上で、互いに重ならない。
+ */
+const CURVE_SIGN = {
+  /** 曲線標・カント標の横位置（軌道中心から左へ） */
+  lateral: SHOULDER.lateral + 0.6,
+  /** 緩和曲線の始終端標の横位置 */
+  markerLateral: SHOULDER.lateral,
+} as const;
+
+/**
+ * 標識の板。
+ *
+ * 板は進行方向に対して直角ではなく**線路と平行**に向ける（`rotation.y = ±π/2`）。
+ * 実物の線路際の標識も、走ってくる列車から読めるように板面が線路を向いている。
+ *
+ * 文字は**進来する列車が読む面にだけ**入れ、裏は無地の板を背中合わせに張る。
+ * 1 枚の板を両面表示（`DoubleSide`）にすると裏から見た面はテクスチャが鏡像になり、
+ * `R600` が裏返しに読めてしまう。実物の標識の裏も、ただの白い板である。
+ *
+ * @param facing 文字面の向き（-1 = 線路の後方＝進来する列車の側、+1 = 前方）
+ */
+function textPlate(
+  map: THREE.Texture,
+  width: number,
+  height: number,
+  facing: -1 | 1 = -1,
+  background = 0xeef1f4,
+): THREE.Group {
+  const group = new THREE.Group();
+  const geometry = new THREE.PlaneGeometry(width, height);
+  const front = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ map, roughness: 0.75 }));
+  front.rotation.y = (facing * Math.PI) / 2;
+  front.position.x = facing * 0.012;
+  const back = new THREE.Mesh(
+    geometry,
+    new THREE.MeshStandardMaterial({ color: background, roughness: 0.8 }),
+  );
+  back.rotation.y = (-facing * Math.PI) / 2;
+  back.position.x = -facing * 0.012;
+  group.add(front, back);
+  return group;
+}
+
+/** 標識板を付けた標柱 */
+function signBoard(
+  lines: readonly string[],
+  width: number,
+  height: number,
+  poleHeight: number,
+  material: THREE.Material,
+  background = '#eef1f4',
+): THREE.Group {
+  const group = new THREE.Group();
+  const pole = new THREE.Mesh(new THREE.BoxGeometry(0.07, poleHeight, 0.07), material);
+  pole.position.y = poleHeight / 2;
+  const board = textPlate(
+    plateTexture(lines, { background, color: '#15191d', aspect: width / height }),
+    width,
+    height,
+  );
+  board.position.y = poleHeight + height / 2 - 0.02;
+  group.add(pole, board);
+  return group;
+}
+
+/**
+ * 曲線標・カント標・緩和曲線の始終端標。
+ *
+ * 実物の曲線には、曲線 1 か所につき次の標識が建つ。運転士から見ると、曲線へ入る
+ * 手前で「これから何 R の曲線がどれだけ続くか」が分かり、曲線の中では自分が
+ * 緩和曲線にいるのか円曲線にいるのかが分かる。
+ *
+ * | 標識 | 建つ場所 | 書いてあるもの |
+ * |------|----------|----------------|
+ * | 曲線標 | 曲線の始点 BTC | 曲線半径 R と曲線長 L |
+ * | カント標 | 円曲線始点 BCC | カント量 C [mm] |
+ * | 緩和曲線の始終端標 | BTC / BCC / ECC / ETC | その点の略号 |
+ *
+ * **緩和曲線もカントも無い曲線には建てない**。本線の曲線は必ず緩和曲線とカントを
+ * 持つが、分岐器のリード曲線は曲率が一段で立ち上がりカントも無い。実物でも
+ * 分岐器の中に曲線標は無いので、そこが線形上の区別にそのまま対応する。
+ */
+export function buildCurvePosts(
+  route: CompiledRoute,
+  frameAt: (s: number) => TrackFrame,
+): THREE.Object3D[] {
+  const out: THREE.Object3D[] = [];
+  const white = new THREE.MeshStandardMaterial({ color: 0xeef1f4, roughness: 0.75 });
+
+  /** 路盤の肩へ据える（横位置は軌道中心から左へ） */
+  const place = (group: THREE.Object3D, s: number, lateral: number): void => {
+    const f = frameAt(s);
+    group.quaternion.copy(frameQuaternion(f, false));
+    group.position
+      .copy(f.position)
+      .addScaledVector(f.right, -lateral)
+      .add(new THREE.Vector3(0, SHOULDER.level, 0));
+    out.push(group);
+  };
+
+  for (const curve of route.alignment.curveSections) {
+    if (!curve.hasTransition && curve.cant === 0) continue;
+    if (!Number.isFinite(curve.radius)) continue;
+
+    // 曲線標（曲線の始点）。半径と曲線長を 2 行に書く
+    place(
+      signBoard(
+        [`R${curve.radius.toFixed(0)}`, `L${curve.length.toFixed(0)}`],
+        0.52,
+        0.42,
+        1.2,
+        white,
+      ),
+      curve.start,
+      CURVE_SIGN.lateral,
+    );
+
+    // カント標（円曲線始点）。カントは mm で書くのが実物の書き方
+    if (curve.cant > 0) {
+      place(
+        signBoard([`C${(curve.cant * 1000).toFixed(0)}`], 0.46, 0.3, 1.0, white),
+        curve.circularStart,
+        CURVE_SIGN.lateral,
+      );
+    }
+
+    // 緩和曲線の始終端標。円曲線部を持たない曲線では BCC と ECC が重なるので 1 本にする
+    const points: Array<[number, string]> = [
+      [curve.start, 'BTC'],
+      [curve.circularStart, 'BCC'],
+      [curve.circularEnd, 'ECC'],
+      [curve.end, 'ETC'],
+    ];
+    let previous = Number.NEGATIVE_INFINITY;
+    for (const [s, label] of points) {
+      if (s - previous < 1) continue;
+      previous = s;
+      place(signBoard([label], 0.34, 0.16, 0.55, white), s, CURVE_SIGN.markerLateral);
+    }
   }
   return out;
 }
@@ -592,15 +757,23 @@ function buildPlatform(
     out.push(place(glow, centre + 0.4, roofY - 0.42, x));
   }
 
-  // --- 駅名標（上屋から吊る。線路側を向く面と反対を向く面の両方に文字が入る） ---
+  // --- 駅名標（上屋から吊る。ホームのどちら側からも読む標識なので、線路を向く面と
+  //     その反対の面の両方に文字を入れる。1 枚を両面表示にすると裏の面が鏡像に
+  //     なってしまうので、背中合わせに 2 枚張る） ---
   const signMaterial = new THREE.MeshStandardMaterial({
     map: stationSignTexture(station.name),
     roughness: 0.6,
-    side: THREE.DoubleSide,
   });
+  const signGeometry = new THREE.PlaneGeometry(1.9, 0.48);
   for (const t of [0.25, 0.75]) {
     const x = -roofLength / 2 + roofLength * t;
-    const sign = new THREE.Mesh(new THREE.PlaneGeometry(1.9, 0.48), signMaterial);
+    const sign = new THREE.Group();
+    for (const side of [-1, 1] as const) {
+      const face = new THREE.Mesh(signGeometry, signMaterial);
+      face.rotation.y = side > 0 ? 0 : Math.PI;
+      face.position.z = side * 0.01;
+      sign.add(face);
+    }
     out.push(place(sign, edge - 1.4, roofY - 0.85, x));
     const hanger = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.3, 0.05), steel);
     out.push(place(hanger, edge - 1.4, roofY - 0.5, x));
@@ -625,15 +798,13 @@ function buildPlatform(
   const marker = new THREE.Group();
   const pole = new THREE.Mesh(new THREE.BoxGeometry(0.06, 1.8, 0.06), steel);
   pole.position.y = 0.9;
-  const face = new THREE.Mesh(
-    new THREE.PlaneGeometry(0.44, 0.44),
-    new THREE.MeshStandardMaterial({
-      map: plateTexture(['停'], { background: '#f2f4f6', color: '#c02020', border: '#c02020' }),
-      roughness: 0.6,
-      side: THREE.DoubleSide,
-    }),
+  const face = textPlate(
+    plateTexture(['停'], { background: '#f2f4f6', color: '#c02020', border: '#c02020' }),
+    0.44,
+    0.44,
+    -1,
+    0xf2f4f6,
   );
-  face.rotation.y = -Math.PI / 2;
   face.position.y = 1.85;
   marker.add(pole, face);
   marker.quaternion.copy(frameQuaternion(fs, false));

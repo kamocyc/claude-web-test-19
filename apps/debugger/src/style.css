@@ -461,6 +461,20 @@ body {
   background: #ffb454;
 }
 
+/* ワンハンドルは 1 本に力行とブレーキが並ぶので、段が多いぶん幅を広く取る */
+.touch-lever.single {
+  width: 104px;
+}
+
+.touch-lever.single .touch-lever-thumb {
+  background: #7fb3ff;
+}
+
+/* display: flex は hidden 属性より強いので、畳むほうを明示する */
+.touch-lever[hidden] {
+  display: none;
+}
+
 /* --- 中央のボタン列 --- */
 
 .touch-panel {
@@ -558,6 +572,14 @@ body {
 
 /* タッチ運転台を出しているあいだは、指では使えないキー凡例を畳む */
 body.touch-mode #help {
+  display: none;
+}
+
+/* U で運転に要らない表示を畳む（前面展望として眺めるとき用）。
+   タッチ運転台のレバーは運転そのものなので残す。 */
+body.ui-hidden #hud,
+body.ui-hidden #help,
+body.ui-hidden #gmeter {
   display: none;
 }
 

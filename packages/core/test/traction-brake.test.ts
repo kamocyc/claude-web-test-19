@@ -73,6 +73,7 @@ const brakeCmd = (notch: number, emergency = false): BrakeCommand => ({
   emergency,
   holdingNotch: 0,
   backup: false,
+  snowproof: false,
 });
 
 describe('VVVF 電動機特性', () => {
@@ -445,7 +446,13 @@ describe('抑速ブレーキ', () => {
   it('下り勾配で電気ブレーキのみで速度上昇を抑える', () => {
     const free = rig({ cars: 4, initialSpeed: kmhToMps(50), gradePermil: -33 });
     const held = rig({ cars: 4, initialSpeed: kmhToMps(50), gradePermil: -33 });
-    held.brake.setCommand({ notch: 0, emergency: false, holdingNotch: 4, backup: false });
+    held.brake.setCommand({
+      notch: 0,
+      emergency: false,
+      holdingNotch: 4,
+      backup: false,
+      snowproof: false,
+    });
     free.run(20);
     held.run(20);
     expect(held.dyn.speed).toBeLessThan(free.dyn.speed);

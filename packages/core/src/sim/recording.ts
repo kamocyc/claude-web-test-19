@@ -22,6 +22,7 @@ const sameInput = (a: ControlInput, b: ControlInput): boolean =>
   a.powerNotch === b.powerNotch &&
   a.brakeNotch === b.brakeNotch &&
   a.emergency === b.emergency &&
+  a.holding === b.holding &&
   a.holdingNotch === b.holdingNotch &&
   a.reverser === b.reverser &&
   a.acknowledge === b.acknowledge &&
@@ -29,7 +30,8 @@ const sameInput = (a: ControlInput, b: ControlInput): boolean =>
   a.horn === b.horn &&
   a.sanding === b.sanding &&
   a.doorsClosed === b.doorsClosed &&
-  a.backupBrake === b.backupBrake;
+  a.backupBrake === b.backupBrake &&
+  a.snowproofBrake === b.snowproofBrake;
 
 /**
  * 運転士の操作を記録する。

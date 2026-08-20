@@ -23,22 +23,46 @@ const ASPECT_TEXT: Record<string, string> = {
 export type { HandlePosition };
 
 /**
- * ノッチ位置の表示（`非常` / `B7` / `抑速4` / `P4` / `切`）。タッチ運転台でも同じ文言を使う。
+ * ノッチ位置の表示（`非常` / `B7` / `抑速` / `P4` / `N`）。タッチ運転台でも同じ文言を使う。
  *
- * 抑速（電気ブレーキだけで下り勾配の速度を保つ段）は常用ブレーキとは別系統で、
+ * 段の並びは実車と同じ `N → P1 → …`（力行）と `N → 抑速 → B1 → … → 非常`（ブレーキ）。
+ * 抑速（電気ブレーキだけで下り勾配の速度を保つ位置）は常用ブレーキとは別系統で、
  * 常用ノッチが 0 のまま制動力が出る。これを出さないと、下り勾配で確かに減速して
- * いるのに表示は `切` のまま、という食い違いになる。
+ * いるのに表示は `N` のまま、という食い違いになる。
+ *
+ * `holding` に段数を渡すと `抑速3` のように段まで出す。運転士の手元は抑速位置の
+ * 入切だけなので `true` を渡し、装置が実際に選んでいる段を出すときだけ数を渡す。
+ * 抑速位置でも装置が 0 段を選んでいれば実効は `N` になる（速度が目標より低く、
+ * 電気ブレーキを出す必要が無い状態）。手元と実効が食い違って見えるのは正しい。
  */
-export const notchText = (power: number, brake: number, emergency: boolean, holding = 0): string =>
-  emergency
-    ? '非常'
-    : brake > 0
-      ? `B${brake}`
-      : holding > 0
-        ? `抑速${holding}`
-        : power > 0
-          ? `P${power}`
-          : '切';
+/** 逆転機の位置。前位以外は力行が出ないので目立たせる。 */
+const REVERSER_TEXT: Readonly<Record<string, string>> = {
+  '1': '前',
+  '0': '<span class="warn">中立</span>',
+  '-1': '<span class="warn">後</span>',
+};
+
+/** 逆転機と運転台装備を 1 行にまとめる */
+function equipmentText(handles: HandlePosition): string {
+  const parts = [REVERSER_TEXT[String(handles.reverser)] ?? '前'];
+  if (handles.snowproof) parts.push('<span class="warn">耐雪</span>');
+  if (handles.headlight) parts.push(handles.headlightHigh ? '前照灯' : '前照灯(減)');
+  if (handles.wiper !== 'off') parts.push(`ワイパー${handles.wiper === 'fast' ? '高' : '低'}`);
+  return parts.join(' / ');
+}
+
+export const notchText = (
+  power: number,
+  brake: number,
+  emergency: boolean,
+  holding: number | boolean = 0,
+): string => {
+  if (emergency) return '非常';
+  if (brake > 0) return `B${brake}`;
+  if (holding === true) return '抑速';
+  if (typeof holding === 'number' && holding > 0) return `抑速${holding}`;
+  return power > 0 ? `P${power}` : 'N';
+};
 
 /** 自動運転装置の動作モードの表示名 */
 const AUTO_MODE_TEXT: Record<string, string> = {
@@ -150,7 +174,17 @@ export class Hud {
         `${(snap.electricBrakeForce / 1000).toFixed(0)} / ${(snap.airBrakeForce / 1000).toFixed(0)} kN`,
       ),
     );
-    rows.push(row('BC 圧', `${paToKpa(snap.cylinderPressure).toFixed(0)} kPa`));
+    // BC 圧と、雪の噛み込みで落ちている制動力。込めているのに減速しないときの
+    // 理由がここで読める（耐雪ブレーキを入れておけば噛み込みは進まない）。
+    rows.push(
+      row(
+        'BC 圧',
+        `${paToKpa(snap.cylinderPressure).toFixed(0)} kPa` +
+          (snap.snowLoss > 0.05
+            ? ` <span class="warn">雪 −${(snap.snowLoss * 100).toFixed(0)}%</span>`
+            : ''),
+      ),
+    );
     // 元空気溜め圧とコンプレッサ。運転操作と無関係な周期で回り出すので、
     // 音が鳴り始めた理由がここで読み取れる。
     rows.push(
@@ -167,6 +201,9 @@ export class Hud {
     const drive = snap.drive;
     // 扉。閉指令を出しても閉まり切るまでは力行できない（戸閉連動）ので、
     // 動いている途中も見えるようにしておく。
+    // 運転台の装備。物理に効くのは耐雪ブレーキだけだが、逆転機が中立・後位のときに
+    // 「なぜ力行しないのか」がここで読める。
+    rows.push(keyRow('逆転機 / 装備', equipmentText(handles)));
     rows.push(
       keyRow(
         '客用扉',

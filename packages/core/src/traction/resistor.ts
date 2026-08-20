@@ -129,10 +129,14 @@ export class ResistorTractionSystem implements TractionSystem {
     return total;
   }
 
+  /** 逆転機の向き（1 = 前、-1 = 後）。力行トルクの向きにだけ効く。 */
+  private direction: 1 | -1 = 1;
+
   update(dt: number, ctx: TractionContext): void {
     const dyn = ctx.dynamics;
     const spec = this.spec;
     const st = this.driveState;
+    this.direction = ctx.direction ?? 1;
 
     this.reAdhesion.update(dt, dyn);
     this.state.slipDetected = this.reAdhesion.slipDetected;
@@ -366,7 +370,9 @@ export class ResistorTractionSystem implements TractionSystem {
         if (!ax.driven) {
           ax.driveTorque = 0;
         } else {
-          ax.driveTorque = braking ? -electricBrakeSign(ax.omega) * perAxle : perAxle;
+          ax.driveTorque = braking
+            ? -electricBrakeSign(ax.omega) * perAxle
+            : this.direction * perAxle;
         }
       }
       total += rimForceFromMotorTorque(s, veh.spec, torque);

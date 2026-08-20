@@ -1,6 +1,7 @@
 import type { MetersPerSecondSquared, Newtons, Pascals } from '../units.ts';
 import type { TrainDynamics } from '../train/dynamics.ts';
 import type { TractionSystem } from '../traction/types.ts';
+import type { RailCondition } from '../vehicle/spec.ts';
 
 /** 運転士（または保安装置）からのブレーキ指令 */
 export interface BrakeCommand {
@@ -12,6 +13,8 @@ export interface BrakeCommand {
   readonly holdingNotch: number;
   /** 直通予備ブレーキ（電気指令系が失われたときの直通空気ブレーキ） */
   readonly backup: boolean;
+  /** 耐雪ブレーキ（緩解中に低い圧力を込め続ける） */
+  readonly snowproof: boolean;
 }
 
 export const RELEASED_BRAKE: BrakeCommand = {
@@ -19,6 +22,7 @@ export const RELEASED_BRAKE: BrakeCommand = {
   emergency: false,
   holdingNotch: 0,
   backup: false,
+  snowproof: false,
 };
 
 /** ブレーキ装置の状態（表示・記録用） */
@@ -43,6 +47,11 @@ export interface BrakeState {
   antiSkidActive: boolean;
   /** 滑走防止による各車の緩解率 0..1 */
   antiSkidFactor: number[];
+  /**
+   * 雪の噛み込みで落ちている制動力の割合 0..1（編成でいちばん悪い車）。
+   * 耐雪ブレーキを入れて制輪子を当てておけば 0 へ戻る。
+   */
+  snowLoss: number;
 }
 
 export interface BrakeContext {
@@ -51,6 +60,13 @@ export interface BrakeContext {
   readonly loadFactor: number;
   readonly regenerationReceptivity: number;
   readonly lineVoltage: number;
+  /**
+   * 軌条（天候）の状態。省略時は乾燥。
+   *
+   * 粘着だけでなく制輪子の利きにも効く。降雪中に制輪子を離したままにしておくと
+   * 踏面とのあいだへ雪が入り込み、同じ BC 圧でも制動力が落ちる。
+   */
+  readonly railCondition?: RailCondition;
 }
 
 /**
