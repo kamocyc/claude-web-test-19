@@ -182,15 +182,13 @@ export function buildSignals(
 
     // 番号板（閉塞信号機の番号。白地に黒文字）
     const number = signal.id.replace(/[^0-9]/g, '') || '1';
-    const plate = new THREE.Mesh(
-      new THREE.PlaneGeometry(0.24, 0.3),
-      new THREE.MeshStandardMaterial({
-        map: plateTexture([number], { background: '#f2f4f6', color: '#15191d', aspect: 0.8 }),
-        roughness: 0.7,
-        side: THREE.DoubleSide,
-      }),
+    const plate = textPlate(
+      plateTexture([number], { background: '#f2f4f6', color: '#15191d', aspect: 0.8 }),
+      0.24,
+      0.3,
+      -1,
+      0xf2f4f6,
     );
-    plate.rotation.y = -Math.PI / 2;
     plate.position.set(-0.05, SIGNAL.bottomLampHeight - 0.5, 0);
     group.add(plate);
 
@@ -261,24 +259,15 @@ export function buildDistancePosts(
     pole.position.y = 0.6;
     const rim = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.46, 0.56), dark);
     rim.position.set(-0.01, 1.35, 0);
-    // 板の両面に同じキロ程を書く（上下どちらの列車からも読める）
-    for (const sign of [-1, 1] as const) {
-      const face = new THREE.Mesh(
-        new THREE.PlaneGeometry(0.5, 0.4),
-        new THREE.MeshStandardMaterial({
-          map: plateTexture([`${km}`], {
-            background: '#f0f2f4',
-            color: '#15191d',
-            aspect: 1.25,
-          }),
-          roughness: 0.75,
-        }),
-      );
-      face.rotation.y = (sign * Math.PI) / 2;
-      face.position.set(sign * 0.02, 1.35, 0);
-      group.add(face);
-    }
-    group.add(pole, rim);
+    const face = textPlate(
+      plateTexture([`${km}`], { background: '#f0f2f4', color: '#15191d', aspect: 1.25 }),
+      0.5,
+      0.4,
+      -1,
+      0xf0f2f4,
+    );
+    face.position.y = 1.35;
+    group.add(pole, rim, face);
     group.quaternion.copy(frameQuaternion(f, false));
     group.position
       .copy(f.position)
@@ -318,22 +307,19 @@ export function buildGradePosts(
     pole.position.y = 0.7;
     // 腕木は勾配の値（‰）を書いた板にする。実物も数字が読めるようになっている
     const permille = Math.abs(grade * 1000);
-    const arm = new THREE.Mesh(
-      new THREE.PlaneGeometry(0.85, 0.24),
-      new THREE.MeshStandardMaterial({
-        map: plateTexture([permille < 0.5 ? 'L' : permille.toFixed(0)], {
-          background: '#eef1f4',
-          color: '#15191d',
-          aspect: 3.5,
-        }),
-        roughness: 0.75,
-        side: THREE.DoubleSide,
+    const arm = textPlate(
+      plateTexture([permille < 0.5 ? 'L' : permille.toFixed(0)], {
+        background: '#eef1f4',
+        color: '#15191d',
+        aspect: 3.5,
       }),
+      0.85,
+      0.24,
     );
-    arm.rotation.y = Math.PI / 2;
     arm.position.y = 1.4;
-    // 腕木の傾きで勾配の向きを示す（誇張しないと見えないので 6 倍）
-    arm.rotation.x = Math.atan(grade * 6);
+    // 腕木の傾きで勾配の向きを示す（誇張しないと見えないので 6 倍）。板は進来する
+    // 列車を向いているので、上り勾配が運転士から見て右上がりになるよう符号を取る。
+    arm.rotation.x = -Math.atan(grade * 6);
     group.add(pole, arm);
     group.quaternion.copy(frameQuaternion(f, false));
     group.position
@@ -359,15 +345,40 @@ const CURVE_SIGN = {
 } as const;
 
 /**
- * 標識板を付けた標柱。
+ * 標識の板。
  *
  * 板は進行方向に対して直角ではなく**線路と平行**に向ける（`rotation.y = ±π/2`）。
  * 実物の線路際の標識も、走ってくる列車から読めるように板面が線路を向いている。
  *
- * 板は 1 枚を両面表示にするのではなく、**背中合わせに 2 枚**張る。1 枚の裏から
- * 見た面はテクスチャが鏡像になり、`R600` が裏返しに読めてしまうためである
- * （1km 距離標が両面に板を張っているのと同じ理由）。
+ * 文字は**進来する列車が読む面にだけ**入れ、裏は無地の板を背中合わせに張る。
+ * 1 枚の板を両面表示（`DoubleSide`）にすると裏から見た面はテクスチャが鏡像になり、
+ * `R600` が裏返しに読めてしまう。実物の標識の裏も、ただの白い板である。
+ *
+ * @param facing 文字面の向き（-1 = 線路の後方＝進来する列車の側、+1 = 前方）
  */
+function textPlate(
+  map: THREE.Texture,
+  width: number,
+  height: number,
+  facing: -1 | 1 = -1,
+  background = 0xeef1f4,
+): THREE.Group {
+  const group = new THREE.Group();
+  const geometry = new THREE.PlaneGeometry(width, height);
+  const front = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ map, roughness: 0.75 }));
+  front.rotation.y = (facing * Math.PI) / 2;
+  front.position.x = facing * 0.012;
+  const back = new THREE.Mesh(
+    geometry,
+    new THREE.MeshStandardMaterial({ color: background, roughness: 0.8 }),
+  );
+  back.rotation.y = (-facing * Math.PI) / 2;
+  back.position.x = -facing * 0.012;
+  group.add(front, back);
+  return group;
+}
+
+/** 標識板を付けた標柱 */
 function signBoard(
   lines: readonly string[],
   width: number,
@@ -379,18 +390,13 @@ function signBoard(
   const group = new THREE.Group();
   const pole = new THREE.Mesh(new THREE.BoxGeometry(0.07, poleHeight, 0.07), material);
   pole.position.y = poleHeight / 2;
-  const face = new THREE.MeshStandardMaterial({
-    map: plateTexture(lines, { background, color: '#15191d', aspect: width / height }),
-    roughness: 0.75,
-  });
-  const geometry = new THREE.PlaneGeometry(width, height);
-  group.add(pole);
-  for (const sign of [-1, 1] as const) {
-    const board = new THREE.Mesh(geometry, face);
-    board.rotation.y = (sign * Math.PI) / 2;
-    board.position.set(sign * 0.012, poleHeight + height / 2 - 0.02, 0);
-    group.add(board);
-  }
+  const board = textPlate(
+    plateTexture(lines, { background, color: '#15191d', aspect: width / height }),
+    width,
+    height,
+  );
+  board.position.y = poleHeight + height / 2 - 0.02;
+  group.add(pole, board);
   return group;
 }
 
@@ -722,15 +728,23 @@ function buildPlatform(
     out.push(place(glow, centre + 0.4, roofY - 0.42, x));
   }
 
-  // --- 駅名標（上屋から吊る。線路側を向く面と反対を向く面の両方に文字が入る） ---
+  // --- 駅名標（上屋から吊る。ホームのどちら側からも読む標識なので、線路を向く面と
+  //     その反対の面の両方に文字を入れる。1 枚を両面表示にすると裏の面が鏡像に
+  //     なってしまうので、背中合わせに 2 枚張る） ---
   const signMaterial = new THREE.MeshStandardMaterial({
     map: stationSignTexture(station.name),
     roughness: 0.6,
-    side: THREE.DoubleSide,
   });
+  const signGeometry = new THREE.PlaneGeometry(1.9, 0.48);
   for (const t of [0.25, 0.75]) {
     const x = -roofLength / 2 + roofLength * t;
-    const sign = new THREE.Mesh(new THREE.PlaneGeometry(1.9, 0.48), signMaterial);
+    const sign = new THREE.Group();
+    for (const side of [-1, 1] as const) {
+      const face = new THREE.Mesh(signGeometry, signMaterial);
+      face.rotation.y = side > 0 ? 0 : Math.PI;
+      face.position.z = side * 0.01;
+      sign.add(face);
+    }
     out.push(place(sign, edge - 1.4, roofY - 0.85, x));
     const hanger = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.3, 0.05), steel);
     out.push(place(hanger, edge - 1.4, roofY - 0.5, x));
@@ -755,15 +769,13 @@ function buildPlatform(
   const marker = new THREE.Group();
   const pole = new THREE.Mesh(new THREE.BoxGeometry(0.06, 1.8, 0.06), steel);
   pole.position.y = 0.9;
-  const face = new THREE.Mesh(
-    new THREE.PlaneGeometry(0.44, 0.44),
-    new THREE.MeshStandardMaterial({
-      map: plateTexture(['停'], { background: '#f2f4f6', color: '#c02020', border: '#c02020' }),
-      roughness: 0.6,
-      side: THREE.DoubleSide,
-    }),
+  const face = textPlate(
+    plateTexture(['停'], { background: '#f2f4f6', color: '#c02020', border: '#c02020' }),
+    0.44,
+    0.44,
+    -1,
+    0xf2f4f6,
   );
-  face.rotation.y = -Math.PI / 2;
   face.position.y = 1.85;
   marker.add(pole, face);
   marker.quaternion.copy(frameQuaternion(fs, false));
