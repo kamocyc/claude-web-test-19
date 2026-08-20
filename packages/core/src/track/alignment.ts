@@ -38,6 +38,39 @@ export interface GradeChange {
   readonly verticalCurveLength: Meters;
 }
 
+/**
+ * 曲線 1 か所。緩和曲線を含めた「曲線区間」ひとまとまりを表す。
+ *
+ * 実物の線路では、この 4 点にそれぞれ標識が建つ:
+ *
+ * | 点 | 略号 | 意味 |
+ * |----|------|------|
+ * | `start`         | BTC | 緩和曲線始点（直線から曲率が立ち上がりはじめる） |
+ * | `circularStart` | BCC | 円曲線始点（曲率とカントが所定の値になる） |
+ * | `circularEnd`   | ECC | 円曲線終点 |
+ * | `end`           | ETC | 緩和曲線終点（直線へ戻る） |
+ */
+export interface CurveSection {
+  /** 緩和曲線始点 BTC の距離程 [m] */
+  readonly start: Meters;
+  /** 円曲線始点 BCC の距離程 [m] */
+  readonly circularStart: Meters;
+  /** 円曲線終点 ECC の距離程 [m] */
+  readonly circularEnd: Meters;
+  /** 緩和曲線終点 ETC の距離程 [m] */
+  readonly end: Meters;
+  /** 曲線半径 [m]（符号を持たない） */
+  readonly radius: Meters;
+  /** 左曲線か（曲率が正） */
+  readonly leftHand: boolean;
+  /** 円曲線部のカント [m]（符号を持たない） */
+  readonly cant: Meters;
+  /** 曲線長 [m]（BTC 〜 ETC） */
+  readonly length: Meters;
+  /** 緩和曲線を持つか（分岐器のリード曲線は持たない） */
+  readonly hasTransition: boolean;
+}
+
 /** 軌道中心線を組み立てるための入力 */
 export interface AlignmentInput {
   /** 曲率プロファイル [1/m] */
@@ -128,6 +161,90 @@ export class Alignment {
   radiusAt(s: Meters): Meters {
     const k = Math.abs(this.curvatureAt(s));
     return k < 1e-9 ? Infinity : 1 / k;
+  }
+
+  /**
+   * 曲線区間の一覧（曲線標・カント標・緩和曲線の始終端標を建てる場所）。
+   *
+   * 曲率プロファイルは「曲率一定の区間（直線と円曲線）」と「曲率が線形に変化する
+   * 区間（緩和曲線）」の列なので、直線を挟まずに続く非零の要素をひとまとめにすれば
+   * 曲線 1 か所になる。そのうち曲率が一定の部分が円曲線、前後が緩和曲線である。
+   *
+   * 曲率が符号をまたぐ要素（直線を挟まない反向曲線）は零点で切り、別々の曲線として
+   * 扱う。1 本の緩和曲線で右から左へ折り返す線形でも、右の曲線と左の曲線に分かれる。
+   */
+  get curveSections(): readonly CurveSection[] {
+    // 符号をまたぐ要素は零点で切っておく（以降は 1 要素が 1 つの向きだけを持つ）
+    type Piece = { sStart: number; length: number; startValue: number; endValue: number };
+    const pieces: Piece[] = [];
+    for (const seg of this.curvatureProfile.segments) {
+      if (seg.startValue * seg.endValue < 0) {
+        const zero = (seg.length * seg.startValue) / (seg.startValue - seg.endValue);
+        pieces.push({ sStart: seg.sStart, length: zero, startValue: seg.startValue, endValue: 0 });
+        pieces.push({
+          sStart: seg.sStart + zero,
+          length: seg.length - zero,
+          startValue: 0,
+          endValue: seg.endValue,
+        });
+      } else {
+        pieces.push({ ...seg });
+      }
+    }
+
+    const isStraight = (p: Piece): boolean => p.startValue === 0 && p.endValue === 0;
+    const signOf = (p: Piece): number => Math.sign(p.startValue !== 0 ? p.startValue : p.endValue);
+
+    const out: CurveSection[] = [];
+    for (let i = 0; i < pieces.length;) {
+      if (isStraight(pieces[i]!)) {
+        i++;
+        continue;
+      }
+      const sign = signOf(pieces[i]!);
+      let j = i;
+      while (
+        j + 1 < pieces.length &&
+        !isStraight(pieces[j + 1]!) &&
+        signOf(pieces[j + 1]!) === sign
+      ) {
+        j++;
+      }
+
+      const start = pieces[i]!.sStart;
+      const end = pieces[j]!.sStart + pieces[j]!.length;
+      // 円曲線部 = 曲率が一定で 0 でない部分。緩和曲線はその前後に付く。
+      let circularStart: number | null = null;
+      let circularEnd: number | null = null;
+      let peak = 0;
+      for (let k = i; k <= j; k++) {
+        const p = pieces[k]!;
+        if (p.startValue === p.endValue && p.startValue !== 0) {
+          if (circularStart === null) circularStart = p.sStart;
+          circularEnd = p.sStart + p.length;
+        }
+        peak = Math.max(peak, Math.abs(p.startValue), Math.abs(p.endValue));
+      }
+      // 円曲線部を持たない（緩和曲線だけで折り返す）線形では、頂点を 1 点として扱う
+      if (circularStart === null || circularEnd === null) {
+        circularStart = (start + end) / 2;
+        circularEnd = circularStart;
+      }
+
+      out.push({
+        start,
+        circularStart,
+        circularEnd,
+        end,
+        radius: peak > 0 ? 1 / peak : Infinity,
+        leftHand: sign > 0,
+        cant: Math.abs(this.cantAt((circularStart + circularEnd) / 2)),
+        length: end - start,
+        hasTransition: circularStart > start || end > circularEnd,
+      });
+      i = j + 1;
+    }
+    return out;
   }
 
   /** 勾配 [m/m]（正 = 上り） */

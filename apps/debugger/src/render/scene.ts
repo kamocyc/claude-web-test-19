@@ -21,6 +21,7 @@ import { buildCar } from './vehicle.ts';
 import {
   buildBeacons,
   buildDistancePosts,
+  buildCurvePosts,
   buildGradePosts,
   buildSignals,
   buildStations,
@@ -111,6 +112,7 @@ export class TrackScene {
     this.add(buildTurnouts(route, this.frameAt), false);
     this.add(buildDistancePosts(route, this.frameAt), true);
     this.add(buildGradePosts(route, this.frameAt), true);
+    this.add(buildCurvePosts(route, this.frameAt), true);
     this.add(buildStations(route, this.frameAt), true);
     this.add(buildBeacons(route, this.frameAt), false);
     this.add(buildTunnels(route, this.frameAt), false);

@@ -346,6 +346,133 @@ export function buildGradePosts(
 }
 
 /**
+ * 曲線に関する標識を建てる場所。
+ *
+ * 勾配標・距離標より一段外へ寄せる。曲線標とカント標は路盤の肩のさらに外、
+ * 緩和曲線の始終端標は肩の上で、互いに重ならない。
+ */
+const CURVE_SIGN = {
+  /** 曲線標・カント標の横位置（軌道中心から左へ） */
+  lateral: SHOULDER.lateral + 0.6,
+  /** 緩和曲線の始終端標の横位置 */
+  markerLateral: SHOULDER.lateral,
+} as const;
+
+/**
+ * 標識板を付けた標柱。
+ *
+ * 板は進行方向に対して直角ではなく**線路と平行**に向ける（`rotation.y = ±π/2`）。
+ * 実物の線路際の標識も、走ってくる列車から読めるように板面が線路を向いている。
+ *
+ * 板は 1 枚を両面表示にするのではなく、**背中合わせに 2 枚**張る。1 枚の裏から
+ * 見た面はテクスチャが鏡像になり、`R600` が裏返しに読めてしまうためである
+ * （1km 距離標が両面に板を張っているのと同じ理由）。
+ */
+function signBoard(
+  lines: readonly string[],
+  width: number,
+  height: number,
+  poleHeight: number,
+  material: THREE.Material,
+  background = '#eef1f4',
+): THREE.Group {
+  const group = new THREE.Group();
+  const pole = new THREE.Mesh(new THREE.BoxGeometry(0.07, poleHeight, 0.07), material);
+  pole.position.y = poleHeight / 2;
+  const face = new THREE.MeshStandardMaterial({
+    map: plateTexture(lines, { background, color: '#15191d', aspect: width / height }),
+    roughness: 0.75,
+  });
+  const geometry = new THREE.PlaneGeometry(width, height);
+  group.add(pole);
+  for (const sign of [-1, 1] as const) {
+    const board = new THREE.Mesh(geometry, face);
+    board.rotation.y = (sign * Math.PI) / 2;
+    board.position.set(sign * 0.012, poleHeight + height / 2 - 0.02, 0);
+    group.add(board);
+  }
+  return group;
+}
+
+/**
+ * 曲線標・カント標・緩和曲線の始終端標。
+ *
+ * 実物の曲線には、曲線 1 か所につき次の標識が建つ。運転士から見ると、曲線へ入る
+ * 手前で「これから何 R の曲線がどれだけ続くか」が分かり、曲線の中では自分が
+ * 緩和曲線にいるのか円曲線にいるのかが分かる。
+ *
+ * | 標識 | 建つ場所 | 書いてあるもの |
+ * |------|----------|----------------|
+ * | 曲線標 | 曲線の始点 BTC | 曲線半径 R と曲線長 L |
+ * | カント標 | 円曲線始点 BCC | カント量 C [mm] |
+ * | 緩和曲線の始終端標 | BTC / BCC / ECC / ETC | その点の略号 |
+ *
+ * **緩和曲線もカントも無い曲線には建てない**。本線の曲線は必ず緩和曲線とカントを
+ * 持つが、分岐器のリード曲線は曲率が一段で立ち上がりカントも無い。実物でも
+ * 分岐器の中に曲線標は無いので、そこが線形上の区別にそのまま対応する。
+ */
+export function buildCurvePosts(
+  route: CompiledRoute,
+  frameAt: (s: number) => TrackFrame,
+): THREE.Object3D[] {
+  const out: THREE.Object3D[] = [];
+  const white = new THREE.MeshStandardMaterial({ color: 0xeef1f4, roughness: 0.75 });
+
+  /** 路盤の肩へ据える（横位置は軌道中心から左へ） */
+  const place = (group: THREE.Object3D, s: number, lateral: number): void => {
+    const f = frameAt(s);
+    group.quaternion.copy(frameQuaternion(f, false));
+    group.position
+      .copy(f.position)
+      .addScaledVector(f.right, -lateral)
+      .add(new THREE.Vector3(0, SHOULDER.level, 0));
+    out.push(group);
+  };
+
+  for (const curve of route.alignment.curveSections) {
+    if (!curve.hasTransition && curve.cant === 0) continue;
+    if (!Number.isFinite(curve.radius)) continue;
+
+    // 曲線標（曲線の始点）。半径と曲線長を 2 行に書く
+    place(
+      signBoard(
+        [`R${curve.radius.toFixed(0)}`, `L${curve.length.toFixed(0)}`],
+        0.52,
+        0.42,
+        1.2,
+        white,
+      ),
+      curve.start,
+      CURVE_SIGN.lateral,
+    );
+
+    // カント標（円曲線始点）。カントは mm で書くのが実物の書き方
+    if (curve.cant > 0) {
+      place(
+        signBoard([`C${(curve.cant * 1000).toFixed(0)}`], 0.46, 0.3, 1.0, white),
+        curve.circularStart,
+        CURVE_SIGN.lateral,
+      );
+    }
+
+    // 緩和曲線の始終端標。円曲線部を持たない曲線では BCC と ECC が重なるので 1 本にする
+    const points: Array<[number, string]> = [
+      [curve.start, 'BTC'],
+      [curve.circularStart, 'BCC'],
+      [curve.circularEnd, 'ECC'],
+      [curve.end, 'ETC'],
+    ];
+    let previous = Number.NEGATIVE_INFINITY;
+    for (const [s, label] of points) {
+      if (s - previous < 1) continue;
+      previous = s;
+      place(signBoard([label], 0.34, 0.16, 0.55, white), s, CURVE_SIGN.markerLateral);
+    }
+  }
+  return out;
+}
+
+/**
  * ATS の地上子。
  *
  * 実物はまくらぎの上に固定された黄色い箱で、車上子と向かい合って情報をやり取りする。

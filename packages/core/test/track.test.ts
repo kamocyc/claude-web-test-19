@@ -400,3 +400,77 @@ describe('Alignment - 直接構築', () => {
     expect(a.radiusAt(50)).toBe(Infinity);
   });
 });
+
+describe('Alignment - 曲線区間', () => {
+  it('緩和曲線つきの曲線から 4 点と半径・カントが出る', () => {
+    const a = buildAlignment({
+      gauge: 1.067,
+      horizontal: [
+        { length: 500 },
+        { length: 800, radius: 600, transitionLength: 80, cant: mmToM(75) },
+        { length: 700, transitionLength: 80 },
+      ],
+      vertical: [{ length: 2000, gradePermil: 0 }],
+    });
+    const [curve] = a.curveSections;
+    expect(a.curveSections.length).toBe(1);
+    // BTC 500 → BCC 580 → ECC 1300 → ETC 1380
+    expect(curve!.start).toBeCloseTo(500, 9);
+    expect(curve!.circularStart).toBeCloseTo(580, 9);
+    expect(curve!.circularEnd).toBeCloseTo(1300, 9);
+    expect(curve!.end).toBeCloseTo(1380, 9);
+    expect(curve!.radius).toBeCloseTo(600, 6);
+    expect(curve!.leftHand).toBe(true);
+    expect(curve!.cant).toBeCloseTo(mmToM(75), 12);
+    expect(curve!.length).toBeCloseTo(880, 9);
+    expect(curve!.hasTransition).toBe(true);
+  });
+
+  it('緩和曲線もカントも無い曲線（分岐器のリード曲線）が区別できる', () => {
+    const a = buildAlignment({
+      gauge: 1.067,
+      horizontal: [
+        { length: 100 },
+        { length: 30, radius: -250, transitionLength: 0 },
+        { length: 100 },
+      ],
+      vertical: [{ length: 230, gradePermil: 0 }],
+    });
+    const [curve] = a.curveSections;
+    expect(curve!.start).toBeCloseTo(100, 9);
+    expect(curve!.circularStart).toBeCloseTo(100, 9);
+    expect(curve!.circularEnd).toBeCloseTo(130, 9);
+    expect(curve!.radius).toBeCloseTo(250, 6);
+    expect(curve!.leftHand).toBe(false);
+    expect(curve!.cant).toBe(0);
+    expect(curve!.hasTransition).toBe(false);
+  });
+
+  it('直線を挟まない反向曲線は零点で 2 つに分かれる', () => {
+    const a = buildAlignment({
+      gauge: 1.067,
+      horizontal: [
+        { length: 200, radius: 500 },
+        // 直前が R500 左なので、この 100m の緩和曲線が符号をまたぐ
+        { length: 300, radius: -500, transitionLength: 100 },
+      ],
+      vertical: [{ length: 500, gradePermil: 0 }],
+    });
+    const curves = a.curveSections;
+    expect(curves.length).toBe(2);
+    expect(curves[0]!.leftHand).toBe(true);
+    expect(curves[1]!.leftHand).toBe(false);
+    // 零点は緩和曲線 200〜300m の中央
+    expect(curves[0]!.end).toBeCloseTo(250, 9);
+    expect(curves[1]!.start).toBeCloseTo(250, 9);
+  });
+
+  it('直線だけの路線には曲線区間が無い', () => {
+    const a = buildAlignment({
+      gauge: 1.067,
+      horizontal: [{ length: 1000 }],
+      vertical: [{ length: 1000, gradePermil: 0 }],
+    });
+    expect(a.curveSections.length).toBe(0);
+  });
+});
