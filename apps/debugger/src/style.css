@@ -575,6 +575,14 @@ body.touch-mode #help {
   display: none;
 }
 
+/* U で運転に要らない表示を畳む（前面展望として眺めるとき用）。
+   タッチ運転台のレバーは運転そのものなので残す。 */
+body.ui-hidden #hud,
+body.ui-hidden #help,
+body.ui-hidden #gmeter {
+  display: none;
+}
+
 /* ノートやタブレットの横持ち: サイドパネルを詰める */
 @media (max-width: 1280px) {
   #app {

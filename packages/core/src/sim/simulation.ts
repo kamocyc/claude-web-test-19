@@ -399,11 +399,16 @@ export class Simulation {
     //     でなくダイヤ列車も検知するので、対向列車が来れば自分が止まっていても鳴る。
     this.levelCrossings.update(dt, this.trainPresences());
 
-    // 2. 地上子の通過処理（区間交差で判定するため取りこぼしがない）
+    // 2. 地上子の通過処理（区間交差で判定するため取りこぼしがない）。
+    //    後退しているあいだは踏まない。地上子は列車が進む向きに読ませる前提で
+    //    並んでいるので、逆戻りで踏むと ATS のパターンが後ろ向きに立ってしまう。
+    //    後退は入換相当の扱いで、保安装置の対象外とする。
     const ctx = this.safetyContext(front, this.lastControlFront);
-    const crossed = this.scenario.route.beacons.crossing(this.lastControlFront, front);
-    for (const entry of crossed) {
-      this.safety.onBeacon(entry.value as BeaconPayload, entry.s, ctx);
+    if (front > this.lastControlFront) {
+      const crossed = this.scenario.route.beacons.crossing(this.lastControlFront, front);
+      for (const entry of crossed) {
+        this.safety.onBeacon(entry.value as BeaconPayload, entry.s, ctx);
+      }
     }
 
     // 3. 保安装置
@@ -485,6 +490,7 @@ export class Simulation {
       holdingNotch:
         powerNotch > 0 ? 0 : this.activeInput.holding ? regulated : this.activeInput.holdingNotch,
       backup: this.activeInput.backupBrake,
+      snowproof: this.activeInput.snowproofBrake,
     };
 
     // 6. ブレーキ → 動力の順に更新する（電空協調で電気ブレーキ量が決まるため）
@@ -504,6 +510,8 @@ export class Simulation {
       loadFactor: this.scenario.loadFactor,
       regenerationReceptivity: this.scenario.regenerationReceptivity,
       lineVoltage: 1500,
+      // 逆転機が後位なら牽引力の向きを反転する（入換程度の低速後退を想定）
+      direction: this.activeInput.reverser === -1 ? -1 : 1,
     });
 
     // 7. 補機（空気圧縮機）。ブレーキの物理には影響しないが、BC へ込めたぶん

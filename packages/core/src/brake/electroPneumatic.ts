@@ -1,4 +1,5 @@
 import { DelayLine } from '../math/delay.ts';
+import { travelSign } from '../physics/adhesion.ts';
 import { PiecewiseLinear, clamp, firstOrderLag } from '../math/scalar.ts';
 import type { TrainDynamics, VehicleRuntime } from '../train/dynamics.ts';
 import type { MetersPerSecond, MetersPerSecondSquared, Newtons, Pascals } from '../units.ts';
@@ -24,6 +25,15 @@ export interface ElectroPneumaticOptions {
   /** 滑走防止動作時の緩解率の下限 */
   readonly minSkidFactor?: number;
 }
+
+/**
+ * 耐雪ブレーキの BC 圧 [Pa]。
+ *
+ * 制輪子を踏面へ軽く当てておくための弱い圧力で、列車を止めるためのものではない。
+ * ただし当てている以上は抵抗になるので、入れたままだと惰行の伸びは目に見えて鈍る
+ * （実物でも、そのぶん力行を足して走ることになる）。
+ */
+const SNOWPROOF_PRESSURE: Pascals = 30_000;
 
 /** 1 両ぶんの空気ブレーキの内部状態 */
 interface AirUnit {
@@ -248,7 +258,15 @@ export class ElectroPneumaticBrakeSystem implements BrakeSystem {
       const frictionFactor = unit.friction.at(v);
       const denom = spec.forcePerPressure * frictionFactor;
       const rawTarget = denom > 0 ? wanted / denom : 0;
-      unit.targetPressure = clamp(rawTarget, 0, spec.maxCylinderPressure);
+      // 耐雪ブレーキは「制動力の指令」ではなく **BC 圧の下限** である。制輪子と
+      // 踏面のあいだへ雪が入らないよう軽く当てておくだけなので、常用の指令圧が
+      // 上回ればそちらが採られる（＝常用と重ねて効くことはない）。電空協調も、
+      // 込まったぶんは空気の分担として数えるので電気ブレーキが自動的に減る。
+      const floor =
+        cmd.snowproof && !cmd.emergency && !cmd.backup
+          ? Math.min(SNOWPROOF_PRESSURE, spec.maxCylinderPressure)
+          : 0;
+      unit.targetPressure = Math.max(floor, clamp(rawTarget, 0, spec.maxCylinderPressure));
 
       // むだ時間（指令から BC 圧が動き出すまで）
       const delayed = unit.delay.push(unit.targetPressure);
@@ -293,8 +311,10 @@ export class ElectroPneumaticBrakeSystem implements BrakeSystem {
 
   private isSliding(veh: VehicleRuntime): boolean {
     const threshold = -this.consist.adhesion.peakCreep * this.opts.slideThreshold;
+    // 後退中はすべり率の符号が裏返るので、進行方向の符号を掛けて見る
+    const sign = travelSign(veh.v);
     for (const ax of veh.axles) {
-      if (ax.braked && ax.slip < threshold) return true;
+      if (ax.braked && ax.slip * sign < threshold) return true;
     }
     return false;
   }

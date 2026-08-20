@@ -14,7 +14,7 @@ import {
 } from '@railsim/data';
 import { TrainAudio } from './audio/engine.ts';
 import { ChartPanel } from './charts/panel.ts';
-import { DriverState } from './input/driverState.ts';
+import { DriverState, type HandlePosition } from './input/driverState.ts';
 import { DriverDesk } from './input/keyboard.ts';
 import { createCabInterior } from './render/cab.ts';
 import { Precipitation } from './render/precipitation.ts';
@@ -162,6 +162,9 @@ const notchCounts = {
   brakeNotchCount: () => scenario.consist.brake.notchCount,
   // 抑速を持たない車両では、ブレーキハンドルに抑速位置そのものが無い
   hasHoldingBrake: () => scenario.consist.brake.hasHoldingBrake,
+  // 逆転ハンドルは停止中しか動かせない。運転台の状態機械は速度を知らないので、
+  // 判定だけをここから貸す（タッチ運転台にも同じものが渡る）。
+  canMoveReverser: () => Math.abs(sim.speed) < 0.05,
 };
 
 /**
@@ -173,7 +176,8 @@ const deskState = new DriverState(notchCounts);
 const desk = new DriverDesk(
   {
     ...notchCounts,
-    onCameraChange: (mode: CameraMode) => applyCameraMode(mode),
+    onCameraCycle: () => cycleCamera(),
+    onUiToggle: () => document.body.classList.toggle('ui-hidden'),
     onAutoDriveToggle: () => setAutoDrive(!autoDrive),
     onPauseToggle: () => setPaused(!paused),
     onSingleStep: () => {
@@ -522,14 +526,16 @@ function frame(now: number): void {
 
   // 自動運転中は装置が動かしているノッチを「手元」として表示・描画する
   const held = sim.effectiveInput;
-  const handles = autoDrive
+  const handles: HandlePosition = autoDrive
     ? {
+        ...desk.handles,
         power: held.powerNotch,
         brake: held.brakeNotch,
         // 装置は段まで決めているが、運転台の表示は抑速位置の入切だけを持つ
         holding: held.holdingNotch > 0,
         emergency: held.emergency,
         doorsClosed: held.doorsClosed,
+        // 逆転機・灯火・ワイパー・耐雪は自動運転装置が触らないので手元のまま
       }
     : desk.handles;
 
@@ -538,8 +544,9 @@ function frame(now: number): void {
   audio.update(sim, advance, wall);
   mixer.update(audio.levels);
   scene.update(sim);
+  scene.setLights(handles.headlight, handles.headlightHigh, handles.reverser);
   if (cameraRig.mode === 'cab') {
-    cabInterior.update(sim, { ...handles, oneHandle: deskState.layout === 'one-handle' });
+    cabInterior.update(sim, { ...handles, oneHandle: deskState.layout === 'one-handle' }, advance);
   }
   const frontFrame = scene.frontFrame(sim);
   cameraRig.update({

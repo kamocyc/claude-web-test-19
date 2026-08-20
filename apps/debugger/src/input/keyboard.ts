@@ -1,51 +1,21 @@
 import type { ControlInput } from '@railsim/core';
-import { CAMERA_MODES, type CameraMode } from '../render/cameras.ts';
-import {
-  DriverState,
-  type DriverCommand,
-  type HandlePosition,
-  type HeldCommand,
-} from './driverState.ts';
+import { DriverState, type HandlePosition, type NotchCounts } from './driverState.ts';
+import { lookupKey, type UiCommand } from './keymap.ts';
 
-export interface DriverDeskOptions {
-  /** 力行ノッチ段数。シナリオ（車両）を切り替えても追従できるよう関数で受ける。 */
-  powerNotchCount(): number;
-  /** 常用ブレーキノッチ段数 */
-  brakeNotchCount(): number;
-  /** 抑速位置を持つか（抑速ブレーキを持たない車両には無い） */
-  hasHoldingBrake(): boolean;
-  onCameraChange?(mode: CameraMode): void;
+export interface DriverDeskOptions extends NotchCounts {
+  /** 視点を次へ送る */
+  onCameraCycle?(): void;
   /** 自動運転の入切 */
   onAutoDriveToggle?(): void;
   onPauseToggle?(): void;
   onSingleStep?(): void;
   onRateChange?(delta: number): void;
   onMuteToggle?(): void;
+  /** HUD・操作凡例・G メータの表示切替 */
+  onUiToggle?(): void;
   /** どのキーでもよいので「ユーザ操作があった」ことを伝える（自動再生規制の解除用） */
   onUserGesture?(): void;
 }
-
-/** 一度押すと段が変わるキー */
-const NOTCH_KEYS: Readonly<Record<string, DriverCommand>> = {
-  z: 'powerUp',
-  arrowup: 'powerUp',
-  a: 'powerDown',
-  arrowdown: 'powerDown',
-  '.': 'brakeUp',
-  arrowright: 'brakeUp',
-  ',': 'brakeDown',
-  arrowleft: 'brakeDown',
-  ' ': 'emergency',
-  d: 'doorsToggle',
-};
-
-/** 押している間だけ有効なキー（離すまで状態が続く操作） */
-const HELD_KEYS: Readonly<Record<string, HeldCommand>> = {
-  enter: 'acknowledge',
-  r: 'safetyReset',
-  h: 'horn',
-  s: 'sanding',
-};
 
 /**
  * キー入力を無視すべき相手か。
@@ -88,58 +58,58 @@ export class DriverDesk {
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     // AudioContext はユーザ操作の中でしか開始できない（自動再生規制）
     this.options.onUserGesture?.();
-    const key = e.key.toLowerCase();
-    const heldCommand = HELD_KEYS[key];
-    if (heldCommand) this.state.hold(heldCommand);
-    let handled = true;
-    if (!e.repeat) {
-      const notchCommand = NOTCH_KEYS[key];
-      if (notchCommand) {
-        this.state.apply(notchCommand);
-      } else {
-        switch (key) {
-          case '1':
-          case '2':
-          case '3':
-          case '4':
-          case '5': {
-            const mode = CAMERA_MODES[Number(key) - 1];
-            if (mode) this.options.onCameraChange?.(mode);
-            break;
-          }
-          case 'o':
-            this.options.onAutoDriveToggle?.();
-            break;
-          case 'p':
-            this.options.onPauseToggle?.();
-            break;
-          case 'f':
-            this.options.onSingleStep?.();
-            break;
-          case 'm':
-            this.options.onMuteToggle?.();
-            break;
-          case '[':
-            this.options.onRateChange?.(-1);
-            break;
-          case ']':
-            this.options.onRateChange?.(1);
-            break;
-          default:
-            handled = heldCommand !== undefined;
-            break;
-        }
-      }
+
+    const action = lookupKey(e.key);
+    if (!action) return;
+
+    if (action.kind === 'held') {
+      // 押しっぱなしの指令は自動リピートで何度来ても構わない（集合に入れるだけ）
+      this.state.hold(action.command);
+    } else if (!e.repeat) {
+      // ハンドルと画面の操作は、押しっぱなしでは進めない。1 回の押下で 1 段だけ動く。
+      if (action.kind === 'driver') this.state.apply(action.command);
+      else this.runUi(action.command);
     }
-    // 運転操作に使うキーはブラウザ既定の動作を止める。
-    // 特に Space / Enter は、直前にクリックしたボタンを再度押してしまうため
-    // （非常ブレーキのつもりが「一時停止」を叩く、といった事故になる）。
-    if (handled) e.preventDefault();
+
+    // 割り当てたキーはブラウザ既定の動作を止める。
+    //  - Space・PageUp・PageDown・矢印キーは画面がスクロールする
+    //  - Space・Enter は直前にクリックしたボタンを再度押してしまう
+    //    （非常ブレーキのつもりが「一時停止」を叩く、といった事故になる）
+    e.preventDefault();
   };
 
+  private runUi(command: UiCommand): void {
+    switch (command) {
+      case 'cameraCycle':
+        this.options.onCameraCycle?.();
+        return;
+      case 'uiToggle':
+        this.options.onUiToggle?.();
+        return;
+      case 'autoDrive':
+        this.options.onAutoDriveToggle?.();
+        return;
+      case 'pause':
+        this.options.onPauseToggle?.();
+        return;
+      case 'singleStep':
+        this.options.onSingleStep?.();
+        return;
+      case 'mute':
+        this.options.onMuteToggle?.();
+        return;
+      case 'rateDown':
+        this.options.onRateChange?.(-1);
+        return;
+      case 'rateUp':
+        this.options.onRateChange?.(1);
+        return;
+    }
+  }
+
   private onKeyUp = (e: KeyboardEvent): void => {
-    const heldCommand = HELD_KEYS[e.key.toLowerCase()];
-    if (heldCommand) this.state.release(heldCommand);
+    const action = lookupKey(e.key);
+    if (action?.kind === 'held') this.state.release(action.command);
   };
 
   /** ウィンドウからフォーカスが外れたら、押しっぱなしのキーは離したものとして扱う */

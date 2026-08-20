@@ -35,6 +35,22 @@ export type { HandlePosition };
  * 抑速位置でも装置が 0 段を選んでいれば実効は `N` になる（速度が目標より低く、
  * 電気ブレーキを出す必要が無い状態）。手元と実効が食い違って見えるのは正しい。
  */
+/** 逆転機の位置。前位以外は力行が出ないので目立たせる。 */
+const REVERSER_TEXT: Readonly<Record<string, string>> = {
+  '1': '前',
+  '0': '<span class="warn">中立</span>',
+  '-1': '<span class="warn">後</span>',
+};
+
+/** 逆転機と運転台装備を 1 行にまとめる */
+function equipmentText(handles: HandlePosition): string {
+  const parts = [REVERSER_TEXT[String(handles.reverser)] ?? '前'];
+  if (handles.snowproof) parts.push('<span class="warn">耐雪</span>');
+  if (handles.headlight) parts.push(handles.headlightHigh ? '前照灯' : '前照灯(減)');
+  if (handles.wiper !== 'off') parts.push(`ワイパー${handles.wiper === 'fast' ? '高' : '低'}`);
+  return parts.join(' / ');
+}
+
 export const notchText = (
   power: number,
   brake: number,
@@ -175,6 +191,9 @@ export class Hud {
     const drive = snap.drive;
     // 扉。閉指令を出しても閉まり切るまでは力行できない（戸閉連動）ので、
     // 動いている途中も見えるようにしておく。
+    // 運転台の装備。物理に効くのは耐雪ブレーキだけだが、逆転機が中立・後位のときに
+    // 「なぜ力行しないのか」がここで読める。
+    rows.push(keyRow('逆転機 / 装備', equipmentText(handles)));
     rows.push(
       keyRow(
         '客用扉',

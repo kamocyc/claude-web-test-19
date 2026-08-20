@@ -30,7 +30,8 @@ const sameInput = (a: ControlInput, b: ControlInput): boolean =>
   a.horn === b.horn &&
   a.sanding === b.sanding &&
   a.doorsClosed === b.doorsClosed &&
-  a.backupBrake === b.backupBrake;
+  a.backupBrake === b.backupBrake &&
+  a.snowproofBrake === b.snowproofBrake;
 
 /**
  * 運転士の操作を記録する。

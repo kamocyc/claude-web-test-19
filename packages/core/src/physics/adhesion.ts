@@ -26,6 +26,17 @@ export interface AdhesionConditions {
  *
  * 速度が上がるほど粘着係数が下がる、鉄道で広く用いられる形。
  */
+/**
+ * 進行方向の符号。
+ *
+ * すべり率は「車輪の周速 − 車体速度」なので、後退中は空転と滑走の符号が
+ * そっくり裏返る。判定の前にこの符号を掛けて向きをそろえる。ほとんど止まって
+ * いるときは前進として扱う（起動直後にどちらとも決められないため）。
+ */
+export function travelSign(v: MetersPerSecond): 1 | -1 {
+  return v < -0.05 ? -1 : 1;
+}
+
 export function peakAdhesion(
   spec: AdhesionSpec,
   v: MetersPerSecond,

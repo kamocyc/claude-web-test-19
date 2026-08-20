@@ -1,3 +1,4 @@
+import { travelSign } from '../physics/adhesion.ts';
 import { clamp } from '../math/scalar.ts';
 import type { Hertz, Meters, MetersPerSecond, Newtons, RadiansPerSecond, Watts } from '../units.ts';
 import type { TrainDynamics } from '../train/dynamics.ts';
@@ -225,10 +226,12 @@ export class ReAdhesionController {
 
   update(dt: number, dyn: TrainDynamics): number {
     const threshold = this.consist.adhesion.peakCreep * this.opts.slipThreshold;
+    // 後退中はすべり率の符号が裏返るので、進行方向の符号を掛けて見る
+    const sign = travelSign(dyn.speed);
     let slipping = false;
     for (const veh of dyn.vehicles) {
       for (const ax of veh.axles) {
-        if (ax.driven && ax.slip > threshold) slipping = true;
+        if (ax.driven && ax.slip * sign > threshold) slipping = true;
       }
     }
     this.slipDetected = slipping;

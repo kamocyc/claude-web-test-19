@@ -230,6 +230,7 @@ export class RemoteTrain {
       emergency: false,
       holdingNotch: 0,
       backup: false,
+      snowproof: false,
     };
 
     // ブレーキ → 動力の順（電空協調で電気ブレーキの分担が決まるため）

@@ -207,7 +207,13 @@ describe('回生ブレーキ', () => {
 
   it('ブレーキを込めると減速し、架線へ電力を返す', () => {
     const r = rig({ initialSpeed: kmhToMps(70) });
-    r.brake.setCommand({ notch: 5, emergency: false, holdingNotch: 0, backup: false });
+    r.brake.setCommand({
+      notch: 5,
+      emergency: false,
+      holdingNotch: 0,
+      backup: false,
+      snowproof: false,
+    });
     let sawRegeneration = false;
     // 空気ブレーキのむだ時間と込め時定数があるので、立ち上がりを含めて見る
     r.run(5, () => {

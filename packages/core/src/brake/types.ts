@@ -12,6 +12,8 @@ export interface BrakeCommand {
   readonly holdingNotch: number;
   /** 直通予備ブレーキ（電気指令系が失われたときの直通空気ブレーキ） */
   readonly backup: boolean;
+  /** 耐雪ブレーキ（緩解中に低い圧力を込め続ける） */
+  readonly snowproof: boolean;
 }
 
 export const RELEASED_BRAKE: BrakeCommand = {
@@ -19,6 +21,7 @@ export const RELEASED_BRAKE: BrakeCommand = {
   emergency: false,
   holdingNotch: 0,
   backup: false,
+  snowproof: false,
 };
 
 /** ブレーキ装置の状態（表示・記録用） */

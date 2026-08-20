@@ -355,7 +355,13 @@ describe('発電ブレーキ', () => {
 
   it('ブレーキを込めると減速し、制動抵抗で電力を捨てる', () => {
     const r = rig({ initialSpeed: kmhToMps(80) });
-    r.brake.setCommand({ notch: 5, emergency: false, holdingNotch: 0, backup: false });
+    r.brake.setCommand({
+      notch: 5,
+      emergency: false,
+      holdingNotch: 0,
+      backup: false,
+      snowproof: false,
+    });
     let sawDynamic = false;
     r.run(3, () => {
       if (r.drive().dynamicBraking && r.drive().resistorPower > 0) sawDynamic = true;

@@ -119,8 +119,17 @@ function doorCentres(shift = 0): number[] {
   return [-1.5, -0.5, 0.5, 1.5].map((k) => k * CAR.doorPitch + shift);
 }
 
+/** 前面の灯具。前照灯と尾灯の点け方を外から与える。 */
+export interface FrontLights {
+  /** 前照灯（`high` が false なら減光） */
+  setHeadlight(on: boolean, high: boolean): void;
+  setTail(on: boolean): void;
+}
+
 export interface CarParts {
   readonly group: THREE.Group;
+  /** 先頭車だけが持つ前面の灯具（中間車では `undefined`） */
+  readonly lights: FrontLights | undefined;
 }
 
 /**
@@ -145,10 +154,15 @@ export function buildCar(spec: VehicleSpec, lead: boolean, front: boolean): CarP
   for (const sign of [-1, 1] as const) {
     group.add(buildBogie(spec, (sign * spec.bogieSpacing) / 2, powered));
   }
-  if (lead) group.add(buildFrontEnd(bodyLength, front));
+  let lights: FrontLights | undefined;
+  if (lead) {
+    const end = buildFrontEnd(bodyLength, front);
+    group.add(end.group);
+    lights = end.lights;
+  }
   group.add(buildCouplers(spec.length, lead, front));
 
-  return { group };
+  return { group, lights };
 }
 
 /** 車体の外板。断面を車体長ぶん押し出す */
@@ -609,8 +623,14 @@ function buildBogie(spec: VehicleSpec, x: number, powered: boolean): THREE.Group
  * 三段構成になる。前面窓は運転士側が大きく、助士側と行先表示器が並ぶ。
  * 前照灯（白）と尾灯（赤）は左右の下寄りに 1 組ずつ付く。
  */
-function buildFrontEnd(bodyLength: number, front: boolean): THREE.Group {
+function buildFrontEnd(
+  bodyLength: number,
+  front: boolean,
+): { group: THREE.Group; lights: FrontLights } {
   const group = new THREE.Group();
+  const heads: THREE.Mesh[] = [];
+  const halos: THREE.Mesh[] = [];
+  const tails: THREE.Mesh[] = [];
   const x = front ? bodyLength / 2 : -bodyLength / 2;
   const outward = front ? 1 : -1;
 
@@ -649,6 +669,7 @@ function buildFrontEnd(bodyLength: number, front: boolean): THREE.Group {
     );
     head.rotation.z = Math.PI / 2;
     head.position.set(x + outward * 0.04, CAR.floorHeight + 0.42, dz * 1.05);
+    heads.push(head);
     group.add(head);
 
     // 前照灯のにじみ。灯具そのものより一回り大きく光って見える
@@ -664,6 +685,7 @@ function buildFrontEnd(bodyLength: number, front: boolean): THREE.Group {
     );
     halo.rotation.y = outward > 0 ? Math.PI / 2 : -Math.PI / 2;
     halo.position.set(x + outward * 0.08, CAR.floorHeight + 0.42, dz * 1.05);
+    halos.push(halo);
     group.add(halo);
 
     const tail = new THREE.Mesh(
@@ -672,6 +694,7 @@ function buildFrontEnd(bodyLength: number, front: boolean): THREE.Group {
     );
     tail.rotation.z = Math.PI / 2;
     tail.position.set(x + outward * 0.04, CAR.floorHeight + 0.42, dz * 0.78);
+    tails.push(tail);
     group.add(tail);
   }
 
@@ -680,8 +703,35 @@ function buildFrontEnd(bodyLength: number, front: boolean): THREE.Group {
   skirt.position.set(x + outward * 0.05, CAR.underframeHeight - 0.34, 0);
   group.add(skirt);
 
-  return group;
+  const lights: FrontLights = {
+    setHeadlight(on, high) {
+      const color = on ? (high ? HEAD_LAMP_HIGH : HEAD_LAMP_LOW) : HEAD_LAMP_OFF;
+      for (const head of heads) (head.material as THREE.MeshBasicMaterial).color.setHex(color);
+      for (const halo of halos) {
+        halo.visible = on;
+        // 減光では滲みも小さくする（灯具そのものより周りの明るさで差が分かる）
+        halo.scale.setScalar(high ? 1 : 0.55);
+      }
+    },
+    setTail(on) {
+      for (const tail of tails) {
+        (tail.material as THREE.MeshBasicMaterial).color.setHex(on ? TAIL_LAMP_ON : TAIL_LAMP_OFF);
+      }
+    },
+  };
+  // 既定は消灯（運転士が前照灯を入れるまで点かない）
+  lights.setHeadlight(false, true);
+  lights.setTail(false);
+
+  return { group, lights };
 }
+
+/** 前照灯（点灯・減光・消灯）と尾灯（点灯・消灯）の色 */
+const HEAD_LAMP_HIGH = 0xfff6d8;
+const HEAD_LAMP_LOW = 0xb8a884;
+const HEAD_LAMP_OFF = 0x2b2c28;
+const TAIL_LAMP_ON = 0xd4241d;
+const TAIL_LAMP_OFF = 0x5a1512;
 
 /**
  * 連結器（密着連結器）。

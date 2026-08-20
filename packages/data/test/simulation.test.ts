@@ -896,3 +896,63 @@ describe('抑速ブレーキ（運転士の抑速位置）', () => {
     expect(mpsToKmh(sim.speed)).toBeGreaterThan(72);
   });
 });
+
+describe('逆転ハンドル', () => {
+  /** 平坦線の駅で止まっている状態から始める */
+  const standing = (): Simulation => new Simulation(scenarioOf('test-line-local'));
+
+  it('中立では力行が出ない', () => {
+    const sim = standing();
+    sim.input = input({ powerNotch: 4, reverser: 0 });
+    run(sim, 10);
+    expect(sim.snapshot().powerNotch).toBe(0);
+    expect(mpsToKmh(sim.speed)).toBeLessThan(0.1);
+  });
+
+  it('後位では逆向きに走り、距離程が減る', () => {
+    const sim = standing();
+    const start = sim.dynamics.frontPosition;
+    sim.input = input({ powerNotch: 2, reverser: -1 });
+    run(sim, 20);
+
+    expect(sim.speed).toBeLessThan(0);
+    expect(sim.dynamics.frontPosition).toBeLessThan(start);
+    // 前位で同じノッチを入れたときと速さの出方は変わらない（向きだけが違う）
+    const forward = standing();
+    forward.input = input({ powerNotch: 2 });
+    run(forward, 20);
+    expect(Math.abs(sim.speed)).toBeCloseTo(forward.speed, 1);
+  });
+
+  it('後退中は地上子を踏まない（保安装置は前進を前提にしている）', () => {
+    const sim = standing();
+    sim.input = input({ powerNotch: 2, reverser: -1 });
+    run(sim, 20);
+    // 逆走で地上子を踏んでパターンが立てば非常が落ちる。落ちていないことを見る。
+    expect(sim.snapshot().safety.emergencyBrake).toBe(false);
+  });
+});
+
+describe('耐雪ブレーキ', () => {
+  it('入れると緩解中でも BC 圧が立ち、惰行の伸びが鈍る', () => {
+    const coast = new Simulation({
+      ...scenarioOf('test-line-local'),
+      startPosition: 1000,
+      startSpeed: kmhToMps(60),
+    });
+    coast.input = input();
+    run(coast, 20);
+
+    const snow = new Simulation({
+      ...scenarioOf('test-line-local'),
+      startPosition: 1000,
+      startSpeed: kmhToMps(60),
+    });
+    snow.input = input({ snowproofBrake: true });
+    run(snow, 20);
+
+    expect(snow.snapshot().cylinderPressure).toBeGreaterThan(1000);
+    expect(coast.snapshot().cylinderPressure).toBeLessThan(1000);
+    expect(snow.speed).toBeLessThan(coast.speed);
+  });
+});

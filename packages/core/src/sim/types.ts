@@ -41,6 +41,14 @@ export interface ControlInput {
   readonly doorsClosed: boolean;
   /** 直通予備ブレーキ */
   readonly backupBrake: boolean;
+  /**
+   * 耐雪ブレーキ。
+   *
+   * 降雪時に制輪子と踏面のあいだへ雪が入って利きが落ちるのを防ぐため、走行中に
+   * 低い圧力を込め続けておく装置。常用ブレーキを込めればそちらが上回るので、
+   * 運転士は入れっぱなしにしておく。
+   */
+  readonly snowproofBrake: boolean;
 }
 
 export const NEUTRAL_INPUT: ControlInput = {
@@ -56,6 +64,7 @@ export const NEUTRAL_INPUT: ControlInput = {
   sanding: false,
   doorsClosed: true,
   backupBrake: false,
+  snowproofBrake: false,
 };
 
 /** シナリオ（路線 + 車両 + 初期条件） */

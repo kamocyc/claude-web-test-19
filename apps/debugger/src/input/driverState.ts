@@ -8,12 +8,43 @@ import { NEUTRAL_INPUT, type ControlInput } from '@railsim/core';
  * キー入力とタッチ操作で二重に書かずに済む。
  */
 export type DriverCommand =
+  /** 力行側へ 1 段 */
   | 'powerUp'
+  /** N 側へ 1 段。N を越えてブレーキ側へは入らない */
   | 'powerDown'
+  /** 制動側へ 1 段。ワンハンドルでは N を越えて抑速・常用へ続く */
+  | 'notchToBrake'
+  /** 一息に N へ戻す */
+  | 'notchNeutral'
+  /** B1 へ入れる */
+  | 'notchB1'
   | 'brakeUp'
   | 'brakeDown'
   | 'emergency'
-  | 'doorsToggle';
+  | 'doorsToggle'
+  | 'doorsOpen'
+  | 'doorsClose'
+  /** 逆転ハンドルを前へ 1 段（後 → 中立 → 前） */
+  | 'reverserForward'
+  /** 逆転ハンドルを後へ 1 段（前 → 中立 → 後） */
+  | 'reverserBackward'
+  /** 前照灯の入切 */
+  | 'headlightToggle'
+  /** 前照灯の減光（High / Low） */
+  | 'headlightDim'
+  /** ワイパー（切 → 低速 → 高速） */
+  | 'wiper'
+  /** 耐雪ブレーキの入切 */
+  | 'snowproofToggle';
+
+/** ワイパーの位置 */
+export type WiperMode = 'off' | 'slow' | 'fast';
+
+const NEXT_WIPER: Readonly<Record<WiperMode, WiperMode>> = {
+  off: 'slow',
+  slow: 'fast',
+  fast: 'off',
+};
 
 /** 「押している間だけ有効」な指令（離すと戻る操作） */
 export type HeldCommand = 'acknowledge' | 'safetyReset' | 'horn' | 'sanding';
@@ -35,6 +66,14 @@ export interface NotchCounts {
   brakeNotchCount(): number;
   /** 抑速位置を持つか（抑速ブレーキを持たない車両には無い） */
   hasHoldingBrake(): boolean;
+  /**
+   * 逆転ハンドルを動かせるか。
+   *
+   * 実車の逆転ハンドルは停止中しか動かせない（走らせたまま向きを変えれば
+   * 主回路を壊す）。この状態機械は速度を知らないので、判定だけを外から借りる。
+   * 省略時は常に動かせる。
+   */
+  canMoveReverser?(): boolean;
 }
 
 /** 運転士が握っているハンドルの位置（シミュレーションの実効ノッチとは別） */
@@ -50,6 +89,15 @@ export interface HandlePosition {
   readonly holding: boolean;
   readonly emergency: boolean;
   readonly doorsClosed: boolean;
+  /** 逆転機（1 = 前、0 = 中立、-1 = 後） */
+  readonly reverser: 1 | 0 | -1;
+  /** 前照灯を点けているか */
+  readonly headlight: boolean;
+  /** 減光していないか（`headlight` が入のときだけ意味を持つ） */
+  readonly headlightHigh: boolean;
+  readonly wiper: WiperMode;
+  /** 耐雪ブレーキ */
+  readonly snowproof: boolean;
 }
 
 /** 段を 0〜max の整数へ丸める */
@@ -89,6 +137,11 @@ export class DriverState {
   private holdingOn = false;
   private emergencyOn = false;
   private doorsClosed = true;
+  private reverserPosition: 1 | 0 | -1 = 1;
+  private headlightOn = false;
+  private headlightHighBeam = true;
+  private wiperMode: WiperMode = 'off';
+  private snowproofOn = false;
   private deskLayout: DeskLayout = 'two-handle';
   private readonly heldCommands = new Set<HeldCommand>();
 
@@ -133,53 +186,100 @@ export class DriverState {
    * ツーハンドルでも、2 本のハンドルの位置をこの 1 本の軸へ写したものになる。
    */
   get lever(): number {
-    return this.powerNotch > 0 ? this.powerNotch : -this.brakePosition;
+    if (this.powerNotch > 0) return this.powerNotch;
+    // 切は 0。`-0` を返すと `Object.is` での比較が食い違う。
+    const brake = this.brakePosition;
+    return brake === 0 ? 0 : -brake;
   }
 
-  /** 一度の操作で段が 1 つ動くもの */
+  /** 一度の操作でハンドルが 1 段動くもの */
   apply(command: DriverCommand): void {
-    // ワンハンドルでは 4 つのノッチ操作がすべて 1 本の軸の上下になる。
-    // 「力行を下げる」と「ブレーキを込める」が同じ動きになるのがワンハンドルである。
-    if (this.deskLayout === 'one-handle') {
-      switch (command) {
-        case 'powerUp':
-        case 'brakeDown':
-          this.setLever(this.lever + 1);
-          return;
-        case 'powerDown':
-        case 'brakeUp':
-          this.setLever(this.lever - 1);
-          return;
-        case 'emergency':
-          this.setEmergency(true);
-          return;
-        case 'doorsToggle':
-          this.doorsClosed = !this.doorsClosed;
-          return;
-      }
-    }
-
+    // ワンハンドルでは力行とブレーキが 1 本の軸に乗るので、「力行を下げる」と
+    // 「ブレーキを込める」が同じ動きになる。ツーハンドルではハンドルが別なので、
+    // 力行側のキーでできるのは N まで戻すところまでである。
+    const one = this.deskLayout === 'one-handle';
     switch (command) {
       case 'powerUp':
-        this.setPower(this.powerNotch + 1);
-        break;
+        if (one) this.setLever(this.lever + 1);
+        else this.setPower(this.powerNotch + 1);
+        return;
       case 'powerDown':
-        this.setPower(this.powerNotch - 1);
-        break;
+        // 「N 側へ 1 段」。ワンハンドルでは軸のどちら側にいても N へ近づく向きへ
+        // 動き、N で止まる（越えて反対側へは入らない）。
+        if (one) this.setLever(this.lever > 0 ? this.lever - 1 : Math.min(0, this.lever + 1));
+        else this.setPower(this.powerNotch - 1);
+        return;
+      case 'notchToBrake':
+        // 「制動側へ 1 段」。ワンハンドルだけが N を越えて抑速・常用へ入る。
+        if (one) this.setLever(this.lever - 1);
+        else this.setPower(this.powerNotch - 1);
+        return;
+      case 'notchNeutral':
+        // 一息に N へ戻す。ハンドルを戻す操作なので非常も緩解する。
+        this.setLever(0);
+        return;
+      case 'notchB1':
+        this.setBrake(1);
+        return;
       case 'brakeUp':
         // 非常はここでは解かない。込めていく操作で非常が緩んでは事故になる。
-        this.setBrakePosition(this.brakePosition + 1);
-        break;
+        if (one) this.setLever(this.lever - 1);
+        else this.setBrakePosition(this.brakePosition + 1);
+        return;
       case 'brakeDown':
-        this.setBrakePosition(this.brakePosition - 1);
-        break;
+        if (one) this.setLever(this.lever + 1);
+        else this.setBrakePosition(this.brakePosition - 1);
+        return;
       case 'emergency':
         this.setEmergency(true);
-        break;
+        return;
       case 'doorsToggle':
         this.doorsClosed = !this.doorsClosed;
-        break;
+        return;
+      case 'doorsOpen':
+        this.doorsClosed = false;
+        return;
+      case 'doorsClose':
+        this.doorsClosed = true;
+        return;
+      case 'reverserForward':
+        this.stepReverser(1);
+        return;
+      case 'reverserBackward':
+        this.stepReverser(-1);
+        return;
+      case 'headlightToggle':
+        this.headlightOn = !this.headlightOn;
+        return;
+      case 'headlightDim':
+        this.headlightHighBeam = !this.headlightHighBeam;
+        return;
+      case 'wiper':
+        this.wiperMode = NEXT_WIPER[this.wiperMode];
+        return;
+      case 'snowproofToggle':
+        this.snowproofOn = !this.snowproofOn;
+        return;
     }
+  }
+
+  /** 逆転ハンドルを 1 段動かす */
+  private stepReverser(delta: 1 | -1): void {
+    const next = Math.max(-1, Math.min(1, this.reverserPosition + delta)) as 1 | 0 | -1;
+    this.setReverser(next);
+  }
+
+  /**
+   * 逆転ハンドルの位置。
+   *
+   * 力行を入れたまま、あるいは走行中には動かせない（実車では主幹制御器と
+   * 機械的に鎖錠されている）。
+   */
+  setReverser(position: 1 | 0 | -1): void {
+    if (position === this.reverserPosition) return;
+    if (this.powerNotch > 0) return;
+    if (this.counts.canMoveReverser?.() === false) return;
+    this.reverserPosition = position;
   }
 
   /**
@@ -194,8 +294,7 @@ export class DriverState {
     this.emergencyOn = pos === max;
     this.holdingOn = offset === 1 && pos === 1;
     // 非常は常用の最大段を伴う（実車の非常も常用の管を抜き切る）
-    this.brakeNotch =
-      pos === max ? this.counts.brakeNotchCount() : Math.max(0, pos - offset);
+    this.brakeNotch = pos === max ? this.counts.brakeNotchCount() : Math.max(0, pos - offset);
   }
 
   /**
@@ -286,6 +385,11 @@ export class DriverState {
     this.holdingOn = false;
     this.emergencyOn = false;
     this.doorsClosed = true;
+    this.reverserPosition = 1;
+    this.headlightOn = false;
+    this.headlightHighBeam = true;
+    this.wiperMode = 'off';
+    this.snowproofOn = false;
     this.heldCommands.clear();
   }
 
@@ -316,6 +420,11 @@ export class DriverState {
       holding: this.holdingOn,
       emergency: this.emergencyOn,
       doorsClosed: this.doorsClosed,
+      reverser: this.reverserPosition,
+      headlight: this.headlightOn,
+      headlightHigh: this.headlightHighBeam,
+      wiper: this.wiperMode,
+      snowproof: this.snowproofOn,
     };
   }
 
@@ -328,6 +437,10 @@ export class DriverState {
       holding: this.holdingOn,
       brakeNotch: this.brakeNotch,
       emergency: this.emergencyOn,
+      reverser: this.reverserPosition,
+      snowproofBrake: this.snowproofOn,
+      // 前照灯とワイパーは物理に効かないので `ControlInput` には載せない。
+      // 載せると記録が走行と関係のないイベントで膨らむ。
       acknowledge: this.heldCommands.has('acknowledge'),
       safetyReset: this.heldCommands.has('safetyReset'),
       horn: this.heldCommands.has('horn'),

@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { mpsToKmh, paToKpa, type Simulation } from '@railsim/core';
+import type { WiperMode } from '../input/driverState.ts';
 import { CAR } from './dimensions.ts';
 
 /**
@@ -219,13 +220,26 @@ export interface CabHandles {
   readonly emergency: boolean;
   /** ワンハンドル運転台か（true ならハンドルは 1 本だけ立つ） */
   readonly oneHandle: boolean;
+  readonly wiper: WiperMode;
+  /** 耐雪ブレーキ（表示灯だけ。制動力はブレーキ装置が出す） */
+  readonly snowproof: boolean;
 }
 
 export interface CabInterior {
   readonly group: THREE.Group;
-  /** 計器と表示灯をシミュレーションの状態に合わせる */
-  update(sim: Simulation, handles: CabHandles): void;
+  /**
+   * 計器と表示灯をシミュレーションの状態に合わせる。
+   * `dt` はシミュレーション時間の進み（ワイパーを動かすのに使う）。
+   */
+  update(sim: Simulation, handles: CabHandles, dt: number): void;
 }
+
+/** ワイパーの原位置（下枠に沿って畳まれている角度） */
+const WIPER_PARK = 0.16;
+/** ワイパーが振れる角度 */
+const WIPER_SWEEP = 1.5;
+/** 1 往復にかかる時間 [s] */
+const WIPER_PERIOD: Readonly<Record<WiperMode, number>> = { off: 0, slow: 1.4, fast: 0.8 };
 
 /**
  * 運転台のハンドル（主幹制御器・ブレーキ設定器）。
@@ -293,6 +307,10 @@ function buildOneHandle(x: number, y: number, z: number): THREE.Group {
  */
 export function createCabInterior(): CabInterior {
   const group = new THREE.Group();
+  /** ワイパーの腕（付け根で回る） */
+  const wipers: THREE.Group[] = [];
+  /** ワイパーの位相 0..1（1 で 1 往復） */
+  let wiperPhase = 0;
 
   // --- 前面窓の枠 ---
   // 運転士側の窓（大きい）と助士側の窓を、中桟で仕切る 2 枚窓。
@@ -328,15 +346,20 @@ export function createCabInterior(): CabInterior {
     (CAB.windowTop + CAB.windowBottom) / 2,
   );
 
-  // ワイパー（窓の外側。使っていないときは下枠に沿って畳まれている）
+  // ワイパー（窓の外側。使っていないときは下枠に沿って畳まれている）。
+  // 実物と同じく腕の付け根で回るので、ブレードはピボットから外へ伸ばす。
   for (const x of [0.05, 1.4]) {
-    const wiper = new THREE.Mesh(
+    const pivot = new THREE.Group();
+    pivot.position.set(x - 0.3, CAB.windowBottom + 0.02, z - 0.06);
+    const blade = new THREE.Mesh(
       new THREE.BoxGeometry(0.6, 0.016, 0.016),
       new THREE.MeshStandardMaterial({ color: 0x1b1e22, roughness: 0.8, metalness: 0.05 }),
     );
-    wiper.position.set(x, CAB.windowBottom + 0.05, z - 0.06);
-    wiper.rotation.z = 0.16;
-    group.add(wiper);
+    blade.position.x = 0.3;
+    pivot.add(blade);
+    pivot.rotation.z = WIPER_PARK;
+    wipers.push(pivot);
+    group.add(pivot);
   }
 
   // --- 天井・側面・仕切り ---
@@ -481,8 +504,8 @@ export function createCabInterior(): CabInterior {
   monitor.rotation.x = -CAB.panelTilt;
   group.add(monitor);
 
-  // 表示灯（ATS 電源・警報・非常）。計器の右に縦に 3 個並ぶ
-  const lampColors = [0x2fd45f, 0xffb400, 0xff3b30];
+  // 表示灯（ATS 電源・警報・非常・耐雪）。計器の右に縦に並ぶ
+  const lampColors = [0x2fd45f, 0xffb400, 0xff3b30, 0x4fc3f7];
   const lamps = lampColors.map((color, i) => {
     const lamp = new THREE.Mesh(
       new THREE.CircleGeometry(0.02, 12),
@@ -529,7 +552,7 @@ export function createCabInterior(): CabInterior {
 
   return {
     group,
-    update(sim: Simulation, handles: CabHandles): void {
+    update(sim: Simulation, handles: CabHandles, dt: number): void {
       const snap = sim.snapshot();
       // 文字板は 120km/h いっぱいで作ってあるので、割合もその全尺で取る
       speedGauge.setRatio(speedNeedle, mpsToKmh(snap.speed) / 120);
@@ -565,6 +588,18 @@ export function createCabInterior(): CabInterior {
       setLamp(lamps[0]!, !ind.bell && !snap.safety.emergencyBrake, 0x2fd45f);
       setLamp(lamps[1]!, ind.bell || ind.patternApproach || ind.chime, 0xffb400);
       setLamp(lamps[2]!, snap.safety.emergencyBrake || snap.emergency, 0xff3b30);
+      setLamp(lamps[3]!, handles.snowproof, 0x4fc3f7);
+
+      // ワイパーは往復する 1 自由度の運動。切ったあとも原位置まで戻ってから
+      // 止まる（実物も途中では止まらない）。
+      const period = WIPER_PERIOD[handles.wiper];
+      if (period > 0) wiperPhase = (wiperPhase + dt / period) % 1;
+      else if (wiperPhase > 0) {
+        const next = wiperPhase + dt / WIPER_PERIOD.slow;
+        wiperPhase = next >= 1 ? 0 : next;
+      }
+      const sweep = 0.5 - 0.5 * Math.cos(2 * Math.PI * wiperPhase);
+      for (const wiper of wipers) wiper.rotation.z = WIPER_PARK + sweep * WIPER_SWEEP;
     },
   };
 }

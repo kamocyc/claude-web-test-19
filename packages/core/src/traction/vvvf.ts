@@ -128,9 +128,13 @@ export class VvvfTractionSystem implements TractionSystem {
     return total * clamp(ctx.regenerationReceptivity, 0, 1);
   }
 
+  /** 逆転機の向き（1 = 前、-1 = 後）。力行トルクの向きにだけ効く。 */
+  private direction: 1 | -1 = 1;
+
   update(dt: number, ctx: TractionContext): void {
     const dyn = ctx.dynamics;
     const ctrl = this.consist.traction;
+    this.direction = ctx.direction ?? 1;
     const v = dyn.speed;
 
     // --- 空転検知と再粘着制御 ---
@@ -159,7 +163,12 @@ export class VvvfTractionSystem implements TractionSystem {
     this.state.tractiveEffort = totalRimForce;
     this.updateModulation(dt, dyn);
     const spec = this.firstTractionSpec();
-    const elecPower = lineElectricPower(totalRimForce * v, spec ? spec.converterEfficiency : 1);
+    // 力行の車輪周力は向きに関わらず正で返るので、電力も速度の大きさで見る
+    // （後退中に `v` の符号をそのまま掛けると、力行が回生に見えてしまう）
+    const elecPower = lineElectricPower(
+      totalRimForce * Math.abs(v),
+      spec ? spec.converterEfficiency : 1,
+    );
     this.state.power = elecPower;
     this.state.motorCurrent = ctx.lineVoltage > 0 ? elecPower / ctx.lineVoltage : 0;
   }
@@ -232,7 +241,7 @@ export class VvvfTractionSystem implements TractionSystem {
       const motorTorque = motorTorqueAt(spec, v, spec.maxMotorTorque) * ratioLimit * loadRatio;
       const axleTorqueTotal = motorTorque * spec.motorCount * spec.gearRatio * spec.driveEfficiency;
       const perAxle = axleTorqueTotal / veh.spec.drivenAxleCount;
-      for (const ax of veh.axles) ax.driveTorque = ax.driven ? perAxle : 0;
+      for (const ax of veh.axles) ax.driveTorque = ax.driven ? this.direction * perAxle : 0;
       total += rimForceFromMotorTorque(spec, veh.spec, motorTorque);
       this.lastMotorTorque = motorTorque;
     }
