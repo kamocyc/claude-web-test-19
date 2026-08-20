@@ -1,5 +1,10 @@
 import * as THREE from 'three';
-import { turnoutMergePoint, type CompiledRoute, type Turnout } from '@railsim/core';
+import {
+  turnoutBranchOffset,
+  turnoutMergePoint,
+  type CompiledRoute,
+  type Turnout,
+} from '@railsim/core';
 import { BALLAST, POINT_MACHINE, RAIL, SLEEPER } from './dimensions.ts';
 import type { TrackFrame } from './frame.ts';
 import {
@@ -185,8 +190,18 @@ export function buildTrack(
   // --- レール継目（音が鳴る位置と同じところに置く） ---
   out.push(...buildRailJoints(route, frameAt, offset));
 
-  // --- 交換設備の隣の線路 ---
-  out.push(...buildAdjacentTrack(route, frameAt, offset, rail, railhead));
+  // --- 交換設備・複線区間の隣の線路 ---
+  out.push(
+    ...buildAdjacentTrack(route, frameAt, offset, rail, railhead, {
+      section: ballastFaces,
+      ballast: ballastMaterial,
+      slope,
+      shoulders: [
+        [section[0]!, section[1]!],
+        [section[section.length - 2]!, section[section.length - 1]!],
+      ],
+    }),
+  );
 
   return out;
 }
@@ -225,8 +240,17 @@ function stationsBetween(
   return out;
 }
 
+/** 隣の線路の下に敷く道床（本線と同じ断面・同じ材質を使い回す） */
+interface AdjacentBed {
+  readonly section: readonly SectionPoint[];
+  readonly ballast: THREE.Material;
+  readonly slope: THREE.Material;
+  /** 道床の外側ののり面（左右 2 枚） */
+  readonly shoulders: ReadonlyArray<readonly SectionPoint[]>;
+}
+
 /**
- * 交換設備の隣の線路。
+ * 交換設備・複線区間の隣の線路。
  *
  * 単線なので、線路が 2 本あるのは行き違い設備の中だけである。横のずれは
  * `AdjacentTrack.offsetAt()`（分岐器の寸法から決まる）をそのまま使うので、
@@ -238,6 +262,7 @@ function buildAdjacentTrack(
   railOffset: number,
   rail: THREE.Material,
   railhead: THREE.Material,
+  bed: AdjacentBed,
 ): THREE.Object3D[] {
   const out: THREE.Object3D[] = [];
   for (const loop of route.adjacentTrack.loops) {
@@ -246,6 +271,20 @@ function buildAdjacentTrack(
       stations.push({ frame: frameAt(s), lateral: route.adjacentTrack.offsetAt(s) });
     }
     if (stations.length < 2) continue;
+
+    // 道床は 2 本ぶんを重ねて敷く。線路中心間隔（交換設備 3.38m・複線 3.8m）は
+    // 道床の肩幅（片側 2.5m ほど）の 2 倍より狭いので、断面が重なって 1 つの
+    // 広い道床になる — 実物の複線も、線路 2 本を 1 つの道床に載せている。
+    const spread: SweepStation[] = [];
+    const steps = Math.max(1, Math.ceil((loop.exit - loop.entry) / 5));
+    for (let i = 0; i <= steps; i++) {
+      const s = loop.entry + ((loop.exit - loop.entry) * i) / steps;
+      spread.push({ frame: frameAt(s), lateral: route.adjacentTrack.offsetAt(s) });
+    }
+    out.push(new THREE.Mesh(sweepSection(spread, bed.section), bed.ballast));
+    for (const shoulder of bed.shoulders) {
+      out.push(new THREE.Mesh(sweepSection(spread, shoulder), bed.slope));
+    }
 
     for (const side of [-1, 1] as const) {
       out.push(
@@ -543,19 +582,59 @@ export function buildTurnouts(
     // 分岐側を走っているときは、分かれていくのは本線（反対側へ離れる）
     const away = (turnout.side === 'right' ? 1 : -1) * (turnout.route === 'through' ? 1 : -1);
     const start = turnout.pointsPosition;
-    const end = Math.min(route.length, start + turnout.length + 60);
     const sinA = Math.sin(turnout.crossingAngle);
     const lead = turnout.leadLength;
 
-    /** トングレール先端からの距離 d における、枝の中心線の横のずれ */
-    const branchOffset = (d: number): number =>
-      away *
-      (d <= lead
-        ? (d * d) / (2 * turnout.radius)
-        : (lead * lead) / (2 * turnout.radius) + (d - lead) * sinA);
+    /**
+     * 渡り線が渡りきる横のずれ [m]（= その地点の線路中心間隔）。
+     *
+     * 渡り線でないときは 0（＝上限なし）。渡り線は隣の線路に乗り移るためのもの
+     * なので、離れていく先ではなく**相手の線路の位置**で線形が決まる。
+     */
+    const crossoverSpacing = turnout.crossover
+      ? route.adjacentTrack.spacingAt(turnout.pointsPosition)
+      : 0;
+    /**
+     * 渡り線の護輪軌条部（リード曲線と戻し曲線のあいだの直線）の長さ [m]。
+     *
+     * 番数（＝クロッシング角 α）とリード半径 R は分岐器の寸法で決まっているので、
+     * 線路中心間隔 W に届かせるにはこの直線で調整するしかない:
+     *
+     *   W = 2R(1 − cos α) + T sin α  →  T = (W − 2R(1 − cos α)) / sin α
+     *
+     * #12・R350 で W = 3.8m なら T = 16.6m になる。交換設備の分岐器（T = 11.6m、
+     * W = 3.38m）より長いのは、複線の線路中心間隔のほうが広いからである。
+     */
+    const crossoverTail = Math.max(
+      0,
+      (crossoverSpacing - 2 * turnout.radius * (1 - Math.cos(turnout.crossingAngle))) / sinA,
+    );
+    /** 渡り線の全長 [m]（リード曲線 → 護輪軌条部 → 戻し曲線） */
+    const crossoverLength = 2 * lead + crossoverTail;
 
+    /** トングレール先端からの距離 d における、枝の中心線の横のずれ */
+    const branchOffset = (d: number): number => {
+      // 渡り線は戻し曲線で隣の線路と平行になる。離れていく枝ではないので、
+      // 交換設備の隣の線路（`turnoutBranchOffset`）とまったく同じ線形になる。
+      if (turnout.crossover) {
+        return away * turnoutBranchOffset(d, turnout.radius, turnout.crossingAngle, crossoverTail);
+      }
+      return (
+        away *
+        (d <= lead
+          ? (d * d) / (2 * turnout.radius)
+          : (lead * lead) / (2 * turnout.radius) + (d - lead) * sinA)
+      );
+    };
+
+    // 離れていく枝は 60m ほど描けば十分だが、渡り線は渡りきるまで描く
+    // （途中で切ると隣の線路につながらない）。
+    const end = Math.min(
+      route.length,
+      start + (turnout.crossover ? crossoverLength : turnout.length + 60),
+    );
     const stations: SweepStation[] = [];
-    for (let s = start; s <= end; s += 2) {
+    for (let s = start; s <= end; s += 1) {
       stations.push({ frame: frameAt(s), lateral: branchOffset(s - start) });
     }
     if (stations.length < 2) continue;
@@ -598,6 +677,24 @@ export function buildTurnouts(
       .addScaledVector(crossingFrame.cantRight, branchOffset(turnout.crossingPosition - start) / 2)
       .addScaledVector(crossingFrame.up, -RAIL.height / 2);
     out.push(nose);
+
+    // 渡り線は向こう側の端にもう 1 基の分岐器が背中合わせに据わっている。
+    // その分岐器のクロッシングは戻し曲線の始まりにあたる位置にあり、渡る列車は
+    // ここでもう一度欠線を踏む（＝渡り線を渡ると「ガタン」が 2 回来る）。
+    if (turnout.crossover) {
+      const mateAt = Math.min(route.length, start + lead + crossoverTail);
+      const mateFrame = frameAt(mateAt);
+      const mate = new THREE.Mesh(new THREE.BoxGeometry(3.2, RAIL.height, 0.22), polished);
+      mate.quaternion.copy(frameQuaternion(mateFrame));
+      mate.position
+        .copy(mateFrame.position)
+        .addScaledVector(
+          mateFrame.cantRight,
+          (branchOffset(mateAt - start) + away * crossoverSpacing) / 2,
+        )
+        .addScaledVector(mateFrame.up, -RAIL.height / 2);
+      out.push(mate);
+    }
 
     // 護輪軌条（クロッシングの反対側のレールに沿える）
     const guard: SweepStation[] = [];

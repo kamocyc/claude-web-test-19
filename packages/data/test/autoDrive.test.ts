@@ -4,20 +4,20 @@ import { autoRun, scenarioOf } from './autoRun.ts';
 
 describe('自動運転（ATO）', () => {
   it('起点から終点まで自分で走り、全駅の停止位置に所定内で止まる', () => {
-    const { sim } = autoRun('test-line-local', 600);
+    const { sim } = autoRun('test-line-local', 1000);
     const stops = sim.metrics.stops;
-    expect(stops.map((s) => s.stationId)).toEqual(['stn-a', 'stn-b', 'stn-c']);
+    expect(stops.map((s) => s.stationId)).toEqual(['stn-a', 'stn-b', 'stn-c', 'stn-d', 'stn-e']);
     for (const stop of stops) {
       const station = sim.scenario.route.stations.find((s) => s.id === stop.stationId)!;
       expect(Math.abs(stop.stopError)).toBeLessThan(station.stopTolerance);
     }
     // 終着駅に停まったまま、扉を開けて留置している
     expect(Math.abs(sim.speed)).toBeLessThan(0.05);
-    expect(sim.position).toBeGreaterThan(7100);
+    expect(sim.position).toBeGreaterThan(14000);
   });
 
   it('停車時分と発時刻を満たしてから発車する', () => {
-    const { sim } = autoRun('test-line-local', 600);
+    const { sim } = autoRun('test-line-local', 1000);
     const stnB = sim.stations.find((s) => s.station.id === 'stn-b')!;
     expect(stnB.departureTime).not.toBeNull();
     // 停車時分ぶんは扉を開けて停まっている
@@ -27,7 +27,7 @@ describe('自動運転（ATO）', () => {
   });
 
   it('保安装置を一度も動作させずに走り切る', () => {
-    const { sim, overspeed } = autoRun('test-line-local', 600);
+    const { sim, overspeed } = autoRun('test-line-local', 1000);
     const safety = sim.metrics.safety;
     expect(safety.emergencyBrakeCount).toBe(0);
     expect(safety.patternBrakeCount).toBe(0);
@@ -57,13 +57,13 @@ describe('自動運転（ATO）', () => {
     // 加速度の**変え方**で決まる量なので、ノッチを速く運ぶほど不利になる。
     // ブレーキが抜け切る前に力行を立ち上げないこと（`powerReleasePressure`）で
     // 成り立っている。ここが緩むと発車のたびに車内でたたらを踏むことになる。
-    const { sim } = autoRun('test-line-local', 600);
+    const { sim } = autoRun('test-line-local', 1000);
     expect(sim.metrics.ride.passengerSteps).toBe(0);
     expect(sim.metrics.ride.maxStagger).toBeLessThan(1);
   });
 
   it('制限速度を使い切る（直下まで出すが、決して超えない）', () => {
-    const { overspeed, closestApproach } = autoRun('test-line-local', 600);
+    const { overspeed, closestApproach } = autoRun('test-line-local', 1000);
     // 超えない
     expect(overspeed).toBeLessThanOrEqual(0);
     // かつ、遠慮しすぎない。制限の 2km/h 以内までは出す。
@@ -73,8 +73,8 @@ describe('自動運転（ATO）', () => {
   });
 
   it('降雪でも停止直前に這って走らない', () => {
-    const dry = autoRun('test-line-local', 600).crawls;
-    const snow = autoRun('test-line-snow', 700).crawls;
+    const dry = autoRun('test-line-local', 1000).crawls;
+    const snow = autoRun('test-line-snow', 1100).crawls;
     expect(dry.length).toBeGreaterThanOrEqual(2);
     expect(snow.length).toBeGreaterThanOrEqual(2);
     // 効きが落ちる条件でも、停止直前の低速走行が晴天の 2 倍を超えない。
@@ -90,15 +90,21 @@ describe('自動運転（ATO）', () => {
   });
 
   it('ブレーキの入切が極端に少ない（停車 1 回につきおおむね 1 回）', () => {
-    const { applications, notchChanges, sim } = autoRun('test-line-local', 600);
+    const { applications, notchChanges, sim } = autoRun('test-line-local', 1000);
     // 走行中の込め直しは停車回数程度で収まる
     expect(applications).toBeLessThanOrEqual(sim.metrics.stops.length);
-    // ノッチの操作回数も、1 回の制動あたり数段の範囲に収まる
-    expect(notchChanges).toBeLessThan(30);
+    // ノッチの操作回数も、1 回の制動あたり数段の範囲に収まる。制動の回数は
+    // 「停車」と「制限速度へ寄せる回数」で決まるので、路線を延ばせばそのぶん増える。
+    // 固定値で書くと路線を変えるたびに直すことになるので、数え上げて比べる。
+    const curveLimits = sim.scenario.route.speedLimitEntries.filter(
+      (e) => e.reason === 'curve',
+    ).length;
+    const decelerations = sim.metrics.stops.length + curveLimits;
+    expect(notchChanges).toBeLessThan(decelerations * 7);
   });
 
   it('止まる瞬間の減速度が小さい（停車の衝撃緩和）', () => {
-    const { stopDecelerations, sim } = autoRun('test-line-local', 600);
+    const { stopDecelerations, sim } = autoRun('test-line-local', 1000);
     expect(stopDecelerations.length).toBeGreaterThanOrEqual(2);
     for (const decel of stopDecelerations) {
       // 常用最大の 1/5 以下。ノッチを入れたまま止まればこの数倍になる。
@@ -155,7 +161,7 @@ describe('自動運転（ATO）', () => {
   });
 
   it('降雪でブレーキが効きにくくても停止位置に収まる', () => {
-    const { sim } = autoRun('test-line-snow', 700);
+    const { sim } = autoRun('test-line-snow', 1100);
     const stops = sim.metrics.stops.filter((s) => s.stationId !== 'stn-a');
     expect(stops.length).toBeGreaterThanOrEqual(2);
     for (const stop of stops) {
@@ -202,14 +208,14 @@ describe('自動運転（ATO）', () => {
   });
 
   it('ATS-SN 区間では確認扱いを行い、非常ブレーキに至らない', () => {
-    const { sim } = autoRun('test-line-ats-sn', 700);
+    const { sim } = autoRun('test-line-ats-sn', 1100);
     expect(sim.metrics.safety.atsWarningCount).toBeGreaterThan(0);
     expect(sim.metrics.safety.emergencyBrakeCount).toBe(0);
   });
 
   it('EB 装置を積んでいてもノッチを保持したまま走れる', () => {
     // 自動運転装置は連続して指令を出しているので、無操作とは見なされない
-    const { sim } = autoRun('test-line-local', 600);
+    const { sim } = autoRun('test-line-local', 1000);
     expect(sim.scenario.hasVigilance).toBe(true);
     expect(sim.metrics.safety.emergencyBrakeCount).toBe(0);
   });

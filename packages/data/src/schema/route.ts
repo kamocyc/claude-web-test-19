@@ -91,6 +91,11 @@ export const turnoutSchema = z.object({
   orientation: z.enum(['facing', 'trailing']).default('facing'),
   /** この路線が通る側 */
   route: z.enum(['through', 'diverging']).default('through'),
+  /**
+   * 渡り線（片渡り）か。分岐側が隣の線路へつながる。
+   * 複線区間の中にしか置けない（隣の線路が無ければ渡る先が無い）。
+   */
+  crossover: z.boolean().default(false),
   /** 可動ノーズクロッシング（欠線が無いので衝撃が小さい） */
   swingNose: z.boolean().default(false),
   /** リード曲線半径 [m]（省略すると番数から標準値を求める） */
@@ -161,11 +166,15 @@ export const levelCrossingSchema = z.object({
 });
 
 /**
- * 行き違い設備（交換設備）。
+ * 行き違い設備（交換設備）と複線区間。
  *
- * 入口と出口の分岐器を指すだけでよい。線路がどこにあるか（線路中心間隔・隣の線路の
- * 側）は分岐器の寸法と開通方向から決まるので、書く値は無い。単線の路線で対向列車と
- * すれ違えるのはこの区間だけである。
+ * どちらも「隣にもう 1 本線路がある区間」であり、入口と出口の分岐器を指すだけでよい。
+ * 線路がどこにあるか（線路中心間隔・隣の線路の側）は分岐器の寸法と開通方向から
+ * 決まるので、交換設備なら書く値は無い。
+ *
+ * 複線区間だけは `spacing` を書く。複線の線路中心間隔を決めているのは分岐器ではなく
+ * **建築限界**（在来線の標準 3.8m）だからで、分岐器で寄るぶん（#12 で 3.38m）との
+ * 差を分岐器の先の緩い S 字で埋める。
  */
 export const passingLoopSchema = z.object({
   id: z.string(),
@@ -173,6 +182,13 @@ export const passingLoopSchema = z.object({
   entry: z.string(),
   /** 出口の分岐器の ID */
   exit: z.string(),
+  /**
+   * 所定の線路中心間隔 [m]。省略すると分岐器の寸法どおり（交換設備）。
+   * 分岐器で寄る量より大きい値を書くと、その差を拡幅する。
+   */
+  spacing: z.number().positive().optional(),
+  /** 拡幅に使う区間の長さ [m] */
+  wideningLength: z.number().positive().default(120),
 });
 
 export const safetySectionSchema = z.object({

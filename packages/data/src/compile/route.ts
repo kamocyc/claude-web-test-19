@@ -263,6 +263,7 @@ export function compileRoute(definition: RouteDefinition): CompiledRoute {
       side: t.side,
       orientation: t.orientation,
       route: t.route,
+      crossover: t.crossover,
       swingNose: t.swingNose,
       divergingSpeed,
       pointsPosition: facing ? t.at : t.at + leadLength,
@@ -286,6 +287,10 @@ export function compileRoute(definition: RouteDefinition): CompiledRoute {
     const tailLength = entry.length - entry.leadLength;
     const side: 1 | -1 =
       (entry.side === 'right' ? 1 : -1) * (entry.route === 'through' ? 1 : -1) > 0 ? 1 : -1;
+    const spacing = loopSpacingOf(entry.radius, entry.crossingAngle, tailLength);
+    // 所定の間隔が分岐器で寄る量より広いぶんだけ拡幅する。狭い値を書いても
+    // 分岐器の寸法は変えられないので、拡幅は 0 になる（縮めることはできない）。
+    const widening = Math.max(0, (loop.spacing ?? spacing) - spacing);
     return {
       id: loop.id,
       entry: turnoutMergePoint(entry),
@@ -293,8 +298,10 @@ export function compileRoute(definition: RouteDefinition): CompiledRoute {
       radius: entry.radius,
       angle: entry.crossingAngle,
       tailLength,
-      spacing: loopSpacingOf(entry.radius, entry.crossingAngle, tailLength),
+      spacing,
       side,
+      widening,
+      wideningLength: loop.wideningLength,
     } satisfies PassingLoop;
   });
 

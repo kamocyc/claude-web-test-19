@@ -27,6 +27,23 @@ const loop: PassingLoop = {
   tailLength: TAIL,
   spacing: loopSpacingOf(RADIUS, ANGLE, TAIL),
   side: 1,
+  widening: 0,
+  wideningLength: 120,
+};
+
+/** 複線区間（6850m 〜 11840.7m。線路中心間隔 3.8m、拡幅 140m） */
+const DOUBLE_SPACING = 3.8;
+const double: PassingLoop = {
+  id: 'double',
+  entry: 6850,
+  exit: 11840.7,
+  radius: RADIUS,
+  angle: ANGLE,
+  tailLength: TAIL,
+  spacing: loopSpacingOf(RADIUS, ANGLE, TAIL),
+  side: 1,
+  widening: DOUBLE_SPACING - loopSpacingOf(RADIUS, ANGLE, TAIL),
+  wideningLength: 140,
 };
 
 const opposing = (over: Partial<ScheduledTrain> = {}): ScheduledTrain => ({
@@ -133,5 +150,38 @@ describe('対向列車', () => {
     const state = scheduledTrainState(opposing(), 0)!;
     // 相手は 400m 先。運転台が 0m ならもう届かない。
     expect(nearestPassingEncounter(-100, 5, [state], adjacent)).toBeNull();
+  });
+});
+
+describe('複線区間の隣の線路', () => {
+  const track = new AdjacentTrack([double]);
+
+  it('分岐器で寄ったあと、拡幅して所定の線路中心間隔になる', () => {
+    // 分岐器 1 組で寄りきる位置（リード + 護輪軌条部 + 戻し曲線）
+    const run = 2 * LEAD + TAIL;
+    expect(track.spacingAt(double.entry + run)).toBeCloseTo(double.spacing, 6);
+    // 拡幅が終われば所定の間隔。以降どこまで行っても変わらない
+    expect(track.spacingAt(double.entry + run + double.wideningLength)).toBeCloseTo(
+      DOUBLE_SPACING,
+      6,
+    );
+    expect(track.spacingAt(9000)).toBeCloseTo(DOUBLE_SPACING, 6);
+    expect(track.spacingAt(11000)).toBeCloseTo(DOUBLE_SPACING, 6);
+  });
+
+  it('拡幅は S 字なので、途中でちょうど半分寄っている', () => {
+    const run = 2 * LEAD + TAIL;
+    const half = track.spacingAt(double.entry + run + double.wideningLength / 2);
+    expect(half - double.spacing).toBeCloseTo(double.widening / 2, 6);
+  });
+
+  it('出口側も同じ形で単線へ戻る', () => {
+    expect(track.spacingAt(double.exit)).toBeCloseTo(0, 6);
+    expect(track.offsetAt(double.exit + 1)).toBe(0);
+    expect(track.has(double.entry - 1)).toBe(false);
+  });
+
+  it('隣の線路は進行方向右にある（左側通行なので上り線）', () => {
+    expect(track.offsetAt(9000)).toBeCloseTo(DOUBLE_SPACING, 6);
   });
 });

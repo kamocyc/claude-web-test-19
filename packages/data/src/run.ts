@@ -1,5 +1,6 @@
 import type { RailCondition, SafetySystemKind } from '@railsim/core';
 import {
+  opposingTrainDouble,
   opposingTrainLoop,
   opposingTrainMain,
   precedingTrain,
@@ -27,9 +28,12 @@ export interface RunOptions {
   /**
    * 対向列車と行き違うか。
    *
-   * 単線なのですれ違えるのは起点駅の交換設備だけである。自列車が 1 番線なら
-   * 対向列車は 2 番線（分岐制限 45km/h）を、2 番線に入っていれば本線を制限なしで
-   * 通過するので、**どちらの番線を選んだかですれ違いの速さが変わる**。
+   * 入れると 2 本の上り列車が走る。1 本目は起点駅の交換設備でのすれ違いで、
+   * 自列車が 1 番線なら対向列車は 2 番線（分岐制限 45km/h）を、2 番線に入って
+   * いれば本線を制限なしで通過するので、**どちらの番線を選んだかですれ違いの
+   * 速さが変わる**。2 本目は複線区間（6850〜11841m）でのすれ違いで、こちらは
+   * 互いに 100km/h 超のまま行き違う。同じ 1 回の走行で、単線と複線のすれ違いを
+   * 続けて聴き比べられる。
    */
   readonly opposingTrain: boolean;
   readonly safety: SafetyChoice;
@@ -165,15 +169,17 @@ export function runScenarioDefinition(options: RunOptions): ScenarioDefinition {
     railCondition: weather.rail,
     regenerationReceptivity: weather.regeneration,
     safetySystems: [options.safety],
-    // 先行列車は自分と同じ線路、対向列車は交換設備の隣の線路を走る。役割が違うので
-    // 同時に走らせられる。対向列車のダイヤは、自分がどちらの番線にいるかで変わる
-    // （相手が通るのが本線か分岐側かで、制限速度がまるで違うため）。
+    // 先行列車は自分と同じ線路、対向列車は隣の線路を走る。役割が違うので同時に
+    // 走らせられる。対向列車は 2 本で、交換設備のほうは自分がどちらの番線にいるかで
+    // ダイヤが変わる（相手が通るのが本線か分岐側かで制限速度がまるで違うため）が、
+    // 複線区間のほうは番線と関係が無い。
     scheduledTrains: [
       ...(options.precedingTrain ? precedingTrain : []),
       ...(options.opposingTrain
-        ? options.divergingPlatform
-          ? opposingTrainMain
-          : opposingTrainLoop
+        ? [
+            ...(options.divergingPlatform ? opposingTrainMain : opposingTrainLoop),
+            ...opposingTrainDouble,
+          ]
         : []),
     ],
   };

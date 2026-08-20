@@ -18,6 +18,7 @@ import {
   type CrossingHandle,
 } from './structures.ts';
 import { buildCar, type FrontLights } from './vehicle.ts';
+import { buildCarInterior, type CarInterior } from './interior.ts';
 import {
   buildBeacons,
   buildDistancePosts,
@@ -63,6 +64,8 @@ export class TrackScene {
   readonly look: WeatherLook;
   private readonly sky: THREE.Mesh;
   private readonly vehicleMeshes: THREE.Object3D[] = [];
+  /** 自列車の客室内装（車体と同じ数だけある。車内を歩くモードが使う） */
+  private readonly interiors: CarInterior[] = [];
   private frontLights: FrontLights | undefined;
   private rearLights: FrontLights | undefined;
   private readonly signalHandles: Map<string, SignalHandle>;
@@ -218,6 +221,12 @@ export class TrackScene {
       const veh = cars[i]!;
       const lead = i === 0 || i === cars.length - 1;
       const { group, lights } = buildCar(veh.spec, lead, i === 0);
+      // 客室の内装は車体の子として付ける。車体動揺（ロール・ピッチ・左右）は
+      // 車体に掛かるので、内装は車内から見て動かない — 実際の車内と同じで、
+      // 揺れているのは車体のほうであり、乗っている側は窓の外が動くのを見る。
+      const interior = buildCarInterior(veh.spec, lead, i === 0);
+      group.add(interior.group);
+      this.interiors.push(interior);
       this.add([group], true);
       this.vehicleMeshes.push(group);
       // 灯火は編成の前端・後端だけが持つ。どちらを前照灯にするかは逆転機で決まる。
@@ -364,6 +373,14 @@ export class TrackScene {
       this.sun.target.position.copy(lead.position);
       this.sun.position.copy(lead.position).addScaledVector(SUN_DIRECTION, 300);
     }
+  }
+
+  /**
+   * 自列車の車両（先頭から順）。車内を歩くモードが、床の位置と車体の姿勢を
+   * ここから引く。返すのは同じ配列ではないので、書き換えても壊れない。
+   */
+  get cars(): ReadonlyArray<{ readonly object: THREE.Object3D; readonly interior: CarInterior }> {
+    return this.vehicleMeshes.map((object, i) => ({ object, interior: this.interiors[i]! }));
   }
 
   /** 運転席視点のとき、先頭車の車体を隠して視界を遮らないようにする */

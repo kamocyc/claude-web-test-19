@@ -28,6 +28,7 @@ function makeTurnout(over: Partial<Turnout> = {}): Turnout {
     side: 'right',
     orientation,
     route: 'through',
+    crossover: false,
     swingNose: false,
     divergingSpeed: 45 / 3.6,
     pointsPosition: orientation === 'facing' ? position : position + leadLength,

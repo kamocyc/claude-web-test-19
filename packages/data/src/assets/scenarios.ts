@@ -29,6 +29,11 @@ export const testLineSnow: ScenarioDefinition = {
 /**
  * 先行列車。10:00 前に 1000m 地点から発車し、ゆっくり終点へ向かう。
  * 追いつくと信号が段階的に現示ダウンする。
+ *
+ * わざと自列車より遅く走らせてある（表定 30〜40km/h）。単線区間では追い抜けない
+ * ので、追いついたぶんだけ現示が落ちて自分が減速することになる。複線区間へ入っても
+ * 先行列車は**同じ線路**を走っているので状況は変わらない — 複線が解決するのは
+ * すれ違いであって追い越しではない、というのがここで確かめられる。
  */
 export const precedingTrain = [
   {
@@ -39,6 +44,8 @@ export const precedingTrain = [
       { time: '10:02:00', position: 2400 },
       { time: '10:06:00', position: 4400 },
       { time: '10:12:00', position: 8000 },
+      { time: '10:16:00', position: 11000 },
+      { time: '10:20:00', position: 14200 },
     ],
   },
 ];
@@ -87,6 +94,37 @@ export const opposingTrainMain = [
     waypoints: [
       { time: '10:00:08', position: 470 },
       { time: '10:00:24', position: 20 },
+    ],
+  },
+];
+
+/**
+ * 対向列車（複線区間ですれ違う上り列車）。
+ *
+ * 交換設備の対向列車と違い、**止まりも減速もしない**。線路が別なので、こちらが
+ * 110km/h、相手が 105km/h のまま行き違うことになる。相対速度は 215km/h（60m/s）
+ * あり、すれ違いに要する時間は編成長 80m を割って 1.3 秒しかない:
+ *
+ *  - 先頭がすれ違う瞬間、動圧（速度の 2 乗）で「バン」と圧力波が来る。交換設備の
+ *    すれ違い（相対 28m/s）に比べて動圧は 4 倍以上になる
+ *  - 相手の転動音は聞こえたと思った瞬間に去る。音程の落差は 1.22 倍 → 0.82 倍で、
+ *    ほぼ 1 オクターブに近い
+ *  - 線路中心間隔が 3.8m しかないので、相手の車体は窓のすぐ外を通る
+ *
+ * 単線の交換設備で 45km/h ですれ違うのと聴き比べると、**すれ違いの音を決めて
+ * いるのは距離ではなく相対速度である**ことがはっきりする。
+ *
+ * ダイヤは複線区間（6850〜11841m）を通り抜けるあいだだけ書いてある。その前後は
+ * 単線なので、自列車が抜けきるまで来られない。
+ */
+export const opposingTrainDouble = [
+  {
+    id: 'opposing-double',
+    length: 80,
+    track: 'adjacent' as const,
+    waypoints: [
+      { time: '10:07:40', position: 11840 },
+      { time: '10:10:30', position: 6860 },
     ],
   },
 ];
@@ -224,6 +262,52 @@ export const testLineStructures: ScenarioDefinition = {
   startPosition: 3500,
 };
 
+/**
+ * 複線すれ違いシナリオ: 稲田堤を発車し、複線区間で上り列車と 215km/h で行き違う。
+ *
+ * 起点駅の交換設備でのすれ違い（`test-line-opposing`）と同じ設備・同じ車両で、
+ * 違うのは**相対速度だけ**である。聴き比べると、圧力波の強さも、相手の走行音が
+ * 聞こえている時間も、ドップラーの落差も、すべてそこから出ていることが分かる。
+ */
+export const testLineMeeting: ScenarioDefinition = {
+  ...testLineLocal,
+  id: 'test-line-meeting',
+  name: '試験線 複線区間ですれ違い',
+  startTime: '10:07:40',
+  startPosition: 7200,
+  scheduledTrains: opposingTrainDouble,
+};
+
+/**
+ * 複線区間シナリオ: 稲田堤から向ヶ丘まで、線路最高速度で走る。
+ *
+ * 7500〜12000m はロングレールなので継目音が無く、代わりに波状摩耗の唸りが
+ * 速度に比例して上がっていく。9350m の踏切、9660m の片渡り線、9800m から
+ * 500m の複線トンネル、11000m の架道橋が続けて来る。
+ */
+export const testLineDoubleTrack: ScenarioDefinition = {
+  ...testLineLocal,
+  id: 'test-line-double',
+  name: '試験線 複線区間',
+  startTime: '10:07:40',
+  startPosition: 7200,
+};
+
+/**
+ * 終点進入シナリオ: 向ヶ丘を発車し、R300（65km/h 制限）を抜けて登戸へ入る。
+ *
+ * 複線が単線へ戻る背向分岐器（11800m）、下路トラス橋、トンネル、そして終点手前の
+ * 急曲線と、線形の性格が 3km のあいだに何度も変わる。終端には車止めがあるので、
+ * ATS-P は終端までの距離でパターンを引いている。
+ */
+export const testLineTerminus: ScenarioDefinition = {
+  ...testLineLocal,
+  id: 'test-line-terminus',
+  name: '試験線 終点進入',
+  startTime: '10:11:10',
+  startPosition: 10600,
+};
+
 export const scenarios = [
   testLineLocal,
   testLineSnow,
@@ -232,6 +316,9 @@ export const scenarios = [
   testLineTurnoutThrough,
   testLineLoop,
   testLineOpposing,
+  testLineMeeting,
+  testLineDoubleTrack,
+  testLineTerminus,
   testLineStructures,
   testLineResistor,
   testLineResistorSnow,

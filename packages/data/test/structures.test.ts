@@ -29,8 +29,15 @@ function run(sim: Simulation, seconds: number, onStep?: (s: Simulation) => void,
 }
 
 describe('橋りょうのコンパイル', () => {
-  it('4 基の橋が距離程どおりに置かれる', () => {
-    expect(main.bridges.bridges.map((b) => b.id)).toEqual(['br-3', 'br-1', 'br-2', 'br-4']);
+  it('6 基の橋が距離程どおりに置かれる', () => {
+    expect(main.bridges.bridges.map((b) => b.id)).toEqual([
+      'br-3',
+      'br-1',
+      'br-2',
+      'br-4',
+      'br-5',
+      'br-6',
+    ]);
     expect(main.bridges.at(3000)?.id).toBe('br-1');
     expect(main.bridges.at(3200)).toBeUndefined();
   });
@@ -58,8 +65,15 @@ describe('橋りょうのコンパイル', () => {
 });
 
 describe('踏切のコンパイル', () => {
-  it('3 か所の踏切が置かれ、警報開始距離は最高速度から決まる', () => {
-    expect(main.levelCrossings.crossings.map((c) => c.id)).toEqual(['xg-1', 'xg-2', 'xg-3']);
+  it('6 か所の踏切が置かれ、警報開始距離は最高速度から決まる', () => {
+    expect(main.levelCrossings.crossings.map((c) => c.id)).toEqual([
+      'xg-1',
+      'xg-2',
+      'xg-3',
+      'xg-4',
+      'xg-5',
+      'xg-6',
+    ]);
     const crossing = main.levelCrossings.get('xg-1')!;
     // 警報時間 30 秒 × 線路最高速度 110km/h
     expect(crossing.warningDistance).toBeCloseTo(30 * (110 / 3.6), 6);
@@ -227,5 +241,43 @@ describe('踏切の鳴動', () => {
     const snap = sim.snapshot();
     expect(snap.crossing?.state.crossing.id).toBe('xg-2');
     expect(snap.crossing?.distance).toBeCloseTo(3800 - sim.position, 6);
+  });
+});
+
+describe('複線区間のコンパイル', () => {
+  const loopA = main.adjacentTrack.loops.find((l) => l.id === 'loop-a')!;
+  const doubleA = main.adjacentTrack.loops.find((l) => l.id === 'double-a')!;
+
+  it('交換設備と複線区間が 1 つずつある', () => {
+    expect(main.adjacentTrack.loops.map((l) => l.id)).toEqual(['loop-a', 'double-a']);
+  });
+
+  it('複線区間は 5km 近くあり、そのあいだずっと隣に線路がある', () => {
+    expect(doubleA.entry).toBeCloseTo(6850, 6);
+    // 出口は背向分岐器なので、始端ではなく分岐器の向こう端で 1 本になる
+    expect(doubleA.exit).toBeGreaterThan(11800);
+    expect(main.adjacentTrack.has(9000)).toBe(true);
+    expect(main.adjacentTrack.has(6000)).toBe(false);
+    expect(main.adjacentTrack.has(12000)).toBe(false);
+  });
+
+  it('複線の線路中心間隔は 3.8m（分岐器の 3.38m を拡幅したもの）', () => {
+    expect(loopA.widening).toBe(0);
+    expect(doubleA.spacing + doubleA.widening).toBeCloseTo(3.8, 6);
+    expect(main.adjacentTrack.spacingAt(9000)).toBeCloseTo(3.8, 6);
+    // 交換設備のほうは分岐器の寸法のまま
+    expect(main.adjacentTrack.spacingAt(200)).toBeCloseTo(loopA.spacing, 6);
+  });
+
+  it('片渡り線は分岐器として置かれ、隣の線路へつながっている印が付く', () => {
+    const crossover = main.turnouts.get('to-7')!;
+    expect(crossover.crossover).toBe(true);
+    expect(crossover.orientation).toBe('facing');
+    // 渡り先の線路がある区間の中にある
+    expect(main.adjacentTrack.has(crossover.position)).toBe(true);
+    // 直進側を通るので制限速度は付かない
+    expect(main.speedLimitEntries.some((e) => e.id === 'turnout-to-7')).toBe(false);
+    // それ以外の分岐器は渡り線ではない
+    expect(main.turnouts.get('to-3')!.crossover).toBe(false);
   });
 });

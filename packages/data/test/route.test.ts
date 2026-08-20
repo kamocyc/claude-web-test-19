@@ -13,8 +13,8 @@ describe('路線のコンパイル', () => {
   const route = compileRoute(testLineRoute);
 
   it('平面線形と縦断線形の全長が一致し、軌道が組み立てられる', () => {
-    expect(route.length).toBe(8000);
-    expect(route.alignment.length).toBe(8000);
+    expect(route.length).toBe(14200);
+    expect(route.alignment.length).toBe(14200);
   });
 
   it('曲線の位置と半径が定義どおりになる', () => {
@@ -63,11 +63,12 @@ describe('路線のコンパイル', () => {
   });
 
   it('信号機から閉塞区間が導かれる', () => {
-    expect(route.signals).toHaveLength(8);
+    expect(route.signals).toHaveLength(17);
     expect(route.blocks[0]!.start).toBe(200);
     expect(route.blocks[0]!.end).toBe(1200);
-    expect(route.blocks[7]!.start).toBe(7100);
-    expect(route.blocks[7]!.end).toBe(8000);
+    // 最後の閉塞は終端の信号機から線路の終わりまで
+    expect(route.blocks[16]!.start).toBe(13950);
+    expect(route.blocks[16]!.end).toBe(14200);
   });
 
   it('ATS-P の地上子が信号機の手前に自動配置される', () => {
@@ -153,8 +154,9 @@ describe('分岐器のコンパイル', () => {
   const siding = main.turnouts.get('to-3')!;
 
   it('番数から寸法が決まる', () => {
-    // 交換設備の 2 基（対向・背向）、側線への 1 基、保守基地への 1 基
-    expect(main.turnouts.length).toBe(4);
+    // 交換設備の 2 基（対向・背向）、側線への 1 基、保守基地への 1 基、
+    // 複線区間の出入口 2 基、片渡り線 1 基、電留線への 1 基
+    expect(main.turnouts.length).toBe(8);
     expect(siding.number).toBe(12);
     expect(siding.radius).toBeCloseTo(350, 6);
     // リード長 = R α、全長はその 1.4 倍

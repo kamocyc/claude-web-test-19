@@ -116,7 +116,17 @@ export interface AutoDriveParameters {
   readonly releaseRatio: number;
   /** ブレーキの応答時間（空走時間）[s] */
   readonly responseTime: Seconds;
-  /** 速度制限の始端手前に取る余裕距離 [m] */
+  /**
+   * 速度制限の始端手前に取る余裕距離 [m]。
+   *
+   * 「制限の始端で制限速度に落ちていればよい」わけではない。ATS-P は制限の 20m
+   * 手前を目標に設計減速度 0.7m/s²・空走 2 秒のパターンを張っていて、こちらの
+   * 設計減速度 0.4m/s² のほうが緩いぶん、**残り 100m を切ったあたりで両者の曲線が
+   * 交差する**。目標を制限の始端ちょうどに置くと、そこから始端までのわずかな
+   * 区間だけパターンの上へ出てしまい、110km/h から 65km/h へ落とすような大きな
+   * 減速では実際に触る。始端の手前に信号と同じだけ（45m）余裕を取れば、
+   * 最後まで曲線がパターンの下を通る。
+   */
   readonly limitMargin: Meters;
   /** 停止現示信号の手前に取る余裕距離 [m] */
   readonly signalMargin: Meters;
@@ -209,7 +219,7 @@ export const DEFAULT_AUTO_DRIVE: AutoDriveParameters = {
   approachDeceleration: 0.4,
   releaseRatio: 0.45,
   responseTime: 1.2,
-  limitMargin: 20,
+  limitMargin: 45,
   signalMargin: 45,
   terminusMargin: 40,
   lookahead: 2500,

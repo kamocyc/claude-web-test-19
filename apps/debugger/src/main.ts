@@ -19,6 +19,7 @@ import { DriverDesk } from './input/keyboard.ts';
 import { createCabInterior } from './render/cab.ts';
 import { Precipitation } from './render/precipitation.ts';
 import { CAMERA_LABEL, CAMERA_MODES, CameraRig, type CameraMode } from './render/cameras.ts';
+import { Presenter } from './render/renderer.ts';
 import { TrackScene } from './render/scene.ts';
 import { GMeter } from './ui/gmeter.ts';
 import { Hud } from './ui/hud.ts';
@@ -63,14 +64,12 @@ const drawerButton = document.querySelector<HTMLButtonElement>('#drawer')!;
 /** 指で触る端末か（タッチ運転台を出すかと、描画の重さの判断に使う） */
 const coarsePointer = window.matchMedia('(pointer: coarse)');
 
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+// 描画の出口。画づくりの決めごと（露出・トーンマッピング・後処理）は
+// `render/renderer.ts` にまとめてあり、ここは組み立てて呼ぶだけである。
 // 携帯の画面は画素密度が高く、2 倍で描くと影付きの広い面が間に合わない。
 // 指で触る端末では上限を下げる（見た目の粗さより、詰まらないことを採る）。
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, coarsePointer.matches ? 1.5 : 2));
-// 影を落とす。柔らかい影（PCF）にしないと、レールやまくらぎの細い影が
-// 拡大されたドットの列に見えてしまう。
-renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+const presenter = new Presenter(canvas, { maxPixelRatio: coarsePointer.matches ? 1.5 : 2 });
+const renderer = presenter.renderer;
 
 const cameraRig = new CameraRig(canvas);
 const hud = new Hud(hudElement);
@@ -459,7 +458,7 @@ function resize(): void {
   if (width === lastWidth && height === lastHeight) return;
   lastWidth = width;
   lastHeight = height;
-  renderer.setSize(width, height, false);
+  presenter.resize(width, height);
   cameraRig.resize(width, height);
 }
 window.addEventListener('resize', resize);
@@ -589,7 +588,7 @@ function frame(now: number): void {
     // トンネルの中では降らない
     scene.inTunnel(sim.dynamics.frontPosition) ? 0 : 1,
   );
-  renderer.render(scene.scene, cameraRig.camera);
+  presenter.render(scene.scene, cameraRig.camera);
   hud.update(sim, CAMERA_LABEL[cameraRig.mode], RATES[rateIndex]!, paused, handles);
   touchConsole.update(handles, CAMERA_LABEL[cameraRig.mode], autoDrive, paused);
   gmeter.draw(sim);
