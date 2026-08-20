@@ -20,6 +20,24 @@ export interface TrackPoint {
   readonly cantAngle: Radians;
 }
 
+/**
+ * 勾配変化点。勾配標を建てる場所そのものである。
+ *
+ * 縦曲線がある場合、`s` はその中心（＝前後の勾配線を延長したときの交点。実物の
+ * 用語では縦曲線の変化点）を指す。縦曲線の中では勾配が連続的に変化しているが、
+ * 「勾配が変わる地点」はあくまでこの 1 点である。
+ */
+export interface GradeChange {
+  /** 勾配変化点の距離程 [m] */
+  readonly s: Meters;
+  /** 手前の勾配 [m/m]（正 = 上り） */
+  readonly from: Slope;
+  /** この先の勾配 [m/m]（勾配標に書かれるのはこちら） */
+  readonly to: Slope;
+  /** 縦曲線長 [m]。縦曲線が無ければ 0。 */
+  readonly verticalCurveLength: Meters;
+}
+
 /** 軌道中心線を組み立てるための入力 */
 export interface AlignmentInput {
   /** 曲率プロファイル [1/m] */
@@ -115,6 +133,68 @@ export class Alignment {
   /** 勾配 [m/m]（正 = 上り） */
   gradeAt(s: Meters): Slope {
     return this.gradeProfile.valueAt(s);
+  }
+
+  /**
+   * 勾配変化点の一覧（勾配標の建植位置）。
+   *
+   * 勾配プロファイルは「一定勾配の区間」と「勾配が線形に変化する区間（縦曲線）」の
+   * 列なので、変化率が等しく連続する要素をひとまとめにすれば縦曲線 1 か所に対応する。
+   * その中点が前後の勾配線の交点、すなわち勾配変化点になる。縦曲線を持たない
+   * 勾配変化（値が段差になっている境界）もここで拾う。
+   *
+   * 距離程を一定間隔でサンプルして勾配の差を見る方法だと、縦曲線の中はどこを取っても
+   * 勾配が変わっているため、1 か所の変化点が何点にも化ける。そうならないよう、
+   * サンプルではなく線形の要素そのものから求める。
+   */
+  get gradeChanges(): readonly GradeChange[] {
+    const segs = this.gradeProfile.segments;
+    const rateOf = (i: number): number => {
+      const seg = segs[i]!;
+      return seg.length === 0 ? 0 : (seg.endValue - seg.startValue) / seg.length;
+    };
+    // 勾配の変化率どうしを比べるので、許容差も変化率の大きさに合わせる
+    const sameRate = (a: number, b: number): boolean =>
+      Math.abs(a - b) <= 1e-6 * Math.max(Math.abs(a), Math.abs(b), Number.MIN_VALUE);
+
+    const out: GradeChange[] = [];
+    for (let i = 0; i < segs.length;) {
+      const rate = rateOf(i);
+      if (rate === 0) {
+        // 一定勾配の区間。次の要素との間に段差があれば、縦曲線の無い勾配変化点
+        const next = segs[i + 1];
+        if (next !== undefined && next.startValue !== segs[i]!.endValue) {
+          out.push({
+            s: next.sStart,
+            from: segs[i]!.endValue,
+            to: next.startValue,
+            verticalCurveLength: 0,
+          });
+        }
+        i++;
+        continue;
+      }
+      // 同じ変化率で続くかぎり 1 つの縦曲線とみなす
+      let j = i;
+      while (
+        j + 1 < segs.length &&
+        sameRate(rateOf(j + 1), rate) &&
+        segs[j + 1]!.startValue === segs[j]!.endValue
+      ) {
+        j++;
+      }
+      const first = segs[i]!;
+      const last = segs[j]!;
+      const length = last.sStart + last.length - first.sStart;
+      out.push({
+        s: first.sStart + length / 2,
+        from: first.startValue,
+        to: last.endValue,
+        verticalCurveLength: length,
+      });
+      i = j + 1;
+    }
+    return out;
   }
 
   /** 区間 [s0, s1] の平均勾配。車体長にわたる勾配力の平均に使う。 */

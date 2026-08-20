@@ -295,6 +295,11 @@ export function buildDistancePosts(
  * 勾配が変わる地点に建て、これから先の勾配を示す。上り勾配は右上がり、
  * 下り勾配は右下がりの腕木で表すのが実物の形なので、腕を傾けて置く。
  * 距離標と重ならないよう、こちらは左側の路盤の肩に建てる。
+ *
+ * 建てる場所は `Alignment.gradeChanges` が返す勾配変化点そのもので、縦曲線が
+ * あるときはその中心（前後の勾配線の交点）になる。縦曲線の中は勾配が連続的に
+ * 変化しているので、距離程を一定間隔でサンプルして勾配の差を見ると 1 か所の
+ * 変化点が何本もの標識に化けてしまう。実物と同じく **1 か所につき 1 本**である。
  */
 export function buildGradePosts(
   route: CompiledRoute,
@@ -302,14 +307,12 @@ export function buildGradePosts(
 ): THREE.Object3D[] {
   const out: THREE.Object3D[] = [];
   const white = new THREE.MeshStandardMaterial({ color: 0xeef1f4, roughness: 0.75 });
-  const step = 20;
-  let previous = route.alignment.gradeAt(0);
-  for (let s = step; s <= route.length; s += step) {
-    const grade = route.alignment.gradeAt(s);
-    if (Math.abs(grade - previous) < 0.002) continue;
-    previous = grade;
+  for (const change of route.alignment.gradeChanges) {
+    if (change.s < 0 || change.s > route.length) continue;
+    // 標識に書くのも腕木の傾きで示すのも、これから走る側の勾配である
+    const grade = change.to;
 
-    const f = frameAt(s);
+    const f = frameAt(change.s);
     const group = new THREE.Group();
     const pole = new THREE.Mesh(new THREE.BoxGeometry(0.08, 1.4, 0.08), white);
     pole.position.y = 0.7;

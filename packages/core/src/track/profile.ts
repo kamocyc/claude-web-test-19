@@ -77,6 +77,16 @@ export class RampProfile {
     return this.sStart;
   }
 
+  /** 要素の一覧（始端の距離程つき）。勾配変化点の検出などに使う。 */
+  get segments(): readonly (RampSegment & { readonly sStart: number })[] {
+    return this.sStart.map((sStart, i) => ({
+      sStart,
+      length: this.len[i]!,
+      startValue: this.v0[i]!,
+      endValue: this.v1[i]!,
+    }));
+  }
+
   valueAt(s: number): number {
     if (s <= 0) return this.firstValue;
     if (s >= this.totalLength) return this.lastValue;
