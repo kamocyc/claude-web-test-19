@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { DriverState } from '../src/input/driverState.ts';
 
-/** 通勤形と同じ段数（力行 4・常用ブレーキ 7）。段数は関数で読ませる。 */
-function makeState(power = 4, brake = 7): DriverState {
+/** 通勤形と同じ段数（力行 4・常用ブレーキ 7・抑速 7）。段数は関数で読ませる。 */
+function makeState(power = 4, brake = 7, holding = brake): DriverState {
   return new DriverState({
     powerNotchCount: () => power,
     brakeNotchCount: () => brake,
+    holdingNotchCount: () => holding,
   });
 }
 
@@ -202,5 +203,80 @@ describe('ControlInput への写し取り', () => {
       holdingNotch: 0,
       backupBrake: false,
     });
+  });
+});
+
+describe('抑速ブレーキ', () => {
+  it('切より先へ押し込むと抑速に入り、戻すと力行へ抜ける', () => {
+    const state = makeState();
+    // 実車のマスコンと同じく、抑速は切を挟んで力行の反対側にある
+    state.apply('powerDown');
+    expect(state.handles).toMatchObject({ power: 0, holding: 1 });
+    state.apply('powerDown');
+    state.apply('powerDown');
+    expect(state.handles.holding).toBe(3);
+
+    state.apply('powerUp');
+    expect(state.handles.holding).toBe(2);
+    for (let i = 0; i < 3; i += 1) state.apply('powerUp');
+    // 切を越えて力行側へ抜ける
+    expect(state.handles).toMatchObject({ power: 1, holding: 0 });
+  });
+
+  it('力行と抑速は同時に立たない', () => {
+    const state = makeState();
+    state.setHolding(4);
+    expect(state.handles).toMatchObject({ power: 0, holding: 4 });
+    state.setPower(2);
+    expect(state.handles).toMatchObject({ power: 2, holding: 0 });
+    state.setHolding(1);
+    expect(state.handles).toMatchObject({ power: 0, holding: 1 });
+  });
+
+  it('抑速は段数で頭打ちになる', () => {
+    const state = makeState(4, 7, 7);
+    for (let i = 0; i < 20; i += 1) state.apply('powerDown');
+    expect(state.handles.holding).toBe(7);
+  });
+
+  it('常用ブレーキを込めると抑速は落ちる', () => {
+    // ブレーキ装置は常用が切のときしか抑速を見ない。ハンドルだけ抑速位置に
+    // 残ると、表示と実際の効きが食い違う。
+    const state = makeState();
+    state.setHolding(4);
+    state.apply('brakeUp');
+    expect(state.handles).toMatchObject({ brake: 1, holding: 0 });
+
+    state.setHolding(4);
+    state.setBrake(3);
+    expect(state.handles.holding).toBe(0);
+
+    state.setHolding(4);
+    state.apply('emergency');
+    expect(state.handles).toMatchObject({ holding: 0, emergency: true });
+  });
+
+  it('抑速を持たない車両では切より先へ入らない', () => {
+    const state = makeState(4, 7, 0);
+    state.apply('powerDown');
+    state.apply('powerDown');
+    expect(state.handles).toMatchObject({ power: 0, holding: 0 });
+    state.setHolding(3);
+    expect(state.handles.holding).toBe(0);
+  });
+
+  it('抑速を入れると ControlInput へ渡る', () => {
+    const state = makeState();
+    state.setHolding(4);
+    expect(state.input).toMatchObject({ powerNotch: 0, holdingNotch: 4, brakeNotch: 0 });
+  });
+
+  it('takeOver は装置の抑速も引き継ぐ', () => {
+    // 下り勾配の途中で手を替えたときにここが抜けると、装置が入れていた
+    // 電気ブレーキが突然切れて列車が加速しはじめる。
+    const state = makeState();
+    state.takeOver(0, 0, true, 5);
+    expect(state.handles).toMatchObject({ power: 0, brake: 0, holding: 5 });
+    expect(state.input.holdingNotch).toBe(5);
   });
 });

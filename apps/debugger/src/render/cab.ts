@@ -214,6 +214,8 @@ class Gauge {
 export interface CabHandles {
   readonly power: number;
   readonly brake: number;
+  /** 抑速ブレーキの段（0 = 切）。主幹制御器の切より先（力行の反対側） */
+  readonly holding: number;
   readonly emergency: boolean;
 }
 
@@ -497,7 +499,10 @@ export function createCabInterior(): CabInterior {
 
       // ハンドルの角度は「手元の位置」に連動させる。実効ノッチ（保安装置で
       // 力行がカットされた後の値）を使うと、動かしたハンドルが動かなく見えてしまう。
-      const powerRatio = handles.power / Math.max(1, sim.scenario.consist.traction.notchCount);
+      // 抑速は切を挟んで力行の反対側にあるので、負の比として同じ軸へ乗せる
+      const powerRatio =
+        handles.power / Math.max(1, sim.scenario.consist.traction.notchCount) -
+        handles.holding / Math.max(1, sim.scenario.consist.brake.notchCount);
       const brakeRatio = handles.emergency
         ? 1.15
         : handles.brake / Math.max(1, sim.scenario.consist.brake.notchCount);

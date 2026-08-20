@@ -12,6 +12,8 @@ export interface DriverDeskOptions {
   powerNotchCount(): number;
   /** 常用ブレーキノッチ段数 */
   brakeNotchCount(): number;
+  /** 抑速ブレーキの段数（抑速を持たない車両では 0） */
+  holdingNotchCount(): number;
   onCameraChange?(mode: CameraMode): void;
   /** 自動運転の入切 */
   onAutoDriveToggle?(): void;
@@ -154,8 +156,8 @@ export class DriverDesk {
    * 自動運転を切った瞬間に運転士へ引き継ぐときに使う。合わせておかないと、
    * 装置が入れていたブレーキが解除に変わって列車が走り出してしまう。
    */
-  takeOver(power: number, brake: number, doorsClosed: boolean): void {
-    this.state.takeOver(power, brake, doorsClosed);
+  takeOver(power: number, brake: number, doorsClosed: boolean, holding = 0): void {
+    this.state.takeOver(power, brake, doorsClosed, holding);
   }
 
   /** 運転士が握っているハンドルの位置（シミュレーションの実効ノッチとは別） */

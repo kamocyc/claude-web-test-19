@@ -17,13 +17,15 @@ export type HeldCommand = 'acknowledge' | 'safetyReset' | 'horn' | 'sanding';
 export interface NotchCounts {
   powerNotchCount(): number;
   brakeNotchCount(): number;
+  /** 抑速ブレーキの段数（抑速を持たない車両では 0） */
+  holdingNotchCount(): number;
 }
 
 /** 運転士が握っているハンドルの位置（シミュレーションの実効ノッチとは別） */
 export interface HandlePosition {
   readonly power: number;
   readonly brake: number;
-  /** 抑速ブレーキの段（0 = 切）。運転台にハンドルは無く、自動運転装置だけが使う。 */
+  /** 抑速ブレーキの段（0 = 切）。マスコンの切より先（力行の反対側）に並ぶ。 */
   readonly holding: number;
   readonly emergency: boolean;
   readonly doorsClosed: boolean;
@@ -44,7 +46,14 @@ function clampNotch(value: number, max: number): number {
  * 一方を入れたら他方は戻す（両方を同時には入れられない）。
  */
 export class DriverState {
-  private powerNotch = 0;
+  /**
+   * マスコンの位置。負 = 抑速、0 = 切、正 = 力行。
+   *
+   * 力行と抑速を別々の値で持つと、両方が立った状態を作れてしまう。実車のマスコンは
+   * 1 本のハンドルで、抑速位置は切を挟んで力行の反対側にある。同じ軸へ乗せておけば、
+   * 両立し得ないことが**構造として**保証される。
+   */
+  private handleNotch = 0;
   private brakeNotch = 0;
   private emergencyOn = false;
   private doorsClosed = true;
@@ -56,14 +65,17 @@ export class DriverState {
   apply(command: DriverCommand): void {
     switch (command) {
       case 'powerUp':
-        this.setPower(this.powerNotch + 1);
+        // 抑速側にいれば切へ戻り、そこから先は力行へ入る（同じ軸を上がるだけ）
+        this.setHandle(this.handleNotch + 1);
         break;
       case 'powerDown':
-        this.powerNotch = Math.max(0, this.powerNotch - 1);
+        // 切より先へ押し込めば抑速へ入る
+        this.setHandle(this.handleNotch - 1);
         break;
       case 'brakeUp':
         // 非常はここでは解かない。込めていく操作で非常が緩んでは事故になる。
-        this.powerNotch = 0;
+        // 抑速も落とす（常用を込めた時点で抑速は効かなくなるため。下記 setBrake 参照）
+        this.handleNotch = 0;
         this.brakeNotch = clampNotch(this.brakeNotch + 1, this.counts.brakeNotchCount());
         break;
       case 'brakeDown':
@@ -80,16 +92,31 @@ export class DriverState {
   }
 
   /**
-   * 力行ノッチを直接指定する（レバーのドラッグ用）。
-   * 入れた時点でブレーキは緩解する。0 に戻すだけならブレーキには触らない。
+   * マスコンの位置を直接指定する（レバーのドラッグ用）。
+   * 負 = 抑速、0 = 切、正 = 力行。力行側・抑速側のどちらへ入れてもブレーキは緩解する
+   * （常用ブレーキと同時には使えないため）。切へ戻すだけならブレーキには触らない。
    */
-  setPower(notch: number): void {
-    const next = clampNotch(notch, this.counts.powerNotchCount());
-    if (next > 0) {
+  setHandle(position: number): void {
+    const rounded = Math.round(position);
+    const next = Math.max(
+      -this.counts.holdingNotchCount(),
+      Math.min(this.counts.powerNotchCount(), rounded),
+    );
+    if (next !== 0) {
       this.brakeNotch = 0;
       this.emergencyOn = false;
     }
-    this.powerNotch = next;
+    this.handleNotch = next;
+  }
+
+  /** 力行ノッチを直接指定する（0 未満は切として扱う） */
+  setPower(notch: number): void {
+    this.setHandle(Math.max(0, Math.round(notch)));
+  }
+
+  /** 抑速ノッチを直接指定する（0 未満は切として扱う） */
+  setHolding(notch: number): void {
+    this.setHandle(-Math.max(0, Math.round(notch)));
   }
 
   /**
@@ -98,7 +125,9 @@ export class DriverState {
    */
   setBrake(notch: number): void {
     const next = clampNotch(notch, this.counts.brakeNotchCount());
-    if (next > 0) this.powerNotch = 0;
+    // 常用を込めると抑速は効かなくなる（ブレーキ装置は常用が切のときだけ抑速を見る）。
+    // ハンドルだけ抑速位置に残ると表示と実際が食い違うので、ここで切へ戻す。
+    if (next > 0) this.handleNotch = 0;
     this.emergencyOn = false;
     this.brakeNotch = next;
   }
@@ -109,7 +138,7 @@ export class DriverState {
       this.emergencyOn = false;
       return;
     }
-    this.powerNotch = 0;
+    this.handleNotch = 0;
     this.brakeNotch = this.counts.brakeNotchCount();
     this.emergencyOn = true;
   }
@@ -136,7 +165,7 @@ export class DriverState {
   }
 
   reset(): void {
-    this.powerNotch = 0;
+    this.handleNotch = 0;
     this.brakeNotch = 0;
     this.emergencyOn = false;
     this.doorsClosed = true;
@@ -148,8 +177,11 @@ export class DriverState {
    * 自動運転を切った瞬間に運転士へ引き継ぐときに使う。合わせておかないと、
    * 装置が入れていたブレーキが解除に変わって列車が走り出してしまう。
    */
-  takeOver(power: number, brake: number, doorsClosed: boolean): void {
-    this.powerNotch = Math.max(0, Math.round(power));
+  takeOver(power: number, brake: number, doorsClosed: boolean, holding = 0): void {
+    // 抑速も引き継ぐ。下り勾配の途中で手を替えたときにここが抜けると、
+    // 装置が入れていた電気ブレーキが突然切れて列車が加速しはじめる。
+    const held = Math.max(0, Math.round(holding));
+    this.handleNotch = held > 0 ? -held : Math.max(0, Math.round(power));
     this.brakeNotch = Math.max(0, Math.round(brake));
     this.emergencyOn = false;
     this.doorsClosed = doorsClosed;
@@ -157,9 +189,9 @@ export class DriverState {
 
   get handles(): HandlePosition {
     return {
-      power: this.powerNotch,
+      power: Math.max(0, this.handleNotch),
       brake: this.brakeNotch,
-      holding: 0,
+      holding: Math.max(0, -this.handleNotch),
       emergency: this.emergencyOn,
       doorsClosed: this.doorsClosed,
     };
@@ -169,7 +201,8 @@ export class DriverState {
   get input(): ControlInput {
     return {
       ...NEUTRAL_INPUT,
-      powerNotch: this.powerNotch,
+      powerNotch: Math.max(0, this.handleNotch),
+      holdingNotch: Math.max(0, -this.handleNotch),
       brakeNotch: this.brakeNotch,
       emergency: this.emergencyOn,
       acknowledge: this.heldCommands.has('acknowledge'),

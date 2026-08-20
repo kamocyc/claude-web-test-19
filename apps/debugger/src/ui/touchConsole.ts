@@ -6,6 +6,8 @@ export interface TouchConsoleOptions {
   state: DriverState;
   powerNotchCount(): number;
   brakeNotchCount(): number;
+  /** 抑速ブレーキの段数（抑速を持たない車両では 0） */
+  holdingNotchCount(): number;
   /** 画面のどこを触っても音声の自動再生規制を解く */
   onUserGesture(): void;
   /** カメラを次の視点へ送る */
@@ -134,10 +136,12 @@ class Lever {
 }
 
 /** 力行レバーの目盛り（上ほど強い）。`['P4','P3','P2','P1','切']` */
-function powerLabels(count: number): string[] {
+function powerLabels(count: number, holdingCount: number): string[] {
   const labels: string[] = [];
   for (let notch = count; notch >= 1; notch -= 1) labels.push(`P${notch}`);
   labels.push('切');
+  // 抑速は切より先（力行の反対側）に並ぶ。実車のマスコンと同じ並び。
+  for (let notch = 1; notch <= holdingCount; notch += 1) labels.push(`抑${notch}`);
   return labels;
 }
 
@@ -180,8 +184,9 @@ export class TouchConsole {
 
     this.powerLever = new Lever('power', '力行', {
       onGesture: () => options.onUserGesture(),
-      // 目盛りは上が最大段。段数は掴むたびに読み直す（車両を替えても追従する）
-      onPick: (index) => state.setPower(options.powerNotchCount() - index),
+      // 目盛りは上が最大段。段数は掴むたびに読み直す（車両を替えても追従する）。
+      // 切より下は抑速なので、そのまま負の位置になる。
+      onPick: (index) => state.setHandle(options.powerNotchCount() - index),
     });
     this.brakeLever = new Lever('brake', 'ブレーキ', {
       onGesture: () => options.onUserGesture(),
@@ -272,9 +277,10 @@ export class TouchConsole {
     if (!this.visible) return;
     const powerCount = this.options.powerNotchCount();
     const brakeCount = this.options.brakeNotchCount();
-    this.powerLever.setPositions(powerLabels(powerCount));
+    const holdingCount = this.options.holdingNotchCount();
+    this.powerLever.setPositions(powerLabels(powerCount, holdingCount));
     this.brakeLever.setPositions(brakeLabels(brakeCount));
-    this.powerLever.setActive(powerCount - handles.power);
+    this.powerLever.setActive(powerCount - handles.power + handles.holding);
     this.brakeLever.setActive(handles.emergency ? 0 : brakeCount + 1 - handles.brake);
 
     this.readout.textContent = notchText(

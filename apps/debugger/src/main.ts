@@ -156,6 +156,9 @@ let autoDrive = false;
 const notchCounts = {
   powerNotchCount: () => scenario.consist.traction.notchCount,
   brakeNotchCount: () => scenario.consist.brake.notchCount,
+  // 抑速を持たない車両では 0 段＝切より先へは入らない
+  holdingNotchCount: () =>
+    scenario.consist.brake.hasHoldingBrake ? scenario.consist.brake.notchCount : 0,
 };
 
 /**
@@ -223,7 +226,7 @@ function applyCameraMode(mode: CameraMode): void {
 function setAutoDrive(value: boolean): void {
   if (!value && autoDrive) {
     const held = sim.effectiveInput;
-    desk.takeOver(held.powerNotch, held.brakeNotch, held.doorsClosed);
+    desk.takeOver(held.powerNotch, held.brakeNotch, held.doorsClosed, held.holdingNotch);
   }
   autoDrive = value;
   sim.setAutoDrive(value);
