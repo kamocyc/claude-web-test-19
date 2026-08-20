@@ -1,9 +1,10 @@
 import * as THREE from 'three';
-import type { CompiledRoute, Simulation } from '@railsim/core';
+import type { CompiledRoute, Meters, Simulation } from '@railsim/core';
 import { buildCatenary } from './catenary.ts';
 import { makeFrameAt, type TrackFrame } from './frame.ts';
 import { buildScenery, buildTunnels } from './scenery.ts';
 import { createDaylight, createSky, SUN_DIRECTION } from './sky.ts';
+import { coatMaterial, surfaceCoat, weatherLook, type WeatherLook } from './weather.ts';
 import { buildTrack, buildTurnouts } from './track.ts';
 import { buildCar } from './vehicle.ts';
 import {
@@ -46,6 +47,9 @@ const CAB_OFFSET = {
  */
 export class TrackScene {
   readonly scene = new THREE.Scene();
+  /** この走行の天気（降水の側もこれを見る） */
+  readonly look: WeatherLook;
+  private readonly sky: THREE.Mesh;
   private readonly vehicleMeshes: THREE.Object3D[] = [];
   private readonly signalHandles: Map<string, SignalHandle>;
   private readonly route: CompiledRoute;
@@ -61,11 +65,16 @@ export class TrackScene {
   constructor(route: CompiledRoute, sim: Simulation, renderer?: THREE.WebGLRenderer) {
     this.route = route;
     this.frameAt = makeFrameAt(route);
-    this.scene.background = new THREE.Color(0xa9c8e4);
-    this.scene.fog = new THREE.Fog(0xbcd4ea, 900, 4200);
+    // 天気は踏面の状態（走りに効く量）から引く。選び直すと組み直されるので、
+    // ここで 1 度読めばよい。
+    const look = weatherLook(sim.scenario.railCondition);
+    this.look = look;
+    this.scene.background = new THREE.Color(look.background);
+    this.scene.fog = new THREE.Fog(look.fog.color, look.fog.near, look.fog.far);
 
-    this.scene.add(createSky());
-    const { sun, ambient } = createDaylight();
+    this.sky = createSky(look);
+    this.scene.add(this.sky);
+    const { sun, ambient } = createDaylight(look);
     this.sun = sun;
     this.scene.add(sun, sun.target, ambient);
     // 金属の映り込みの元。レールの頭頂面・ステンレスの車体・架線金具は、
@@ -81,7 +90,10 @@ export class TrackScene {
     // 影を落とす側は絞る。トンネルの覆工（中は日が差さない）、地上子、分岐器の
     // 細かい金物まで影の地図に描いても、手間のわりに絵は変わらない。
     this.buildGround();
-    this.add(buildTrack(route, this.frameAt), true);
+    this.add(
+      buildTrack(route, this.frameAt, (base) => surfaceCoat(base, look)),
+      true,
+    );
     this.add(buildTurnouts(route, this.frameAt), false);
     this.add(buildDistancePosts(route, this.frameAt), true);
     this.add(buildGradePosts(route, this.frameAt), true);
@@ -156,11 +168,9 @@ export class TrackScene {
     const ground = new THREE.Mesh(
       geom,
       new THREE.MeshStandardMaterial({
-        color: GROUND_COLOR,
-        ...grassSurface().maps(18),
+        ...coatMaterial(grassSurface().maps(18), 1, surfaceCoat(GROUND_COLOR, this.look)),
         // 地面は 1 枚を何十回も繰り返すので、凹凸を強くすると繰り返しが目に付く
         normalScale: new THREE.Vector2(0.25, 0.25),
-        roughness: 1,
         side: THREE.DoubleSide,
       }),
     );
@@ -249,6 +259,22 @@ export class TrackScene {
   }
 
   /** 先頭車の位置と向き（外部視点カメラの追従用） */
+  /**
+   * 空をカメラへ運ぶ。
+   *
+   * 空は半径 5000m の球なのに路線は 8km ある。原点に置いたままだと終点側で
+   * カメラが球の外へ出てしまい、空が消える。中心をカメラへ合わせておけば
+   * どこにいても同じように見える（無限遠の空は動かして構わない）。
+   */
+  moveSky(camera: THREE.Vector3): void {
+    this.sky.position.copy(camera);
+  }
+
+  /** その距離程がトンネルの中か（降水を止める判定に使う） */
+  inTunnel(s: Meters): boolean {
+    return this.route.tunnels.at(s).length > 0;
+  }
+
   frontFrame(sim: Simulation): TrackFrame {
     return this.frameAt(sim.dynamics.vehicles[0]!.s);
   }

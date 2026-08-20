@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import type { WeatherLook } from './weather.ts';
 
 const VERTEX = /* glsl */ `
   varying vec3 vWorldPosition;
@@ -30,14 +31,14 @@ const FRAGMENT = /* glsl */ `
  * 天頂から地平線へ向かうグラデーションを内向きの巨大な球に貼る。
  * 画像テクスチャを持たずに済むので、外部リソースなしで昼光の雰囲気が出せる。
  */
-export function createSky(radius = 5000): THREE.Mesh {
+export function createSky(look: WeatherLook, radius = 5000): THREE.Mesh {
   const material = new THREE.ShaderMaterial({
     uniforms: {
-      topColor: { value: new THREE.Color(0x2f6fd0) },
-      horizonColor: { value: new THREE.Color(0xcfe3f5) },
-      groundColor: { value: new THREE.Color(0x8fa08a) },
+      topColor: { value: new THREE.Color(look.sky.top) },
+      horizonColor: { value: new THREE.Color(look.sky.horizon) },
+      groundColor: { value: new THREE.Color(look.sky.ground) },
       offset: { value: 60 },
-      exponent: { value: 0.7 },
+      exponent: { value: look.sky.exponent },
     },
     vertexShader: VERTEX,
     fragmentShader: FRAGMENT,
@@ -61,10 +62,15 @@ export const SUN_DIRECTION = new THREE.Vector3(-0.45, 0.79, 0.34).normalize();
  * 形で決まる。ただし影を焼く範囲は狭くしないと粗くなるので、列車の周りだけを
  * 追いかける（`TrackScene.update()` が光源を運ぶ）。
  */
-export function createDaylight(): { sun: THREE.DirectionalLight; ambient: THREE.HemisphereLight } {
-  const sun = new THREE.DirectionalLight(0xfff4e0, 2.9);
+export function createDaylight(look: WeatherLook): {
+  sun: THREE.DirectionalLight;
+  ambient: THREE.HemisphereLight;
+} {
+  const sun = new THREE.DirectionalLight(look.sun.color, look.sun.intensity);
   sun.position.copy(SUN_DIRECTION).multiplyScalar(300);
-  sun.castShadow = true;
+  // 曇っていれば影は落とさない。雲を通った光には方向が無く、
+  // 弱い平行光の影だけが残ると「薄曇りなのに影がある」という嘘になる。
+  sun.castShadow = look.sun.shadow;
   sun.shadow.mapSize.set(1024, 1024);
   const extent = 90;
   sun.shadow.camera.left = -extent;
@@ -79,6 +85,10 @@ export function createDaylight(): { sun: THREE.DirectionalLight; ambient: THREE.
   sun.shadow.normalBias = 0.045;
   // 空からの光は太陽より弱くしておく。ここを強くすると影の中まで明るくなり、
   // せっかく落とした影が見えなくなる。
-  const ambient = new THREE.HemisphereLight(0xbfd8f5, 0x6b7a5a, 0.7);
+  const ambient = new THREE.HemisphereLight(
+    look.ambient.sky,
+    look.ambient.ground,
+    look.ambient.intensity,
+  );
   return { sun, ambient };
 }

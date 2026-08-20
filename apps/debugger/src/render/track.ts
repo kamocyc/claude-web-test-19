@@ -10,6 +10,7 @@ import {
   type SweepStation,
 } from './geometry.ts';
 import { ballastSurface, rustedSteelSurface, sleeperSurface } from './textures.ts';
+import { coatMaterial, type SurfaceCoat } from './weather.ts';
 
 const RAIL_COLOR = 0x8b9198;
 /** 頭頂面だけは車輪に磨かれて光る */
@@ -110,6 +111,12 @@ const RAIL_CENTRE_OFFSET = (gauge: number): number => (gauge + RAIL.headWidth) /
 export function buildTrack(
   route: CompiledRoute,
   frameAt: (s: number) => TrackFrame,
+  /** 道床・のり面への天気の反映（雪が積もる・雨で濡れる） */
+  surface: (base: number) => SurfaceCoat = (base) => ({
+    color: base,
+    hideMap: false,
+    roughness: 0,
+  }),
 ): THREE.Object3D[] {
   const out: THREE.Object3D[] = [];
   const offset = RAIL_CENTRE_OFFSET(route.alignment.gauge);
@@ -152,20 +159,16 @@ export function buildTrack(
     new THREE.Mesh(
       sweepSection(bed, ballastFaces),
       new THREE.MeshStandardMaterial({
-        color: BALLAST_COLOR,
-        ...ballastSurface().maps(1.2),
+        ...coatMaterial(ballastSurface().maps(1.2), 1, surface(BALLAST_COLOR)),
         normalScale: new THREE.Vector2(1.5, 1.5),
-        roughness: 1,
         side: THREE.DoubleSide,
       }),
     ),
   );
   // 盛土のり面は同じ砕石を土の色で使う（実物ものり面には細かい砕石が撒かれている）
   const slope = new THREE.MeshStandardMaterial({
-    color: FORMATION_COLOR,
-    ...ballastSurface().maps(1.8),
+    ...coatMaterial(ballastSurface().maps(1.8), 1, surface(FORMATION_COLOR)),
     normalScale: new THREE.Vector2(0.8, 0.8),
-    roughness: 1,
     side: THREE.DoubleSide,
   });
   out.push(new THREE.Mesh(sweepSection(bed, [section[0]!, section[1]!]), slope));

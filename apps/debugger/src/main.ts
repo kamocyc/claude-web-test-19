@@ -17,6 +17,7 @@ import { ChartPanel } from './charts/panel.ts';
 import { DriverState } from './input/driverState.ts';
 import { DriverDesk } from './input/keyboard.ts';
 import { createCabInterior } from './render/cab.ts';
+import { Precipitation } from './render/precipitation.ts';
 import { CAMERA_LABEL, CAMERA_MODES, CameraRig, type CameraMode } from './render/cameras.ts';
 import { TrackScene } from './render/scene.ts';
 import { GMeter } from './ui/gmeter.ts';
@@ -79,6 +80,12 @@ const mixer = new Mixer(mixerElement, {
 // 内装は動かず、窓の外の景色だけが揺れる（実際の運転席の見え方と同じ）。
 const cabInterior = createCabInterior();
 cameraRig.camera.add(cabInterior.group);
+
+// 降水は路線にも編成にも依らないので、シーンを組み直しても作り直さず使い回す。
+// 粒の数は端末に合わせる（携帯端末では半分）。
+const precipitation = new Precipitation(coarsePointer.matches ? 0.5 : 1);
+/** 雨脚の傾きに使う列車の速度ベクトル（毎フレーム確保しないための置き場） */
+const trainVelocity = new THREE.Vector3();
 
 /**
  * 走行条件の選択肢はデータ側（`@railsim/data` の `run.ts`）が持っている。
@@ -258,6 +265,8 @@ function restart(id = scenarioId): void {
   scene = new TrackScene(scenario.route, sim, renderer);
   // カメラの子（運転席内装）を描画させるため、カメラをシーングラフに入れる
   scene.scene.add(cameraRig.camera);
+  precipitation.setLook(scene.look);
+  scene.scene.add(precipitation.group);
   recorder = new InputRecorder();
   replaying = null;
   sampleTimer = 0;
@@ -505,12 +514,27 @@ function frame(now: number): void {
   mixer.update(audio.levels);
   scene.update(sim);
   if (cameraRig.mode === 'cab') cabInterior.update(sim, handles);
+  const frontFrame = scene.frontFrame(sim);
   cameraRig.update({
-    frame: scene.frontFrame(sim),
+    frame: frontFrame,
     trainLength: trainLength(),
     cabPosition: scene.cabPosition,
     cabQuaternion: scene.cabQuaternion,
   });
+  // 降水はカメラが定まってから動かす（巻き戻しの箱をカメラに合わせるため）。
+  // 空も同じ理由でここで運ぶ。
+  scene.moveSky(cameraRig.camera.position);
+  // 降りの速さは実時間で見る。一時停止なら止め、早送りでも実時間より速くしない
+  // （8 倍で降らせると絵が読めなくなる）。
+  const weatherDt = Math.min(advance, wall);
+  trainVelocity.copy(frontFrame.forward).multiplyScalar(sim.speed);
+  precipitation.update(
+    weatherDt,
+    cameraRig.camera.position,
+    trainVelocity,
+    // トンネルの中では降らない
+    scene.inTunnel(sim.dynamics.frontPosition) ? 0 : 1,
+  );
   renderer.render(scene.scene, cameraRig.camera);
   hud.update(sim, CAMERA_LABEL[cameraRig.mode], RATES[rateIndex]!, paused, handles);
   touchConsole.update(handles, CAMERA_LABEL[cameraRig.mode], autoDrive, paused);
