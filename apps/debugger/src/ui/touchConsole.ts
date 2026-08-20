@@ -157,16 +157,18 @@ function brakeLabels(count: number, holding: boolean): string[] {
 }
 
 /**
- * ワンハンドルの目盛り（上ほど力行、下ほど強いブレーキ）。
- * `['P4',…,'P1','N','抑速','B1',…,'B7','非常']`
+ * ワンハンドルの目盛り（上ほど強いブレーキ、下ほど強い力行）。
+ * `['非常','B7',…,'B1','抑速','N','P1',…,'P4']`
+ *
+ * 実物のワンハンドルは手前へ引くほど強い力行、向こうへ押すほど強いブレーキなので、
+ * 画面のレバーも下（手前）が力行、上（向こう）がブレーキになる。
  */
 function singleLabels(power: number, brake: number, holding: boolean): string[] {
-  const labels: string[] = [];
-  for (let notch = power; notch >= 1; notch -= 1) labels.push(`P${notch}`);
-  labels.push('N');
+  const labels: string[] = ['非常'];
+  for (let notch = brake; notch >= 1; notch -= 1) labels.push(`B${notch}`);
   if (holding) labels.push('抑速');
-  for (let notch = 1; notch <= brake; notch += 1) labels.push(`B${notch}`);
-  labels.push('非常');
+  labels.push('N');
+  for (let notch = 1; notch <= power; notch += 1) labels.push(`P${notch}`);
   return labels;
 }
 
@@ -213,8 +215,8 @@ export class TouchConsole {
     });
     this.singleLever = new Lever('single', 'マスコン', {
       onGesture: () => options.onUserGesture(),
-      // 1 本の軸に力行とブレーキが並ぶ。上端が最大力行、下端が非常。
-      onPick: (index) => state.setLever(options.powerNotchCount() - index),
+      // 1 本の軸に力行とブレーキが並ぶ。上端が非常、下端が最大力行。
+      onPick: (index) => state.setLever(index - state.brakePositionCount),
     });
 
     const panel = document.createElement('div');
@@ -322,7 +324,7 @@ export class TouchConsole {
 
     if (single) {
       this.singleLever.setPositions(singleLabels(powerCount, brakeCount, holding));
-      this.singleLever.setActive(powerCount - state.lever);
+      this.singleLever.setActive(state.lever + state.brakePositionCount);
     } else {
       this.powerLever.setPositions(powerLabels(powerCount));
       this.brakeLever.setPositions(brakeLabels(brakeCount, holding));

@@ -52,8 +52,9 @@ export type HeldCommand = 'acknowledge' | 'safetyReset' | 'horn' | 'sanding';
 /**
  * 運転台の型。
  *
+ * - `one-handle` — 1 本のハンドルに力行とブレーキが並ぶ。手前へ引くほど強い力行、
+ *   向こうへ押すほど強いブレーキ。既定はこちら。
  * - `two-handle` — 主幹制御器とブレーキ設定器が別々。左手で力行、右手でブレーキ。
- * - `one-handle` — 1 本のハンドルに力行とブレーキが並ぶ。手前へ引くほど強いブレーキ。
  *
  * 段の並びそのものはどちらでも同じで、違うのは**同じ並びを 1 本で操作するか
  * 2 本で操作するか**だけである。
@@ -142,7 +143,7 @@ export class DriverState {
   private headlightHighBeam = true;
   private wiperMode: WiperMode = 'off';
   private snowproofOn = false;
-  private deskLayout: DeskLayout = 'two-handle';
+  private deskLayout: DeskLayout = 'one-handle';
   private readonly heldCommands = new Set<HeldCommand>();
 
   constructor(private readonly counts: NotchCounts) {}

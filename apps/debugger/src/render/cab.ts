@@ -273,7 +273,7 @@ function buildHandle(x: number, y: number, z: number, grip: number, color: numbe
  * ワンハンドルの主幹制御器。
  *
  * ツーハンドルの 2 本と違い、**前後に倒すレバー**である。手前へ引くほど強い
- * ブレーキ、向こうへ倒すほど強い力行で、切はその中間にある。力行とブレーキが
+ * 力行、向こうへ押すほど強いブレーキで、切はその中間にある。力行とブレーキが
  * 1 本の軸に並ぶので、両方を同時に入れることが機構として起こり得ない。
  */
 function buildOneHandle(x: number, y: number, z: number): THREE.Group {
@@ -580,8 +580,9 @@ export function createCabInterior(): CabInterior {
       // ツーハンドルは縦軸まわりに回すので Y 軸の回転。ノッチが進むほど握りが外へ回る
       mascon.rotation.y = powerRatio * 0.85;
       brakeHandle.rotation.y = -brakeRatio * 0.9;
-      // ワンハンドルは前後に倒すレバー。力行で向こうへ、ブレーキで手前へ傾く
-      oneHandle.rotation.x = (brakeRatio - powerRatio) * 0.5;
+      // ワンハンドルは前後に倒すレバー。実物と同じく、力行は手前へ引き、ブレーキは
+      // 向こうへ押す（+X まわりの回転は握りを +Z ＝ 運転士の側へ倒す）。
+      oneHandle.rotation.x = (powerRatio - brakeRatio) * 0.5;
 
       // 表示灯: 進行（緑）・警報/パターン接近（橙）・非常（赤）
       const ind = snap.safety.indication;

@@ -1,16 +1,33 @@
 import { describe, expect, it } from 'vitest';
 import { DriverState } from '../src/input/driverState.ts';
 
-/** 通勤形と同じ段数（力行 4・常用ブレーキ 7・抑速あり）。段数は関数で読ませる。 */
+/**
+ * 通勤形と同じ段数（力行 4・常用ブレーキ 7・抑速あり）。段数は関数で読ませる。
+ *
+ * 運転台の型は**ツーハンドルに明示して**返す。既定はワンハンドルなので、
+ * ここで揃えておかないと 2 本のハンドルの相互排他を試すつもりの検査が、
+ * いつのまにか 1 本の軸の検査に化ける。
+ */
 function makeState(power = 4, brake = 7, holding = true): DriverState {
-  return new DriverState({
+  const state = new DriverState({
     powerNotchCount: () => power,
     brakeNotchCount: () => brake,
     hasHoldingBrake: () => holding,
   });
+  state.setLayout('two-handle');
+  return state;
 }
 
 describe('運転台のハンドル位置', () => {
+  it('既定の運転台はワンハンドル', () => {
+    const state = new DriverState({
+      powerNotchCount: () => 4,
+      brakeNotchCount: () => 7,
+      hasHoldingBrake: () => true,
+    });
+    expect(state.layout).toBe('one-handle');
+  });
+
   it('初期状態は切・戸閉め', () => {
     const state = makeState();
     expect(state.handles).toEqual({

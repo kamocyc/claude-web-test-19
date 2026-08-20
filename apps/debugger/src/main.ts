@@ -376,11 +376,13 @@ for (const control of [
   });
 }
 /**
- * 運転台の型（ツーハンドル / ワンハンドル）。
+ * 運転台の型（ワンハンドル / ツーハンドル）。既定はワンハンドル。
  *
  * 走行条件ではないので、切り替えても走り直さない。段の並びはどちらも同じなので、
- * 走行中に替えても手元のノッチは動かない。
+ * 走行中に替えても手元のノッチは動かない。型を持っているのは運転台
+ * （`DriverState`）のほうなので、チェックボックスはその位置に合わせて起こす。
  */
+oneHandleCheck.checked = deskState.layout === 'one-handle';
 oneHandleCheck.addEventListener('change', () => {
   releaseFocus(oneHandleCheck);
   deskState.setLayout(oneHandleCheck.checked ? 'one-handle' : 'two-handle');
@@ -494,7 +496,10 @@ document.addEventListener('visibilitychange', () => {
   hidden = document.visibilityState === 'hidden';
   // 背面へ回ると指もキーも離した通知が来ない。押しっぱなしのまま残ると、
   // 見えないところで警笛が鳴り続けることになる。
-  if (hidden) deskState.releaseAll();
+  if (hidden) {
+    deskState.releaseAll();
+    desk.releaseKeys();
+  }
   // 戻ってきた瞬間に「背面にいたあいだ」ぶんの大きな dt を作らないよう、
   // 実時間の基準を引き直す。
   if (!hidden) previous = performance.now();
@@ -515,12 +520,16 @@ audio.onClock = (seconds) => {
 
 function frame(now: number): void {
   requestAnimationFrame(frame);
+  // 背面から戻った直後などに一息で何秒も進めないよう、幅に上限を設ける
   const wall = Math.min((now - previous) / 1000, 0.25);
   previous = now;
   // 背面のあいだに呼ばれた場合（ブラウザによっては低頻度で呼ばれる）は
   // 音声の時計と二重に進めないよう、描画も更新も見送る。
   if (hidden) return;
   resize();
+
+  // ノッチキーの長押し。実時間で送るので、一時停止していてもハンドルは動かせる。
+  desk.tick(now / 1000);
 
   const advance = advanceSimulation(wall);
 

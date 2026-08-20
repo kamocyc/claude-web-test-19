@@ -1,6 +1,7 @@
 import type { ControlInput } from '@railsim/core';
 import { DriverState, type HandlePosition, type NotchCounts } from './driverState.ts';
 import { lookupKey, type UiCommand } from './keymap.ts';
+import { NotchRepeat } from './notchRepeat.ts';
 
 export interface DriverDeskOptions extends NotchCounts {
   /** 視点を次へ送る */
@@ -42,12 +43,15 @@ function isTextEntry(target: EventTarget | null): boolean {
  */
 export class DriverDesk {
   private readonly state: DriverState;
+  /** ノッチキーの長押し（押しっぱなしで段が進む） */
+  private readonly repeat: NotchRepeat;
 
   constructor(
     private readonly options: DriverDeskOptions,
     state?: DriverState,
   ) {
     this.state = state ?? new DriverState(options);
+    this.repeat = new NotchRepeat(this.state);
     window.addEventListener('keydown', this.onKeyDown);
     window.addEventListener('keyup', this.onKeyUp);
     window.addEventListener('blur', this.onBlur);
@@ -66,9 +70,17 @@ export class DriverDesk {
       // 押しっぱなしの指令は自動リピートで何度来ても構わない（集合に入れるだけ）
       this.state.hold(action.command);
     } else if (!e.repeat) {
-      // ハンドルと画面の操作は、押しっぱなしでは進めない。1 回の押下で 1 段だけ動く。
-      if (action.kind === 'driver') this.state.apply(action.command);
-      else this.runUi(action.command);
+      // キーボードの自動リピートは使わない（繰り返しの速さが OS の設定で変わる）。
+      // ノッチを送るキーだけ、こちらで時間を数えて `tick` から進める。
+      if (action.kind === 'driver') {
+        this.state.apply(action.command);
+        // 時刻は「こちらが押下を受け取った瞬間」で控える。`KeyboardEvent.timeStamp`
+        // は入力が生まれた時刻なので、描画が詰まっている端末では受け取るまでに
+        // 何秒も開いてしまい、軽く押しただけで長押し扱いになる。
+        this.repeat.press(action.command, performance.now() / 1000);
+      } else {
+        this.runUi(action.command);
+      }
     }
 
     // 割り当てたキーはブラウザ既定の動作を止める。
@@ -110,15 +122,31 @@ export class DriverDesk {
   private onKeyUp = (e: KeyboardEvent): void => {
     const action = lookupKey(e.key);
     if (action?.kind === 'held') this.state.release(action.command);
+    if (action?.kind === 'driver') this.repeat.release(action.command);
   };
 
   /** ウィンドウからフォーカスが外れたら、押しっぱなしのキーは離したものとして扱う */
   private onBlur = (): void => {
     this.state.releaseAll();
+    this.repeat.clear();
   };
+
+  /**
+   * 描画のたびに呼ぶ。ノッチキーを押しっぱなしにしているあいだ、段を進める。
+   * `now` は実時間の時刻 [s]（一時停止していてもハンドルは動かせる）。
+   */
+  tick(now: number): void {
+    this.repeat.update(now);
+  }
 
   reset(): void {
     this.state.reset();
+    this.repeat.clear();
+  }
+
+  /** 押しっぱなしのキーを離したものとして扱う（背面へ回ったときなど） */
+  releaseKeys(): void {
+    this.repeat.clear();
   }
 
   /**

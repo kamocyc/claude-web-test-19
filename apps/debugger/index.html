@@ -23,7 +23,8 @@
           <div>Z / A: 力行 +/− &nbsp; Q: 制動側へ 1 段 &nbsp; S: 即 N &nbsp; W: B1</div>
           <div>. / ,: ブレーキ N → 抑速 → B1 → … &nbsp; 1: 非常</div>
           <div class="note">
-            ワンハンドルでは Q が N を越えてブレーキ側へ入る（A は N で止まる）
+            ノッチのキーは長押しで段が進む（非常へは自動で入らない）。ワンハンドルでは Q が N
+            を越えてブレーキ側へ入る（A は N で止まる）
           </div>
           <div>Space: 警笛 / X: 砂撒き</div>
           <div>Enter・Delete: 確認扱い（EB 復帰）/ 2: 保安装置復帰（停止中）</div>
@@ -48,7 +49,9 @@
           <label class="toggle"><input id="preceding" type="checkbox" />先行列車</label>
           <label class="toggle"><input id="opposing" type="checkbox" />対向列車</label>
           <label class="toggle"><input id="platform" type="checkbox" />2 番線から発車</label>
-          <label class="toggle"><input id="onehandle" type="checkbox" />ワンハンドルマスコン</label>
+          <label class="toggle"
+            ><input id="onehandle" type="checkbox" checked />ワンハンドルマスコン</label
+          >
         </div>
         <div id="controls">
           <button id="restart" type="button">再スタート</button>
