@@ -279,10 +279,27 @@ export function buildDistancePosts(
 }
 
 /**
+ * 勾配標の腕木の傾き [rad]。
+ *
+ * 勾配そのものの角度では付けない。25‰ は角度にすれば 1.4° しかなく、そのまま
+ * 作っても水平にしか見えないからで、実物の腕木も離れて見て向きが分かる角度まで
+ * 起こしてある。緩い勾配ほど強く誇張し、きつい勾配では頭打ちになるよう当てる
+ * （勾配の値そのものは腕木に載せた数字が伝える）。
+ */
+function gradeArmTilt(grade: number): number {
+  /** 倒しきったときの角度 [rad] */
+  const MAX_TILT = 0.42;
+  /** この勾配 [m/m] でおよそ 8 割まで倒れる */
+  const REFERENCE = 0.012;
+  return MAX_TILT * Math.tanh(grade / REFERENCE);
+}
+
+/**
  * 勾配標。
  *
- * 勾配が変わる地点に建て、これから先の勾配を示す。上り勾配は右上がり、
- * 下り勾配は右下がりの腕木で表すのが実物の形なので、腕を傾けて置く。
+ * 勾配が変わる地点に建て、これから先の勾配を示す。柱の頂部から腕木が片持ちで
+ * 出ていて、上り勾配なら右上がり、下り勾配なら右下がりに斜めに傾くのが実物の
+ * 形なので、そのとおり組む。腕木には勾配の値（‰、平坦は "L"）を書いた板を載せる。
  * 距離標と重ならないよう、こちらは左側の路盤の肩に建てる。
  *
  * 建てる場所は `Alignment.gradeChanges` が返す勾配変化点そのもので、縦曲線が
@@ -296,6 +313,8 @@ export function buildGradePosts(
 ): THREE.Object3D[] {
   const out: THREE.Object3D[] = [];
   const white = new THREE.MeshStandardMaterial({ color: 0xeef1f4, roughness: 0.75 });
+  /** 腕木の長さ [m] */
+  const armLength = 0.72;
   for (const change of route.alignment.gradeChanges) {
     if (change.s < 0 || change.s > route.length) continue;
     // 標識に書くのも腕木の傾きで示すのも、これから走る側の勾配である
@@ -303,23 +322,33 @@ export function buildGradePosts(
 
     const f = frameAt(change.s);
     const group = new THREE.Group();
-    const pole = new THREE.Mesh(new THREE.BoxGeometry(0.08, 1.4, 0.08), white);
-    pole.position.y = 0.7;
-    // 腕木は勾配の値（‰）を書いた板にする。実物も数字が読めるようになっている
+    const pole = new THREE.Mesh(new THREE.BoxGeometry(0.08, 1.5, 0.08), white);
+    pole.position.y = 0.75;
+
+    // 腕木は柱の頂部を支点にして、線路と反対側（-Z）へ出す。線路側へ出すと
+    // 建築限界を侵すためで、実物も車両から逃げる側に腕を張り出している。
+    // 上り勾配では線路側の端が上がるので、運転士からはやはり右上がりに見える。
+    const arm = new THREE.Group();
+    const bar = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.06, armLength), white);
+    bar.position.z = -armLength / 2;
+    // 勾配の値を書いた板は、腕木の先寄りに脚を立てて載せる
+    const brace = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.16, 0.05), white);
+    brace.position.set(0, 0.11, -armLength * 0.6);
     const permille = Math.abs(grade * 1000);
-    const arm = textPlate(
+    const plate = textPlate(
       plateTexture([permille < 0.5 ? 'L' : permille.toFixed(0)], {
         background: '#eef1f4',
         color: '#15191d',
-        aspect: 3.5,
+        aspect: 1.4,
       }),
-      0.85,
-      0.24,
+      0.4,
+      0.28,
     );
-    arm.position.y = 1.4;
-    // 腕木の傾きで勾配の向きを示す（誇張しないと見えないので 6 倍）。板は進来する
-    // 列車を向いているので、上り勾配が運転士から見て右上がりになるよう符号を取る。
-    arm.rotation.x = -Math.atan(grade * 6);
+    plate.position.set(0, 0.33, -armLength * 0.6);
+    arm.add(bar, brace, plate);
+    arm.position.y = 1.5;
+    arm.rotation.x = -gradeArmTilt(grade);
+
     group.add(pole, arm);
     group.quaternion.copy(frameQuaternion(f, false));
     group.position
