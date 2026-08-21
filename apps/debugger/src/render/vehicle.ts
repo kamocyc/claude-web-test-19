@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import type { VehicleSpec } from '@railsim/core';
 import { CAR, CATENARY } from './dimensions.ts';
-import { glowTexture } from './textures.ts';
+import { glowTexture, stainlessSurface } from './textures.ts';
 
 /**
  * 20m 級 4 扉通勤形電車の車体。
@@ -187,8 +187,19 @@ function buildBody(bodyLength: number): THREE.Mesh {
   // 押し出し方向（Z）を車両の前後方向（X）へ向ける
   geometry.rotateY(Math.PI / 2);
   geometry.computeVertexNormals();
-  // ステンレスの外板。粗さを低めにすると、腰から上の平らな面が空を映して光る
-  return new THREE.Mesh(geometry, metal(BODY_COLOR, 0.32, 0.62));
+  // ステンレスの外板。粗さを低めにすると、腰から上の平らな面が空を映して光る。
+  // 圧延の目と雨だれのテクスチャを掛けると、同じ銀色でも「使われている車体」に
+  // 見える。押し出した形状の UV は面ごとに大きさが違うので、実寸にはならないが、
+  // 側面が画面のほとんどを占めるのでそこで合っていればよい。
+  const maps = stainlessSurface().maps(2.4);
+  const material = metal(BODY_COLOR, 0.32, 0.62);
+  material.map = maps.map;
+  material.normalMap = maps.normalMap;
+  material.normalScale = new THREE.Vector2(0.35, 0.35);
+  // 汚れたところは映り込みが鈍る。粗さにも同じ模様を掛けて、
+  // 雨だれの筋だけつやが消えるようにする。
+  material.roughnessMap = maps.map;
+  return new THREE.Mesh(geometry, material);
 }
 
 /**

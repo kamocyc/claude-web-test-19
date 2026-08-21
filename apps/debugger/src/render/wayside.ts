@@ -13,6 +13,7 @@ import {
   stationSignTexture,
   tactileSurface,
 } from './textures.ts';
+import { hdrColor } from './postprocess.ts';
 
 /**
  * 沿線の設備（信号機・標識・地上子・駅）。
@@ -40,6 +41,18 @@ const SHOULDER = {
 
 /** 点灯時の灯器の色 */
 const LIT = { red: 0xff2a1c, yellow: 0xffb020, green: 0x2ce05a } as const;
+
+/**
+ * 灯火の輝度倍率。
+ *
+ * 実物の色灯式信号機は 1000cd を超える光度を持ち、晴天の昼でも周りの何十倍と
+ * いう明るさで光る。画面の白（1.0）に収めてしまうと「色の付いた円板」に
+ * しかならないので、リニア値で 1 を超える色を与え、後処理のブルーム
+ * （`postprocess.ts`）に拾わせて周りへにじませる。
+ */
+const LAMP_GAIN = 3.2;
+/** にじみの板はレンズよりさらに強く光らせる（光源そのものの周りの暈） */
+const HALO_GAIN = 2.4;
 
 /**
  * 4 灯式信号機の灯器の並び（上から）。
@@ -204,10 +217,12 @@ export function buildSignals(
         for (let i = 0; i < lamps.length; i++) {
           const on = lit.includes(i);
           const color = LIT[LAMP_ORDER[i]!];
-          (lamps[i]!.material as THREE.MeshBasicMaterial).color.setHex(on ? color : DARK_LENS);
+          (lamps[i]!.material as THREE.MeshBasicMaterial).color.copy(
+            on ? hdrColor(color, LAMP_GAIN) : hdrColor(DARK_LENS, 1),
+          );
           const halo = halos[i]!;
           halo.visible = on;
-          (halo.material as THREE.MeshBasicMaterial).color.setHex(color);
+          (halo.material as THREE.MeshBasicMaterial).color.copy(hdrColor(color, HALO_GAIN));
         }
       },
     });
@@ -790,6 +805,94 @@ function buildPlatform(
     for (const dx of [-0.7, 0.7]) {
       const leg = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.42, 0.4), benchMaterial);
       out.push(place(leg, back + 0.9, PLATFORM.height + 0.21, x + dx));
+    }
+  }
+
+  // --- 待合室 ---
+  //
+  // 上屋の下、ホームの奥寄りに建つ小さな箱。三方がガラス、線路側に引き戸が
+  // ある。地方の駅ではここが唯一の「屋内」で、朝夕には必ず人が入っている。
+  {
+    const roomLength = 5.0;
+    const roomDepth = 2.4;
+    const roomHeight = 2.5;
+    const roomX = -roofLength * 0.28;
+    const roomLateral = back + roomDepth / 2 + 0.2;
+    const frame = new THREE.MeshStandardMaterial({
+      color: 0xb9bec2,
+      metalness: 0.5,
+      roughness: 0.5,
+    });
+    const pane = new THREE.MeshStandardMaterial({
+      // 中は外より暗い。ガラス越しに奥が見えることが「箱」と「部屋」を分ける
+      color: 0x2c3439,
+      metalness: 0.7,
+      roughness: 0.08,
+      side: THREE.DoubleSide,
+    });
+    // 壁（線路側・背面・両妻）。ガラス面のあいだに枠が通る
+    for (const [w, d, lat, along] of [
+      [roomLength, 0.06, roomLateral - roomDepth / 2, 0],
+      [roomLength, 0.06, roomLateral + roomDepth / 2, 0],
+    ] as const) {
+      const wall = new THREE.Mesh(meterPlane(w, roomHeight), pane);
+      out.push(place(wall, lat, PLATFORM.height + roomHeight / 2, roomX + along + d * 0));
+    }
+    for (const sign of [-1, 1] as const) {
+      const end = new THREE.Mesh(meterPlane(roomDepth, roomHeight), pane);
+      end.rotation.y = (sign * Math.PI) / 2;
+      out.push(
+        place(end, roomLateral, PLATFORM.height + roomHeight / 2, roomX + (sign * roomLength) / 2),
+      );
+    }
+    // 枠（四隅の柱と、上下の桟）
+    for (const sign of [-1, 1] as const) {
+      for (const dl of [-roomDepth / 2, roomDepth / 2]) {
+        const post = new THREE.Mesh(new THREE.BoxGeometry(0.08, roomHeight, 0.08), frame);
+        out.push(
+          place(
+            post,
+            roomLateral + dl,
+            PLATFORM.height + roomHeight / 2,
+            roomX + (sign * roomLength) / 2,
+          ),
+        );
+      }
+      const rail = new THREE.Mesh(new THREE.BoxGeometry(roomLength, 0.1, 0.08), frame);
+      out.push(
+        place(
+          rail,
+          roomLateral + sign * (roomDepth / 2),
+          PLATFORM.height + roomHeight - 0.05,
+          roomX,
+        ),
+      );
+    }
+    // 屋根（上屋の下にもう 1 枚。雨の吹き込みを防ぐため軒が出る）
+    const roomRoof = new THREE.Mesh(meterPlane(roomLength + 0.5, roomDepth + 0.5), steel);
+    roomRoof.rotation.x = -Math.PI / 2;
+    out.push(place(roomRoof, roomLateral, PLATFORM.height + roomHeight + 0.06, roomX));
+  }
+
+  // --- 自動販売機 ---
+  //
+  // ホームの背面壁ぎわに 2 台並べる。前面が自ら光っているので、日陰の
+  // ホームでもここだけ明るく見える — 夕方の駅の絵はこれで決まる。
+  {
+    const vendMaterial = new THREE.MeshStandardMaterial({ color: 0xb8352c, roughness: 0.5 });
+    const faceMaterial = new THREE.MeshStandardMaterial({
+      color: 0xe8e2d2,
+      roughness: 0.3,
+      // 中の蛍光灯。庫内が光っているので、面そのものが光源に見える
+      emissive: 0xffe8b0,
+      emissiveIntensity: 0.55,
+    });
+    for (let k = 0; k < 2; k++) {
+      const x = roofLength * 0.18 + k * 1.15;
+      const box = new THREE.Mesh(new THREE.BoxGeometry(1.1, 1.9, 0.75), vendMaterial);
+      out.push(place(box, back + 0.45, PLATFORM.height + 0.95, x));
+      const panel = new THREE.Mesh(new THREE.PlaneGeometry(0.94, 1.35), faceMaterial);
+      out.push(place(panel, back + 0.83, PLATFORM.height + 1.15, x));
     }
   }
 

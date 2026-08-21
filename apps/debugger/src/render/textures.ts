@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import type { WeatherLook } from './weather.ts';
 
 /**
  * 表面の質感（テクスチャ）。
@@ -699,27 +700,33 @@ export function glowTexture(): THREE.Texture {
  * ために真っ黒になってしまう。レールの頭頂面・ステンレスの車体・架線金具が
  * 光って見えるのはこの環境マップのおかげである。
  */
-export function createEnvironment(renderer: THREE.WebGLRenderer): THREE.Texture {
+export function createEnvironment(look: WeatherLook, renderer: THREE.WebGLRenderer): THREE.Texture {
   const w = 256;
   const h = 128;
   const canvas = document.createElement('canvas');
   canvas.width = w;
   canvas.height = h;
   const ctx = canvas.getContext('2d')!;
+  const hex = (v: number): string => `#${v.toString(16).padStart(6, '0')}`;
+  // 空の色は `weather.ts` の同じ値から引く。ここだけ晴天の青のままにすると、
+  // 雨の日にレールと車体が青空を映すという嘘になる。
   const sky = ctx.createLinearGradient(0, 0, 0, h);
-  sky.addColorStop(0.0, '#3b78d2');
-  sky.addColorStop(0.42, '#bcd6ef');
-  sky.addColorStop(0.5, '#dfe7ee');
-  sky.addColorStop(0.52, '#7d8471');
-  sky.addColorStop(1.0, '#4e5644');
+  sky.addColorStop(0.0, hex(look.sky.top));
+  sky.addColorStop(0.42, hex(look.sky.horizon));
+  sky.addColorStop(0.5, hex(look.fog.color));
+  sky.addColorStop(0.52, hex(look.sky.ground));
+  sky.addColorStop(1.0, hex(look.ambient.ground));
   ctx.fillStyle = sky;
   ctx.fillRect(0, 0, w, h);
-  // 太陽（`createDaylight()` の平行光と同じ方角に置く）
-  const g = ctx.createRadialGradient(w * 0.72, h * 0.22, 0, w * 0.72, h * 0.22, h * 0.3);
-  g.addColorStop(0, 'rgba(255,252,235,1)');
-  g.addColorStop(1, 'rgba(255,252,235,0)');
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, w, h);
+  // 太陽（`createDaylight()` の平行光と同じ方角に置く）。曇天では雲が散らすので
+  // 円ではなく、空全体がぼんやり明るいだけになる。
+  if (look.sun.shadow) {
+    const g = ctx.createRadialGradient(w * 0.72, h * 0.22, 0, w * 0.72, h * 0.22, h * 0.3);
+    g.addColorStop(0, 'rgba(255,252,235,1)');
+    g.addColorStop(1, 'rgba(255,252,235,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, w, h);
+  }
 
   const equirect = new THREE.CanvasTexture(canvas);
   equirect.mapping = THREE.EquirectangularReflectionMapping;
@@ -730,3 +737,480 @@ export function createEnvironment(renderer: THREE.WebGLRenderer): THREE.Texture 
   equirect.dispose();
   return target.texture;
 }
+
+/**
+ * 木造住宅の外壁（窯業系サイディング）。
+ *
+ * 日本の沿線でいちばん多く目に入る面である。455mm 幅の板を横に張った目地と、
+ * 引違いの掃き出し窓・小窓を描く。1 枚を 3.6m（≒ 1 階ぶん）で貼ると、
+ * 窓の大きさが実物とおよそ合う。
+ */
+export const sidingSurface = surface(
+  (ctx, size, rand) => {
+    ctx.fillStyle = '#ddd6c8';
+    ctx.fillRect(0, 0, size, size);
+    speckle(ctx, size, rand, 1600, [0.6, 2.2], [200, 240], 0.22);
+    // 横の目地（サイディング 1 枚 455mm ≒ 1/8 タイル）
+    ctx.fillStyle = 'rgba(160,152,140,0.42)';
+    for (let i = 1; i < 8; i++) ctx.fillRect(0, (size * i) / 8, size, 2);
+    // 掃き出し窓（下段）と小窓（上段）。サッシは銀、ガラスは空を映して暗い
+    const window = (x: number, y: number, w: number, h: number): void => {
+      ctx.fillStyle = '#2b333a';
+      ctx.fillRect(x, y, w, h);
+      ctx.strokeStyle = '#b9bec3';
+      ctx.lineWidth = 3;
+      ctx.strokeRect(x, y, w, h);
+      // 引違いの召し合わせ（中央の縦框）
+      ctx.beginPath();
+      ctx.moveTo(x + w / 2, y);
+      ctx.lineTo(x + w / 2, y + h);
+      ctx.stroke();
+    };
+    window(size * 0.1, size * 0.56, size * 0.34, size * 0.3);
+    window(size * 0.58, size * 0.6, size * 0.22, size * 0.26);
+    window(size * 0.12, size * 0.14, size * 0.24, size * 0.2);
+    window(size * 0.62, size * 0.14, size * 0.18, size * 0.2);
+    // 雨だれ（窓の下に伸びる黒い筋）。新築でない家の顔になる
+    for (let i = 0; i < 10; i++) {
+      const x = rand() * size;
+      const g = ctx.createLinearGradient(0, size * 0.3, 0, size);
+      g.addColorStop(0, 'rgba(90,84,74,0.0)');
+      g.addColorStop(0.4, 'rgba(90,84,74,0.16)');
+      g.addColorStop(1, 'rgba(90,84,74,0.0)');
+      ctx.fillStyle = g;
+      seamless(ctx, size, x, 0, (cx) => ctx.fillRect(cx, size * 0.3, 3 + rand() * 5, size * 0.7));
+    }
+  },
+  0x71b3d2,
+  1.2,
+);
+
+/**
+ * 集合住宅（団地・アパート）の外壁。
+ *
+ * 各戸のベランダが横一列に並ぶのが、日本の集合住宅の外観を決めている。
+ * 手すりの壁（腰壁）と、そこへ落ちる影、干した洗濯物の色を入れる。
+ * 1 枚を「3 戸 × 2 階」＝ 幅 16.5m・高さ 5.6m で貼る。
+ */
+export const apartmentSurface = surface(
+  (ctx, size, rand) => {
+    ctx.fillStyle = '#c8c3b6';
+    ctx.fillRect(0, 0, size, size);
+    speckle(ctx, size, rand, 1200, [0.6, 2.4], [190, 230], 0.22);
+    const floors = 2;
+    const units = 3;
+    const fh = size / floors;
+    const uw = size / units;
+    for (let f = 0; f < floors; f++) {
+      const y = f * fh;
+      // 住戸の開口（サッシ 2 枚ぶん）
+      for (let u = 0; u < units; u++) {
+        const x = u * uw;
+        ctx.fillStyle = '#333c44';
+        ctx.fillRect(x + uw * 0.1, y + fh * 0.16, uw * 0.5, fh * 0.42);
+        ctx.fillStyle = '#3d464d';
+        ctx.fillRect(x + uw * 0.68, y + fh * 0.2, uw * 0.2, fh * 0.34);
+        // 洗濯物（ベランダの内側に色の点が並ぶ）
+        if (rand() < 0.55) {
+          for (let k = 0; k < 3; k++) {
+            const hue = Math.floor(rand() * 360);
+            ctx.fillStyle = `hsla(${hue},45%,72%,0.9)`;
+            ctx.fillRect(x + uw * (0.14 + k * 0.13), y + fh * 0.5, uw * 0.08, fh * 0.12);
+          }
+        }
+      }
+      // ベランダの腰壁と、その下にできる影
+      ctx.fillStyle = 'rgba(60,56,50,0.35)';
+      ctx.fillRect(0, y + fh * 0.62, size, fh * 0.05);
+      ctx.fillStyle = '#d2cdc0';
+      ctx.fillRect(0, y + fh * 0.66, size, fh * 0.24);
+      ctx.fillStyle = 'rgba(150,144,134,0.5)';
+      ctx.fillRect(0, y + fh * 0.9, size, fh * 0.04);
+    }
+    // 住戸の境の隔て板
+    ctx.fillStyle = 'rgba(170,164,152,0.8)';
+    for (let u = 0; u <= units; u++) ctx.fillRect(u * uw - 2, 0, 4, size);
+  },
+  0x3af019,
+  1.0,
+);
+
+/**
+ * 波板の外壁（工場・倉庫・作業場）。
+ *
+ * 角波の金属板を縦に張った面。工場地帯の建物はほとんどこれで、
+ * 縦の縞と、下端から上がってくる錆がその見た目を作っている。
+ */
+export const corrugatedSurface = surface(
+  (ctx, size, rand) => {
+    const pitch = size / 16;
+    for (let i = 0; i < 16; i++) {
+      const g = ctx.createLinearGradient(i * pitch, 0, (i + 1) * pitch, 0);
+      g.addColorStop(0, '#8b8f8c');
+      g.addColorStop(0.4, '#c2c6c2');
+      g.addColorStop(0.6, '#c8ccc8');
+      g.addColorStop(1, '#8b8f8c');
+      ctx.fillStyle = g;
+      ctx.fillRect(i * pitch, 0, pitch, size);
+    }
+    // 下端から立ち上がる錆と、雨だれの筋
+    const rust = ctx.createLinearGradient(0, size, 0, size * 0.55);
+    rust.addColorStop(0, 'rgba(118,74,44,0.5)');
+    rust.addColorStop(1, 'rgba(118,74,44,0)');
+    ctx.fillStyle = rust;
+    ctx.fillRect(0, size * 0.55, size, size * 0.45);
+    for (let i = 0; i < 26; i++) {
+      const x = rand() * size;
+      const from = rand() * size * 0.6;
+      ctx.fillStyle = `rgba(${90 + rand() * 50},${70 + rand() * 30},${52},0.16)`;
+      seamless(ctx, size, x, 0, (cx) => ctx.fillRect(cx, from, 2 + rand() * 4, size - from));
+    }
+    speckle(ctx, size, rand, 600, [0.6, 2.0], [120, 190], 0.16);
+  },
+  0x6b21ac,
+  3.0,
+);
+
+/**
+ * 屋根（化粧スレート・瓦棒）。
+ *
+ * 日本の住宅の屋根はスレート葺きが多く、303mm × 910mm の板を千鳥に葺く。
+ * 板の切れ目と、北面に出る苔の緑を入れる。1 枚を 1.8m で貼る。
+ */
+export const roofTileSurface = surface(
+  (ctx, size, rand) => {
+    ctx.fillStyle = '#4e5560';
+    ctx.fillRect(0, 0, size, size);
+    const rows = 6;
+    const rh = size / rows;
+    for (let r = 0; r < rows; r++) {
+      const cols = 6;
+      const cw = size / cols;
+      const shift = (r % 2) * cw * 0.5;
+      for (let c = -1; c < cols; c++) {
+        const l = 62 + rand() * 26;
+        ctx.fillStyle = `rgb(${l},${l + 4},${l + 10})`;
+        ctx.fillRect(c * cw + shift + 1, r * rh + 1, cw - 2, rh - 2);
+      }
+      // 段の切れ目に落ちる影
+      ctx.fillStyle = 'rgba(20,22,26,0.5)';
+      ctx.fillRect(0, r * rh, size, 2.5);
+    }
+    // 苔と退色
+    for (let i = 0; i < 22; i++) {
+      const x = rand() * size;
+      const y = rand() * size;
+      const r = 12 + rand() * 44;
+      const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+      g.addColorStop(0, rand() < 0.5 ? 'rgba(96,112,74,0.2)' : 'rgba(150,155,160,0.16)');
+      g.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = g;
+      seamless(ctx, size, x, y, (cx, cy) => ctx.fillRect(cx - r, cy - r, r * 2, r * 2));
+    }
+  },
+  0x18e2a7,
+  1.8,
+);
+
+/**
+ * 舗装（道路）。
+ * 骨材の粒とわだち、ひび割れと補修跡。1 枚を 4m で貼る。
+ */
+export const asphaltSurface = surface(
+  (ctx, size, rand) => {
+    ctx.fillStyle = '#4a4b4e';
+    ctx.fillRect(0, 0, size, size);
+    speckle(ctx, size, rand, 5200, [0.7, 2.4], [58, 122], 0.4);
+    speckle(ctx, size, rand, 1400, [0.5, 1.4], [130, 170], 0.2);
+    // 補修跡（黒く塗った帯）
+    for (let i = 0; i < 5; i++) {
+      ctx.strokeStyle = 'rgba(30,30,32,0.5)';
+      ctx.lineWidth = 3 + rand() * 7;
+      ctx.beginPath();
+      let x = rand() * size;
+      let y = rand() * size;
+      ctx.moveTo(x, y);
+      for (let k = 0; k < 4; k++) {
+        x += (rand() - 0.5) * size * 0.5;
+        y += (rand() - 0.5) * size * 0.5;
+        ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+  },
+  0x2f6a91,
+  1.4,
+);
+
+/**
+ * 水田。
+ *
+ * 田植えのあとの水田は、水面に苗の列が並ぶ。列の間隔 300mm・株間 150mm で、
+ * 遠くから見ると水色の地に緑の縞が走る。1 枚を 4.8m（16 列）で貼る。
+ */
+export const paddySurface = surface(
+  (ctx, size, rand) => {
+    // 水面。泥を透かすので青ではなく灰緑
+    ctx.fillStyle = '#5d6a5c';
+    ctx.fillRect(0, 0, size, size);
+    for (let i = 0; i < 40; i++) {
+      const x = rand() * size;
+      const y = rand() * size;
+      const r = 20 + rand() * 70;
+      const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+      g.addColorStop(0, 'rgba(126,140,128,0.16)');
+      g.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = g;
+      seamless(ctx, size, x, y, (cx, cy) => ctx.fillRect(cx - r, cy - r, r * 2, r * 2));
+    }
+    // 苗の列
+    const rows = 16;
+    const pitch = size / rows;
+    for (let r = 0; r < rows; r++) {
+      for (let k = 0; k < 32; k++) {
+        const y = (size * (k + 0.5)) / 32 + (rand() - 0.5) * 3;
+        const l = 92 + rand() * 46;
+        ctx.fillStyle = `rgb(${l * 0.55},${l},${l * 0.5})`;
+        ctx.beginPath();
+        ctx.ellipse(pitch * (r + 0.5), y, pitch * 0.2, pitch * 0.3, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+  },
+  0x9c3f28,
+  1.0,
+);
+
+/**
+ * 立入禁止のネットフェンス（線路の境界）。
+ *
+ * 日本の鉄道は用地の境界に必ず柵を持つ。金網は面ではなく**線の網**なので、
+ * 板に貼って抜きの型（`alphaMap`）として使う。網目は 50mm 角、線径 3.2mm。
+ * 遠くでは網が潰れて半透明の膜に見えるのが実物どおりで、そのために
+ * ミップマップを効かせる（`alphaTest` ではなく `transparent` で使う）。
+ */
+export function fenceAlphaTexture(): THREE.Texture {
+  const size = 256;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d')!;
+  ctx.fillStyle = '#000000';
+  ctx.fillRect(0, 0, size, size);
+  // 菱形金網。斜めに張った線が交差する
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineWidth = size / 70;
+  for (let i = -size; i < size * 2; i += size / 8) {
+    ctx.beginPath();
+    ctx.moveTo(i, 0);
+    ctx.lineTo(i + size, size);
+    ctx.moveTo(i + size, 0);
+    ctx.lineTo(i, size);
+    ctx.stroke();
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.anisotropy = 8;
+  return texture;
+}
+
+/**
+ * 樹冠の葉。
+ *
+ * 樹木を単色の塊にすると、どれだけ輪郭を凝っても「緑の岩」にしか見えない。
+ * 実際の樹冠が樹冠に見えるのは、**葉の一枚一枚ではなく、葉の塊が作る
+ * 明暗のむら**があるからである。日の当たる上面は黄緑に飛び、内側は
+ * ほとんど黒に近い。その明暗を塊の大きさ（30cm 前後）で描き込む。
+ */
+export const foliageSurface = surface(
+  (ctx, size, rand) => {
+    ctx.fillStyle = '#26301c';
+    ctx.fillRect(0, 0, size, size);
+    // 葉の塊。暗いものから明るいものへ重ねると、内側の陰が残る
+    for (let layer = 0; layer < 3; layer++) {
+      const count = [260, 420, 380][layer]!;
+      const radius = [26, 17, 11][layer]!;
+      for (let i = 0; i < count; i++) {
+        const l = 40 + layer * 32 + rand() * 46;
+        ctx.fillStyle = `rgb(${Math.round(l * 0.72)},${Math.round(l)},${Math.round(l * 0.44)})`;
+        const r = radius * (0.5 + rand() * 0.7);
+        const x = rand() * size;
+        const y = rand() * size;
+        seamless(ctx, size, x, y, (cx, cy) => {
+          ctx.beginPath();
+          // 葉の塊は円ではなく、上へ膨らんだ楕円が重なった形になる
+          ctx.ellipse(cx, cy, r, r * (0.6 + rand() * 0.5), rand() * Math.PI, 0, Math.PI * 2);
+          ctx.fill();
+        });
+      }
+    }
+    // 隙間から抜ける空（樹冠は密ではない）
+    for (let i = 0; i < 90; i++) {
+      ctx.fillStyle = 'rgba(150,168,178,0.22)';
+      const r = 1.5 + rand() * 4;
+      const x = rand() * size;
+      const y = rand() * size;
+      seamless(ctx, size, x, y, (cx, cy) => {
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, 0, Math.PI * 2);
+        ctx.fill();
+      });
+    }
+  },
+  0x2ba8f1,
+  2.4,
+);
+
+/**
+ * 遮断桿（しゃだんかん）の縞。
+ *
+ * 実物の遮断桿は、夜間や霧の中でも見えるよう、黄と黒（または赤白）の
+ * 斜めの縞に塗ってある。縞の幅は 300mm 前後で、竿の全長 4〜5m に
+ * 十数本入る。1 枚を 0.6m で貼ると実物と同じ間隔になる。
+ */
+export function barrierStripeTexture(): THREE.Texture {
+  const w = 128;
+  const h = 32;
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d')!;
+  ctx.fillStyle = '#f0c419';
+  ctx.fillRect(0, 0, w, h);
+  ctx.fillStyle = '#1e1e1e';
+  // 斜めの縞。竿は水平に伸びるので、縞は進行方向に対して斜めになる
+  for (let i = -1; i < 3; i++) {
+    ctx.beginPath();
+    ctx.moveTo((i * w) / 2, 0);
+    ctx.lineTo((i * w) / 2 + w / 4, 0);
+    ctx.lineTo((i * w) / 2 + w / 4 + h, h);
+    ctx.lineTo((i * w) / 2 + h, h);
+    ctx.closePath();
+    ctx.fill();
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.anisotropy = 8;
+  return texture;
+}
+
+/**
+ * 踏切警標（ふみきりけいひょう）。
+ *
+ * 道路から踏切を見たときに、警報機の上に掲げてある黄色の×印である。
+ * 道路標識令の「踏切あり」ではなく、鉄道側が建てる標識で、
+ * 交差を意味する×の形そのものが遠くからでも踏切だと分かるようになっている。
+ */
+export function crossingMarkTexture(): THREE.Texture {
+  const size = 256;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d')!;
+  ctx.clearRect(0, 0, size, size);
+  ctx.fillStyle = '#f2c21c';
+  ctx.strokeStyle = '#1a1a1a';
+  ctx.lineWidth = size * 0.035;
+  const arm = size * 0.17;
+  ctx.save();
+  ctx.translate(size / 2, size / 2);
+  ctx.rotate(Math.PI / 4);
+  ctx.beginPath();
+  ctx.rect(-size * 0.46, -arm / 2, size * 0.92, arm);
+  ctx.fill();
+  ctx.stroke();
+  ctx.rotate(Math.PI / 2);
+  ctx.beginPath();
+  ctx.rect(-size * 0.46, -arm / 2, size * 0.92, arm);
+  ctx.fill();
+  ctx.stroke();
+  ctx.restore();
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.anisotropy = 8;
+  return texture;
+}
+
+/**
+ * ステンレスの外板（車体）。
+ *
+ * 帯鋼を圧延したままの面なので、**横方向にごく細かい目**が走る。塗装した鋼板と
+ * 違って光の反射に方向があり、同じ銀色でも見る角度で明るさが変わる。
+ *
+ * さらに、走っている車両の側面には必ず**雨だれの筋**が縦に入る。屋根に載った
+ * 埃が雨で流れ落ちた跡で、窓の下と扉の戸袋のあたりから始まって裾へ向かう。
+ * 新製時の写真と実際に走っている車両の見え方がいちばん違うのがここで、
+ * これを入れないと「模型」から抜けられない。
+ *
+ * 1 枚を 2.4m（＝側窓 1 つぶんくらい）で貼る。
+ */
+export const stainlessSurface = surface(
+  (ctx, size, rand) => {
+    ctx.fillStyle = '#d0d4d8';
+    ctx.fillRect(0, 0, size, size);
+    // 圧延の目（横に流れる細い縞）
+    for (let i = 0; i < 2600; i++) {
+      const l = 196 + rand() * 52;
+      ctx.fillStyle = `rgba(${l},${l + 2},${l + 4},0.28)`;
+      const y = rand() * size;
+      ctx.fillRect(0, y, size, 0.7 + rand() * 0.8);
+    }
+    // 雨だれ（上から下へ、細く暗い筋）
+    for (let i = 0; i < 40; i++) {
+      const x = rand() * size;
+      const w = 1 + rand() * 3.5;
+      const from = rand() * size * 0.35;
+      const g = ctx.createLinearGradient(0, from, 0, size);
+      g.addColorStop(0, 'rgba(120,120,116,0)');
+      g.addColorStop(0.25, `rgba(120,120,116,${0.1 + rand() * 0.14})`);
+      g.addColorStop(1, 'rgba(120,120,116,0.03)');
+      ctx.fillStyle = g;
+      seamless(ctx, size, x, 0, (cx) => ctx.fillRect(cx, from, w, size - from));
+    }
+    // 裾に溜まる床下からの埃
+    const dust = ctx.createLinearGradient(0, size, 0, size * 0.72);
+    dust.addColorStop(0, 'rgba(112,106,96,0.34)');
+    dust.addColorStop(1, 'rgba(112,106,96,0)');
+    ctx.fillStyle = dust;
+    ctx.fillRect(0, size * 0.72, size, size * 0.28);
+  },
+  0x1d77c4,
+  0.5,
+);
+
+/**
+ * 水面のさざ波。
+ *
+ * 川の水面が水色の板に見えてしまうのは、**表面の傾きが一様**だからである。
+ * 実際の水面は風で細かく波立っていて、その傾きの分布が空のどこを映すかを
+ * 決めている。色ではなく法線（傾き）だけを与えれば、映り込みが割れて
+ * 水らしくなる。波長は 0.4m ほど（河川の風波）。
+ */
+export const rippleSurface = surface(
+  (ctx, size, rand) => {
+    ctx.fillStyle = '#808080';
+    ctx.fillRect(0, 0, size, size);
+    // 風向きに揃った細長い波を重ねる
+    for (let layer = 0; layer < 3; layer++) {
+      const count = [90, 160, 240][layer]!;
+      const long = [90, 52, 26][layer]!;
+      const short = [7, 5, 3][layer]!;
+      for (let i = 0; i < count; i++) {
+        const l = 128 + (rand() - 0.5) * [90, 66, 44][layer]!;
+        ctx.fillStyle = `rgba(${l},${l},${l},0.5)`;
+        const x = rand() * size;
+        const y = rand() * size;
+        seamless(ctx, size, x, y, (cx, cy) => {
+          ctx.beginPath();
+          ctx.ellipse(cx, cy, long * (0.5 + rand()), short, 0.22, 0, Math.PI * 2);
+          ctx.fill();
+        });
+      }
+    }
+  },
+  0x71ac33,
+  1.6,
+);

@@ -13,11 +13,28 @@ export type Precipitation = 'none' | 'rain' | 'snow';
  * 「その日の線路」になるので、別々の場所に散らさずここへ集める。
  */
 export interface WeatherLook {
-  /** 天頂・地平線・地平線下の色と、グラデーションの締まり具合 */
-  readonly sky: { top: number; horizon: number; ground: number; exponent: number };
+  /**
+   * 空。天頂・地平線・地平線下の色と、グラデーションの締まり具合に加えて、
+   * 雲の覆い（0 = 快晴、1 = 一面）と、雲の日なた側の明るさ。
+   */
+  readonly sky: {
+    top: number;
+    horizon: number;
+    ground: number;
+    exponent: number;
+    cloudCover: number;
+    cloudLight: number;
+  };
   /** 空の球より外側（描き残し）の色 */
   readonly background: number;
-  /** 霧。近いほど、濃いほど遠くが見えなくなる */
+  /**
+   * 霞（エアリアルパースペクティブ）。
+   *
+   * `near` / `far` は「肉眼でどのくらい見えるか」を書いた値である。実際に掛ける
+   * 減衰は指数（`THREE.FogExp2`）で、`far` でおよそ 95% 霞むように密度を選ぶ
+   * （`fogDensity()`）。線形の霧だと近景まで一様に白くなり、遠景だけが霞む
+   * 実際の大気と形が違ってしまう。
+   */
   readonly fog: { color: number; near: number; far: number };
   /** 太陽（平行光）。曇れば弱く、色も冷たくなる */
   readonly sun: { color: number; intensity: number; shadow: boolean };
@@ -35,11 +52,20 @@ export interface WeatherLook {
 }
 
 const CLEAR: WeatherLook = {
-  sky: { top: 0x2f6fd0, horizon: 0xcfe3f5, ground: 0x8fa08a, exponent: 0.7 },
+  // 夏の午後の晴天。天頂は濃い青、地平線ぎわは大気の散乱で白く抜ける。
+  // 雲は積雲がまばら（覆い 0.34）で、日の当たる面はほぼ白く飛ぶ。
+  sky: {
+    top: 0x1c56c6,
+    horizon: 0xd2e4f4,
+    ground: 0x8d9c88,
+    exponent: 0.62,
+    cloudCover: 0.26,
+    cloudLight: 1.15,
+  },
   background: 0xa9c8e4,
-  fog: { color: 0xbcd4ea, near: 900, far: 4200 },
-  sun: { color: 0xfff4e0, intensity: 2.9, shadow: true },
-  ambient: { sky: 0xbfd8f5, ground: 0x6b7a5a, intensity: 0.7 },
+  fog: { color: 0xc3d8ec, near: 400, far: 9000 },
+  sun: { color: 0xfff2dc, intensity: 4.0, shadow: true },
+  ambient: { sky: 0xbfd8f5, ground: 0x6b7a5a, intensity: 0.34 },
   precipitation: 'none',
   density: 0,
   fallSpeed: 0,
@@ -59,12 +85,20 @@ export function weatherLook(rail: RailCondition): WeatherLook {
   switch (rail) {
     case 'wet':
       return {
-        sky: { top: 0x6a7a88, horizon: 0xa8b3bd, ground: 0x5d6657, exponent: 0.45 },
+        // 雨雲は空を覆い尽くす（覆い 1.0）ので、雲のあいだから青は見えない
+        sky: {
+          top: 0x6a7a88,
+          horizon: 0xa8b3bd,
+          ground: 0x5d6657,
+          exponent: 0.45,
+          cloudCover: 1,
+          cloudLight: 0.55,
+        },
         background: 0x93a0ac,
         // 雨脚の中は数百 m 先から白くかすむ
         fog: { color: 0x93a0ac, near: 180, far: 1700 },
-        sun: { color: 0xdfe6ee, intensity: 0.9, shadow: false },
-        ambient: { sky: 0xa8b8c8, ground: 0x616858, intensity: 1.9 },
+        sun: { color: 0xdfe6ee, intensity: 1.1, shadow: false },
+        ambient: { sky: 0xa8b8c8, ground: 0x616858, intensity: 1.5 },
         precipitation: 'rain',
         density: 1,
         fallSpeed: 9.5,
@@ -74,12 +108,19 @@ export function weatherLook(rail: RailCondition): WeatherLook {
       };
     case 'snow':
       return {
-        sky: { top: 0xb6c0ca, horizon: 0xe1e6ea, ground: 0xc6ccd0, exponent: 0.35 },
+        sky: {
+          top: 0xb6c0ca,
+          horizon: 0xe1e6ea,
+          ground: 0xc6ccd0,
+          exponent: 0.35,
+          cloudCover: 1,
+          cloudLight: 0.8,
+        },
         background: 0xd2d9df,
         // 降雪はいちばん視界が利かない
         fog: { color: 0xc9d1d8, near: 90, far: 950 },
-        sun: { color: 0xeef2f7, intensity: 0.8, shadow: false },
-        ambient: { sky: 0xdbe3ea, ground: 0xa4aaae, intensity: 2.0 },
+        sun: { color: 0xeef2f7, intensity: 1.0, shadow: false },
+        ambient: { sky: 0xdbe3ea, ground: 0xa4aaae, intensity: 1.6 },
         precipitation: 'snow',
         density: 1,
         fallSpeed: 1.4,
@@ -90,11 +131,18 @@ export function weatherLook(rail: RailCondition): WeatherLook {
     case 'leaves':
       return {
         // 降ってはいないが陽の差さない日。落葉期なので地表は枯れ色へ寄せる
-        sky: { top: 0x7c8794, horizon: 0xc0c3bd, ground: 0x6e6a52, exponent: 0.5 },
+        sky: {
+          top: 0x7c8794,
+          horizon: 0xc0c3bd,
+          ground: 0x6e6a52,
+          exponent: 0.5,
+          cloudCover: 0.92,
+          cloudLight: 0.72,
+        },
         background: 0xa9adaa,
-        fog: { color: 0xa9adaa, near: 400, far: 2600 },
-        sun: { color: 0xf0e6d6, intensity: 1.1, shadow: true },
-        ambient: { sky: 0xb6bcc0, ground: 0x6a6350, intensity: 1.1 },
+        fog: { color: 0xa9adaa, near: 400, far: 3400 },
+        sun: { color: 0xf0e6d6, intensity: 1.5, shadow: true },
+        ambient: { sky: 0xb6bcc0, ground: 0x6a6350, intensity: 0.95 },
         precipitation: 'none',
         density: 0,
         fallSpeed: 0,
@@ -200,4 +248,17 @@ export function particleCount(
   const volume = (2 * half) ** 3;
   const n = (volume / VOLUME_PER_PARTICLE[precipitation]) * density * budget;
   return Math.max(0, Math.min(30000, Math.round(n)));
+}
+
+/**
+ * 指数霧の密度 [1/m]。
+ *
+ * `THREE.FogExp2` の減衰は `1 - exp(-(d·ρ)²)` である。「視程 `far` でおよそ
+ * 95% 霞む」を満たす ρ は、(far·ρ)² = 3 より ρ = 1.73 / far になる。
+ * 線形の霧（`THREE.Fog`）と違って近景がほとんど白まないので、
+ * **手前のレールは締まったまま遠景だけが空へ溶ける**という、屋外で実際に
+ * 見えるとおりの奥行きになる。
+ */
+export function fogDensity(look: WeatherLook): number {
+  return Math.sqrt(3) / look.fog.far;
 }

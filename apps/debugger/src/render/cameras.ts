@@ -2,12 +2,20 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import type { TrackFrame } from './frame.ts';
 
-export type CameraMode = 'cab' | 'chase' | 'side' | 'overhead' | 'free';
+export type CameraMode = 'cab' | 'walk' | 'chase' | 'side' | 'overhead' | 'free';
 
-export const CAMERA_MODES: readonly CameraMode[] = ['cab', 'chase', 'side', 'overhead', 'free'];
+export const CAMERA_MODES: readonly CameraMode[] = [
+  'cab',
+  'walk',
+  'chase',
+  'side',
+  'overhead',
+  'free',
+];
 
 export const CAMERA_LABEL: Record<CameraMode, string> = {
   cab: '運転席',
+  walk: '車内',
   chase: '追跡',
   side: '側面',
   overhead: '俯瞰',
@@ -22,6 +30,12 @@ export interface CameraTarget {
   readonly cabPosition: THREE.Vector3;
   /** 先頭車の姿勢（局所 X が前方） */
   readonly cabQuaternion: THREE.Quaternion;
+  /**
+   * 車内を歩いている人の目（世界座標）。`walk.ts` が車体の姿勢まで含めて
+   * 組み立てたものをそのまま使う。車内視点のときだけ入る。
+   */
+  readonly walkPosition?: THREE.Vector3 | undefined;
+  readonly walkQuaternion?: THREE.Quaternion | undefined;
 }
 
 /** 車体の局所座標系（X が前方）をカメラの向き（-Z が前方）へ合わせる回転 */
@@ -61,7 +75,9 @@ export class CameraRig {
   setMode(mode: CameraMode): void {
     this.mode = mode;
     this.controls.enabled = mode === 'free';
-    this.camera.fov = mode === 'cab' ? 68 : 55;
+    // 車内は狭いので画角を広めに取る。実物の車内で感じる「奥行きの詰まった
+    // 空間」は、視野角を絞ると出ない。
+    this.camera.fov = mode === 'cab' ? 68 : mode === 'walk' ? 75 : 55;
     this.camera.updateProjectionMatrix();
   }
 
@@ -79,6 +95,13 @@ export class CameraRig {
           .copy(target.cabQuaternion)
           .multiply(BODY_TO_CAMERA)
           .multiply(CAB_LOOK_DOWN);
+        break;
+      }
+      case 'walk': {
+        // 位置も向きも `walk.ts` が出したものをそのまま使う。補間しないのは
+        // 運転席視点と同じ理由で、鈍らせると車体動揺が伝わらなくなるため。
+        if (target.walkPosition) this.camera.position.copy(target.walkPosition);
+        if (target.walkQuaternion) this.camera.quaternion.copy(target.walkQuaternion);
         break;
       }
       case 'chase': {

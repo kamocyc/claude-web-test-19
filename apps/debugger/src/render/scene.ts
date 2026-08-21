@@ -7,9 +7,15 @@ import {
 } from '@railsim/core';
 import { buildCatenary } from './catenary.ts';
 import { makeFrameAt, type TrackFrame } from './frame.ts';
-import { buildScenery, buildTunnels } from './scenery.ts';
-import { createDaylight, createSky, SUN_DIRECTION } from './sky.ts';
-import { coatMaterial, surfaceCoat, weatherLook, type WeatherLook } from './weather.ts';
+import { buildHorizon, buildScenery, buildTunnels } from './scenery.ts';
+import {
+  createDaylight,
+  createSky,
+  SHADOW_DISTANCE,
+  SUN_DIRECTION,
+  type SkyHandle,
+} from './sky.ts';
+import { coatMaterial, fogDensity, surfaceCoat, weatherLook, type WeatherLook } from './weather.ts';
 import { buildTrack, buildTurnouts } from './track.ts';
 import {
   buildBridges,
@@ -62,7 +68,7 @@ export class TrackScene {
   readonly scene = new THREE.Scene();
   /** この走行の天気（降水の側もこれを見る） */
   readonly look: WeatherLook;
-  private readonly sky: THREE.Mesh;
+  private readonly sky: SkyHandle;
   private readonly vehicleMeshes: THREE.Object3D[] = [];
   /** 自列車の客室内装（車体と同じ数だけある。車内を歩くモードが使う） */
   private readonly interiors: CarInterior[] = [];
@@ -90,19 +96,22 @@ export class TrackScene {
     const look = weatherLook(sim.scenario.railCondition);
     this.look = look;
     this.scene.background = new THREE.Color(look.background);
-    this.scene.fog = new THREE.Fog(look.fog.color, look.fog.near, look.fog.far);
+    // 霞は指数で掛ける。手前は締まったまま、遠景だけが空の色へ溶ける
+    // （線形の霧では近景まで一様に白んでしまう）。
+    this.scene.fog = new THREE.FogExp2(look.fog.color, fogDensity(look));
 
     this.sky = createSky(look);
-    this.scene.add(this.sky);
+    this.scene.add(this.sky.mesh);
     const { sun, ambient } = createDaylight(look);
     this.sun = sun;
     this.scene.add(sun, sun.target, ambient);
     // 金属の映り込みの元。レールの頭頂面・ステンレスの車体・架線金具は、
     // これが無いと「映すものが無い金属」になって黒く沈む。
     if (renderer) {
-      this.scene.environment = createEnvironment(renderer);
-      // 映り込みの元としては十分で、かつ影の中を照らしすぎない強さ
-      this.scene.environmentIntensity = 0.75;
+      this.scene.environment = createEnvironment(look, renderer);
+      // 映り込みの元としては十分で、かつ影の中を照らしすぎない強さ。
+      // 半球光（`ambient`）と足し合わさるので、両方を強くすると影が消える。
+      this.scene.environmentIntensity = 0.34;
     }
 
     const inTunnel = (s: number): boolean => route.tunnels.at(s).length > 0;
@@ -127,6 +136,8 @@ export class TrackScene {
     this.crossingHandles = crossings.handles;
     this.add(buildCatenary(route, this.frameAt, inTunnel), true);
     this.add(buildScenery(route, this.frameAt), true);
+    // 遠景の山なみ。地表の板が尽きるところに立てて、空と地面の境目を埋める
+    this.add(buildHorizon(route, this.frameAt), false);
 
     const signals = buildSignals(route, this.frameAt);
     this.add(signals.objects, true);
@@ -165,41 +176,58 @@ export class TrackScene {
   private buildGround(): void {
     const step = 20;
     const n = Math.floor(this.route.length / step);
-    const halfWidth = 260;
+    // 横の刻み。線路の近くは細かく、遠くは粗く取る。等間隔にすると、
+    // 線路際で欲しい細かさに合わせたぶんだけ遠くにも三角形が要る。
+    const lanes = [
+      -260, -180, -125, -85, -58, -38, -24, -14, -6, 0, 6, 14, 24, 38, 58, 85, 125, 180, 260,
+    ];
+    const m = lanes.length;
     const positions: number[] = [];
     const uvs: number[] = [];
+    const colors: number[] = [];
     let u = 0;
     let previous: THREE.Vector3 | null = null;
+    const tint = new THREE.Color();
     for (let i = 0; i <= n; i++) {
       const s = Math.min(i * step, this.route.length);
       const f = this.frameAt(s);
       if (previous) u += f.position.distanceTo(previous);
       previous = f.position.clone();
-      const l = f.position.clone().addScaledVector(f.right, -halfWidth);
-      const r = f.position.clone().addScaledVector(f.right, halfWidth);
       // 橋の下は谷か川なので、桁の下端より深く掘る。掘らないと地表の板が桁を
       // 突き抜けて「地面の上に架かった橋」になってしまう。
       const level = -1.2 - groundDepressionAt(this.route, s);
-      positions.push(l.x, l.y + level, l.z, r.x, r.y + level, r.z);
-      // UV は m 単位。草の模様が線路の近くでも遠くでも同じ大きさになる
-      uvs.push(u, -halfWidth, u, halfWidth);
+      for (const lane of lanes) {
+        const p = f.position.clone().addScaledVector(f.right, lane);
+        positions.push(p.x, p.y + level, p.z);
+        // UV は m 単位。草の模様が線路の近くでも遠くでも同じ大きさになる
+        uvs.push(u, lane);
+        // 一面同じ緑の板は、どれだけ細かい模様を貼っても「板」に見える。
+        // 実際の地面は、草地・枯れ草・裸地・畑が数十 m ごとに入れ替わる
+        // まだら模様になっている。頂点の色でその大きなむらを作る。
+        groundTint(tint, u, lane);
+        colors.push(tint.r, tint.g, tint.b);
+      }
     }
     const geom = new THREE.BufferGeometry();
     geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
     geom.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+    geom.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
     const indices: number[] = [];
     for (let i = 0; i < n; i++) {
-      const a = i * 2;
-      indices.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
+      for (let j = 0; j < m - 1; j++) {
+        const a = i * m + j;
+        indices.push(a, a + m, a + 1, a + 1, a + m, a + m + 1);
+      }
     }
     geom.setIndex(indices);
     geom.computeVertexNormals();
     const ground = new THREE.Mesh(
       geom,
       new THREE.MeshStandardMaterial({
-        ...coatMaterial(grassSurface().maps(18), 1, surfaceCoat(GROUND_COLOR, this.look)),
+        ...coatMaterial(grassSurface().maps(7), 1, surfaceCoat(GROUND_COLOR, this.look)),
         // 地面は 1 枚を何十回も繰り返すので、凹凸を強くすると繰り返しが目に付く
-        normalScale: new THREE.Vector2(0.25, 0.25),
+        normalScale: new THREE.Vector2(0.45, 0.45),
+        vertexColors: true,
         side: THREE.DoubleSide,
       }),
     );
@@ -366,12 +394,17 @@ export class TrackScene {
 
     this.updateScheduledTrains(sim);
 
+    // 雲を流す。空だけが止まっていると、走っていても時間が経っていないように見える
+    this.sky.setTime(sim.elapsed);
+
     // 影を焼く範囲を列車に追従させる。路線全体を 1 枚の影の地図に収めることは
     // できないので、列車の周り 100m ほどだけを高い解像度で焼く。
     const lead = this.vehicleMeshes[0];
     if (lead) {
       this.sun.target.position.copy(lead.position);
-      this.sun.position.copy(lead.position).addScaledVector(SUN_DIRECTION, 300);
+      // 光源を運ぶ距離は影の箱の near/far と対になっている（`sky.ts`）ので、
+      // ここで別の値を書くと影が手前で切れる。
+      this.sun.position.copy(lead.position).addScaledVector(SUN_DIRECTION, SHADOW_DISTANCE);
     }
   }
 
@@ -398,7 +431,7 @@ export class TrackScene {
    * どこにいても同じように見える（無限遠の空は動かして構わない）。
    */
   moveSky(camera: THREE.Vector3): void {
-    this.sky.position.copy(camera);
+    this.sky.mesh.position.copy(camera);
   }
 
   /** その距離程がトンネルの中か（降水を止める判定に使う） */
@@ -420,4 +453,25 @@ class ScheduledTrainView {
     readonly track: 'own' | 'adjacent',
     readonly carLength: number,
   ) {}
+}
+
+/**
+ * 地表のまだら。
+ *
+ * 2 つの周期の違う波を掛け合わせて、数十 m 級のむらを作る。乱数ではなく
+ * 位置の関数にしてあるので、**同じ場所は必ず同じ色になる**（決定論を壊さない）。
+ * 値の幅は狭い。ここを広げると地面が斑（まだら）になりすぎて、
+ * 「草が生えた土」ではなく「模様の描かれた板」に見えてしまう。
+ */
+function groundTint(out: THREE.Color, along: number, lateral: number): void {
+  const wave = (a: number, b: number, phase: number): number =>
+    Math.sin(along / a + phase) * Math.cos(lateral / b + phase * 1.7);
+  // 3 つの周期を重ねる。いちばん長い波（170m）が「田んぼの区画・空き地・
+  // 造成地」くらいの大きさのむらを作り、短い波が縁を崩す。
+  const n = 0.5 + 0.3 * wave(170, 130, 0.7) + 0.24 * wave(46, 39, 0) + 0.13 * wave(17, 13, 2.1);
+  // 0 = 湿った濃い草地、1 = 乾いた裸地・枯れ草。線路から離れるほど手入れされない
+  const dry = Math.min(1, Math.max(0, (n - 0.18) * 1.25));
+  // 緑（草）と黄土（枯れ草・土）のあいだを行き来する。彩度を保ったまま
+  // 明度だけ動かすと「照明のむら」に見えてしまうので、色相ごと動かす。
+  out.setRGB(0.52 + dry * 1.05, 0.98 - dry * 0.28, 0.62 - dry * 0.28, THREE.SRGBColorSpace);
 }

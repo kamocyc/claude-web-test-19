@@ -1,6 +1,6 @@
 import type { ControlInput } from '@railsim/core';
 import { DriverState, type HandlePosition, type NotchCounts } from './driverState.ts';
-import { lookupKey, type UiCommand } from './keymap.ts';
+import { lookupKey, lookupWalkKey, type UiCommand, type WalkCommand } from './keymap.ts';
 import { NotchRepeat } from './notchRepeat.ts';
 
 export interface DriverDeskOptions extends NotchCounts {
@@ -16,6 +16,26 @@ export interface DriverDeskOptions extends NotchCounts {
   onUiToggle?(): void;
   /** どのキーでもよいので「ユーザ操作があった」ことを伝える（自動再生規制の解除用） */
   onUserGesture?(): void;
+  /**
+   * 車内を歩くモードか。
+   *
+   * 歩いているあいだは `W` `A` `S` `D` と矢印キーが歩行の操作になり、運転の
+   * キーは効かない（`keymap.ts` の `WALK_BINDINGS` を参照）。画面と進行の操作は
+   * どちらのモードでも効くので、視点を戻すのも自動運転を入れるのも歩きながら
+   * できる — でないと、走行中に歩き始めた人が列車を止められなくなる。
+   */
+  isWalking?(): boolean;
+}
+
+/** 歩行の入力（`render/walk.ts` の `WalkInput` と同じ形） */
+export interface WalkKeys {
+  readonly forward: number;
+  readonly strafe: number;
+  readonly run: boolean;
+  /** 首を振る量 [rad/s]（正 = 左） */
+  readonly turn: number;
+  /** 見上げる量 [rad/s]（正 = 上） */
+  readonly look: number;
 }
 
 /**
@@ -45,6 +65,8 @@ export class DriverDesk {
   private readonly state: DriverState;
   /** ノッチキーの長押し（押しっぱなしで段が進む） */
   private readonly repeat: NotchRepeat;
+  /** 押しっぱなしになっている歩行のキー */
+  private readonly walkHeld = new Set<WalkCommand>();
 
   constructor(
     private readonly options: DriverDeskOptions,
@@ -62,6 +84,22 @@ export class DriverDesk {
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     // AudioContext はユーザ操作の中でしか開始できない（自動再生規制）
     this.options.onUserGesture?.();
+
+    // 歩いているあいだは歩行の表だけを引く。運転のキーは受け付けない。
+    if (this.options.isWalking?.()) {
+      const walk = lookupWalkKey(e.key);
+      if (walk) {
+        this.walkHeld.add(walk);
+        e.preventDefault();
+        return;
+      }
+      const uiOnly = lookupKey(e.key);
+      if (uiOnly?.kind === 'ui' && !e.repeat) {
+        this.runUi(uiOnly.command);
+        e.preventDefault();
+      }
+      return;
+    }
 
     const action = lookupKey(e.key);
     if (!action) return;
@@ -120,6 +158,8 @@ export class DriverDesk {
   }
 
   private onKeyUp = (e: KeyboardEvent): void => {
+    const walk = lookupWalkKey(e.key);
+    if (walk) this.walkHeld.delete(walk);
     const action = lookupKey(e.key);
     if (action?.kind === 'held') this.state.release(action.command);
     if (action?.kind === 'driver') this.repeat.release(action.command);
@@ -129,7 +169,22 @@ export class DriverDesk {
   private onBlur = (): void => {
     this.state.releaseAll();
     this.repeat.clear();
+    this.walkHeld.clear();
   };
+
+  /** 車内を歩くモードの入力（押しっぱなしのキーから作る） */
+  get walkKeys(): WalkKeys {
+    const held = this.walkHeld;
+    const axis = (plus: WalkCommand, minus: WalkCommand): number =>
+      (held.has(plus) ? 1 : 0) - (held.has(minus) ? 1 : 0);
+    return {
+      forward: axis('forward', 'backward'),
+      strafe: axis('right', 'left'),
+      run: held.has('run'),
+      turn: axis('turnLeft', 'turnRight'),
+      look: axis('lookUp', 'lookDown'),
+    };
+  }
 
   /**
    * 描画のたびに呼ぶ。ノッチキーを押しっぱなしにしているあいだ、段を進める。
@@ -147,6 +202,7 @@ export class DriverDesk {
   /** 押しっぱなしのキーを離したものとして扱う（背面へ回ったときなど） */
   releaseKeys(): void {
     this.repeat.clear();
+    this.walkHeld.clear();
   }
 
   /**

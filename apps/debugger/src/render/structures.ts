@@ -9,7 +9,16 @@ import {
   type SectionPoint,
   type SweepStation,
 } from './geometry.ts';
-import { concreteSurface, glowTexture, plateTexture, rustedSteelSurface } from './textures.ts';
+import {
+  asphaltSurface,
+  barrierStripeTexture,
+  concreteSurface,
+  crossingMarkTexture,
+  glowTexture,
+  rippleSurface,
+  rustedSteelSurface,
+} from './textures.ts';
+import { hdrColor } from './postprocess.ts';
 
 /**
  * 橋りょうと踏切。
@@ -394,12 +403,18 @@ function buildParapets(
 function buildWater(bridge: Bridge, frameAt: (s: number) => TrackFrame): THREE.Object3D {
   const length = bridgeLength(bridge) + 60;
   const mid = frameAt((bridge.start + bridge.end) / 2);
+  // 水面は「色」ではなく「傾きの分布」で水に見える。さざ波の法線を貼ると、
+  // 映り込んだ空が割れて、平らな板から水面になる。色そのものは濁った緑がかった
+  // 灰で、日本の中小河川はたいていこの色をしている（澄んだ青ではない）。
+  const ripple = rippleSurface().maps(0.4);
   const water = new THREE.Mesh(
     meterPlane(length, 90),
     new THREE.MeshStandardMaterial({
-      color: 0x3f5d72,
-      roughness: 0.18,
-      metalness: 0.35,
+      color: 0x40534f,
+      normalMap: ripple.normalMap,
+      normalScale: new THREE.Vector2(0.35, 0.35),
+      roughness: 0.16,
+      metalness: 0.25,
     }),
   );
   // 板は線路方向 × 直角方向に寝かせる（`meterPlane` は縦の板として作られるので、
@@ -423,6 +438,13 @@ const LAMP_RATE = 1.0;
 
 const LAMP_ON = 0xff2a1c;
 const LAMP_OFF = 0x3a1512;
+/**
+ * 点灯した警報灯の輝度倍率。
+ *
+ * 踏切の警報灯は、昼間に道路から見て分かるだけの光度を持つ。画面の白に
+ * 収めず 1 を超える値にして、後処理のブルームでにじませる（`postprocess.ts`）。
+ */
+const LAMP_GAIN = 3.0;
 
 /**
  * 踏切道。
@@ -439,9 +461,18 @@ export function buildLevelCrossings(
   const handles = new Map<string, CrossingHandle>();
 
   const asphalt = new THREE.MeshStandardMaterial({
-    color: 0x50525a,
-    ...concreteSurface().maps(2.5),
-    roughness: 0.98,
+    color: 0xa0a2a6,
+    ...asphaltSurface().maps(4),
+    normalScale: new THREE.Vector2(0.6, 0.6),
+    roughness: 0.97,
+  });
+  // 踏切の手前はカラー舗装（赤褐色）にして、運転者に踏切だと知らせる。
+  // 実物も同じ理由で、停止線から踏切道までを着色してある。
+  const coloured = new THREE.MeshStandardMaterial({
+    color: 0x9a4a34,
+    ...asphaltSurface().maps(4),
+    normalScale: new THREE.Vector2(0.6, 0.6),
+    roughness: 0.95,
   });
   const panel = new THREE.MeshStandardMaterial({
     color: 0x6b6357,
@@ -453,9 +484,16 @@ export function buildLevelCrossings(
     metalness: 0.3,
     roughness: 0.7,
   });
+  const stripeTexture = barrierStripeTexture();
+  // 縞の実寸は 300mm。竿の長さに応じて繰り返す（下で竿ごとに複製する）
   const stripeMaterial = new THREE.MeshStandardMaterial({
-    map: plateTexture(['', '', ''], { background: '#f0f0ee', color: '#1a1a1a' }),
-    roughness: 0.75,
+    map: stripeTexture,
+    roughness: 0.7,
+  });
+  const markMaterial = new THREE.MeshBasicMaterial({
+    map: crossingMarkTexture(),
+    transparent: true,
+    side: THREE.DoubleSide,
   });
 
   for (const crossing of route.levelCrossings.crossings) {
@@ -466,26 +504,69 @@ export function buildLevelCrossings(
     group.quaternion.copy(q);
     group.position.copy(f.position);
 
+    /**
+     * 道路が渡る線路。
+     *
+     * 複線区間の踏切（この路線では `xg-4`）では、道路は**線路 2 本**を渡る。
+     * 踏切板も遮断桿も 2 本ぶんの幅が要るので、隣の線路の位置
+     * （`AdjacentTrack.offsetAt()`）を読んで用意する。単線区間では
+     * 0 が返るので、線路 1 本ぶんのままになる。
+     */
+    const adjacent = route.adjacentTrack.offsetAt(crossing.position);
+    const laterals = adjacent === 0 ? [0] : [0, adjacent];
+    /** 踏切道が塞ぐ範囲（軌道中心からの左右）。遮断機と警報機はこの外に建つ */
+    const spanLeft = Math.min(0, adjacent);
+    const spanRight = Math.max(0, adjacent);
+
     // 道路（線路の左右へ伸びる舗装）。線路の高さに合わせるので、踏切の前後で
     // 道路がわずかに盛り上がっているように見える。
-    const road = new THREE.Mesh(meterPlane(crossing.roadWidth, CROSSING.roadLength), asphalt);
+    const road = new THREE.Mesh(
+      meterPlane(crossing.roadWidth, CROSSING.roadLength + Math.abs(adjacent)),
+      asphalt,
+    );
     road.rotation.x = -Math.PI / 2;
     road.rotation.z = Math.PI / 2;
-    road.position.set(0, -RAIL.height + 0.02, 0);
+    road.position.set(0, -RAIL.height + 0.02, adjacent / 2);
     group.add(road);
+
+    // カラー舗装（踏切道の手前 8m ずつ）
+    for (const sign of [-1, 1] as const) {
+      const strip = new THREE.Mesh(meterPlane(crossing.roadWidth, 8), coloured);
+      strip.rotation.x = -Math.PI / 2;
+      strip.rotation.z = Math.PI / 2;
+      strip.position.set(
+        0,
+        -RAIL.height + 0.025,
+        sign > 0 ? spanRight + 4.5 + 4 : spanLeft - 4.5 - 4,
+      );
+      group.add(strip);
+    }
 
     // 踏切板（軌道内と軌道の外側。レール頭頂面のすぐ下）
     const gauge = route.alignment.gauge;
-    for (const [width, offset] of [
-      [gauge - 0.1, 0],
-      [0.6, gauge / 2 + 0.45],
-      [0.6, -(gauge / 2 + 0.45)],
-    ] as const) {
-      const board = new THREE.Mesh(meterPlane(crossing.roadWidth, width), panel);
-      board.rotation.x = -Math.PI / 2;
-      board.rotation.z = Math.PI / 2;
-      board.position.set(0, CROSSING.panelTop, offset);
-      group.add(board);
+    for (const centre of laterals) {
+      for (const [width, offset] of [
+        [gauge - 0.1, 0],
+        [0.6, gauge / 2 + 0.45],
+        [0.6, -(gauge / 2 + 0.45)],
+      ] as const) {
+        const board = new THREE.Mesh(meterPlane(crossing.roadWidth, width), panel);
+        board.rotation.x = -Math.PI / 2;
+        board.rotation.z = Math.PI / 2;
+        board.position.set(0, CROSSING.panelTop, centre + offset);
+        group.add(board);
+      }
+    }
+    // 線路と線路のあいだ（複線のときだけ）。実物もここは舗装で埋めてある
+    if (adjacent !== 0) {
+      const between = new THREE.Mesh(
+        meterPlane(crossing.roadWidth, Math.abs(adjacent) - gauge - 0.9),
+        panel,
+      );
+      between.rotation.x = -Math.PI / 2;
+      between.rotation.z = Math.PI / 2;
+      between.position.set(0, CROSSING.panelTop, adjacent / 2);
+      group.add(between);
     }
 
     // 警報機と遮断機は道路の両側に建つ。線路方向には踏切道の外側へ少し出る。
@@ -494,7 +575,8 @@ export function buildLevelCrossings(
     const arms: THREE.Object3D[] = [];
     for (const side of [-1, 1] as const) {
       const along = side * (crossing.roadWidth / 2 + 1.2);
-      const lateral = side * CROSSING.postOffset;
+      // 複線では、外側の線路よりさらに外へ建てる
+      const lateral = (side > 0 ? spanRight : spanLeft) + side * CROSSING.postOffset;
       const ground = -RAIL.height - SLEEPER.height - BALLAST.depth;
 
       const post = new THREE.Mesh(
@@ -520,6 +602,15 @@ export function buildLevelCrossings(
       ];
       for (const lamp of pair) group.add(lamp);
       for (const halo of glowPair) group.add(halo);
+
+      // 踏切警標（黄色の×印）。警報灯の上に道路へ向けて掲げる。
+      // 道路は線路と直交しているので、板は線路と平行な面を向く。
+      for (const face of [-1, 1] as const) {
+        const mark = new THREE.Mesh(new THREE.PlaneGeometry(0.85, 0.85), markMaterial);
+        mark.rotation.y = face > 0 ? 0 : Math.PI;
+        mark.position.set(along + face * 0.05, ground + CROSSING.lampHeight + 0.72, lateral);
+        group.add(mark);
+      }
       lamps.push(pair);
       halos.push(glowPair);
 
@@ -532,9 +623,15 @@ export function buildLevelCrossings(
       const armLength = crossing.roadWidth / 2 + 1.2;
       const pivot = new THREE.Group();
       pivot.position.set(along, ground + 1.0, lateral);
+      // 縞は 300mm ごと。竿の長さに合わせて繰り返し数を決める（材質は共有し、
+      // テクスチャだけ複製する）
+      const armMaterial = stripeMaterial.clone();
+      armMaterial.map = stripeTexture.clone();
+      armMaterial.map.repeat.set(armLength / 0.6, 1);
+      armMaterial.map.needsUpdate = true;
       const arm = new THREE.Mesh(
         new THREE.BoxGeometry(armLength, CROSSING.barrierDiameter, CROSSING.barrierDiameter),
-        stripeMaterial,
+        armMaterial,
       );
       // 竿は根元から踏切道の中央へ向かって伸びる
       arm.position.set(-side * (armLength / 2), 0, 0);
@@ -572,8 +669,8 @@ export function buildLevelCrossings(
         for (let post = 0; post < lamps.length; post++) {
           for (let k = 0; k < 2; k++) {
             const on = phase === k;
-            (lamps[post]![k]!.material as THREE.MeshBasicMaterial).color.setHex(
-              on ? LAMP_ON : LAMP_OFF,
+            (lamps[post]![k]!.material as THREE.MeshBasicMaterial).color.copy(
+              on ? hdrColor(LAMP_ON, LAMP_GAIN) : hdrColor(LAMP_OFF, 1),
             );
             halos[post]![k]!.visible = on;
           }

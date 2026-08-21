@@ -185,7 +185,9 @@ export function buildTrack(
   }
 
   // --- まくらぎ ---
-  out.push(buildSleepers(route, frameAt, offset));
+  // 分岐器の区間だけは、線路方向に対して長さの違う「分岐まくらぎ」が入るので
+  // 本線用の 2m まくらぎは敷かない（`buildTurnouts()` が敷く）。
+  out.push(buildSleepers(route, frameAt, offset, turnoutSpans(route)));
 
   // --- レール継目（音が鳴る位置と同じところに置く） ---
   out.push(...buildRailJoints(route, frameAt, offset));
@@ -345,6 +347,45 @@ function buildAdjacentTrack(
   return out;
 }
 
+/**
+ * 分岐器が占める距離程の区間。
+ *
+ * 渡り線は「リード曲線 → 護輪軌条部 → 戻し曲線」で隣の線路まで届くので、
+ * ふつうの分岐器より長い。長さは番数と線路中心間隔から決まる
+ * （`crossoverGeometry()`）。
+ */
+function turnoutSpans(route: CompiledRoute): Array<[number, number]> {
+  return route.turnouts.turnouts.map((t) => {
+    const length = t.crossover ? crossoverGeometry(route, t).length : t.length;
+    return [t.pointsPosition - 1, t.pointsPosition + length + 1] as [number, number];
+  });
+}
+
+/**
+ * 渡り線の寸法。
+ *
+ * 番数（＝クロッシング角 α）とリード半径 R は分岐器の寸法で決まっているので、
+ * 線路中心間隔 W に届かせるには護輪軌条部（リード曲線と戻し曲線のあいだの
+ * 直線）の長さ T で調整するしかない:
+ *
+ *   W = 2R(1 − cos α) + T sin α  →  T = (W − 2R(1 − cos α)) / sin α
+ *
+ * #12・R350 で W = 3.8m なら T = 16.6m になる。交換設備の分岐器（T = 11.6m、
+ * W = 3.38m）より長いのは、複線の線路中心間隔のほうが広いからである。
+ */
+function crossoverGeometry(
+  route: CompiledRoute,
+  turnout: Turnout,
+): { spacing: number; tail: number; length: number } {
+  const spacing = route.adjacentTrack.spacingAt(turnout.pointsPosition);
+  const tail = Math.max(
+    0,
+    (spacing - 2 * turnout.radius * (1 - Math.cos(turnout.crossingAngle))) /
+      Math.sin(turnout.crossingAngle),
+  );
+  return { spacing, tail, length: 2 * turnout.leadLength + tail };
+}
+
 /** 一定間隔のステーションを作る。終端はかならず含める */
 function stationsAlong(
   length: number,
@@ -370,9 +411,18 @@ function buildSleepers(
   route: CompiledRoute,
   frameAt: (s: number) => TrackFrame,
   railOffset: number,
+  /** ここに入る距離程には敷かない（分岐器の区間） */
+  skip: ReadonlyArray<readonly [number, number]> = [],
 ): THREE.Group {
   const group = new THREE.Group();
-  const count = Math.floor(route.length / SLEEPER.spacing);
+  const total = Math.floor(route.length / SLEEPER.spacing);
+  const positions: number[] = [];
+  for (let i = 0; i < total; i++) {
+    const s = i * SLEEPER.spacing;
+    if (skip.some(([a, b]) => s >= a && s <= b)) continue;
+    positions.push(s);
+  }
+  const count = positions.length;
   const top = -RAIL.height;
 
   const sleeper = new THREE.InstancedMesh(
@@ -401,7 +451,7 @@ function buildSleepers(
   const p = new THREE.Vector3();
   const one = new THREE.Vector3(1, 1, 1);
   for (let i = 0; i < count; i++) {
-    const f = frameAt(i * SLEEPER.spacing);
+    const f = frameAt(positions[i]!);
     const q = frameQuaternion(f);
     p.copy(f.position).addScaledVector(f.up, top - SLEEPER.height / 2);
     sleeper.setMatrixAt(i, m.compose(p, q, one));
@@ -569,6 +619,12 @@ export function buildTurnouts(
     metalness: 0.95,
     roughness: 0.28,
   });
+  const sleeperMaterial = new THREE.MeshStandardMaterial({
+    color: SLEEPER_COLOR,
+    ...sleeperSurface().maps(0.9),
+    normalScale: new THREE.Vector2(0.7, 0.7),
+    roughness: 0.92,
+  });
 
   /** 行き違い設備の分岐器か（枝は「隣の線路」として別に描いてある） */
   const inLoop = (turnout: Turnout): boolean =>
@@ -591,9 +647,7 @@ export function buildTurnouts(
      * 渡り線でないときは 0（＝上限なし）。渡り線は隣の線路に乗り移るためのもの
      * なので、離れていく先ではなく**相手の線路の位置**で線形が決まる。
      */
-    const crossoverSpacing = turnout.crossover
-      ? route.adjacentTrack.spacingAt(turnout.pointsPosition)
-      : 0;
+    const crossoverSpacing = turnout.crossover ? crossoverGeometry(route, turnout).spacing : 0;
     /**
      * 渡り線の護輪軌条部（リード曲線と戻し曲線のあいだの直線）の長さ [m]。
      *
@@ -605,10 +659,7 @@ export function buildTurnouts(
      * #12・R350 で W = 3.8m なら T = 16.6m になる。交換設備の分岐器（T = 11.6m、
      * W = 3.38m）より長いのは、複線の線路中心間隔のほうが広いからである。
      */
-    const crossoverTail = Math.max(
-      0,
-      (crossoverSpacing - 2 * turnout.radius * (1 - Math.cos(turnout.crossingAngle))) / sinA,
-    );
+    const crossoverTail = turnout.crossover ? crossoverGeometry(route, turnout).tail : 0;
     /** 渡り線の全長 [m]（リード曲線 → 護輪軌条部 → 戻し曲線） */
     const crossoverLength = 2 * lead + crossoverTail;
 
@@ -718,6 +769,55 @@ export function buildTurnouts(
       ),
     );
 
+    // --- 分岐まくらぎ ---
+    //
+    // 分岐器の下に敷くまくらぎは、本線の 2m ではなく**枝が離れるにつれて
+    // 長くなる**。トングレール先端では 2 本のレールがほとんど重なっているので
+    // 本線用と大差ないが、クロッシングのあたりでは 4 本のレールを 1 本の
+    // まくらぎが受けるので 4.5m を超える。実物の分岐器を上から見たときの
+    // 「櫛の歯が奥へ行くほど長くなる」形はこれである。
+    //
+    // 向きは**本線に直角**にする。実際の分岐まくらぎも本線に直角に敷き、
+    // 枝のレールはその上を斜めに横切っていく（枝に直角に敷くと、本線側の
+    // 締結位置が 1 本ずつずれてしまう）。
+    out.push(
+      ...buildTurnoutSleepers(
+        start,
+        turnout.length,
+        frameAt,
+        (d) => branchOffset(d),
+        sleeperMaterial,
+      ),
+    );
+    if (turnout.crossover) {
+      // 渡り線の向こう端の分岐器。相手の線路を基準に、同じ形のまくらぎが
+      // 背中合わせに並ぶ。
+      const mateStart = crossoverLength - turnout.length;
+      out.push(
+        ...buildTurnoutSleepers(
+          start + mateStart,
+          turnout.length,
+          frameAt,
+          (d) => branchOffset(d + mateStart) - away * crossoverSpacing,
+          sleeperMaterial,
+          away * crossoverSpacing,
+        ),
+      );
+      // そのあいだ（護輪軌条部の直線）は、枝の中心に本線と同じ 2m まくらぎ。
+      // 枝は本線に対して α = 4.8 度しか傾いていないので、向きは本線のままでよい。
+      out.push(
+        ...buildTurnoutSleepers(
+          start + turnout.length,
+          mateStart - turnout.length,
+          frameAt,
+          () => 0,
+          sleeperMaterial,
+          0,
+          (d) => branchOffset(d + turnout.length),
+        ),
+      );
+    }
+
     // 電気転てつ機（NS 形相当）と転換かんぬき
     const f = frameAt(start);
     const q = frameQuaternion(f);
@@ -743,8 +843,70 @@ export function buildTurnouts(
       .addScaledVector(f.cantRight, away * POINT_MACHINE.offset)
       .addScaledVector(f.up, -RAIL.height - SLEEPER.height);
     out.push(machine);
+
+    // 渡り線は分岐器 2 基でひと組なので、転てつ機も 2 台ある。向こう端の 1 台は
+    // 相手の線路の脇に、こちらとは逆を向いて据わる（背中合わせの分岐器だから）。
+    if (turnout.crossover) {
+      const mateFrame2 = frameAt(Math.min(route.length, start + crossoverLength));
+      const mate = machine.clone();
+      mate.quaternion.copy(frameQuaternion(mateFrame2));
+      mate.position
+        .copy(mateFrame2.position)
+        .addScaledVector(
+          mateFrame2.cantRight,
+          away * crossoverSpacing - away * POINT_MACHINE.offset,
+        )
+        .addScaledVector(mateFrame2.up, -RAIL.height - SLEEPER.height);
+      out.push(mate);
+    }
   }
   return out;
+}
+
+/**
+ * 分岐まくらぎ。
+ *
+ * @param start 敷き始める距離程
+ * @param length 敷く長さ
+ * @param branch 起点からの距離 d における、枝の中心の横のずれ（基準線から）
+ * @param base 基準線そのものの横のずれ（渡り線の向こう端では相手の線路になる）
+ * @param shift まくらぎ全体をさらに横へずらす量（護輪軌条部の直線で使う）
+ */
+function buildTurnoutSleepers(
+  start: number,
+  length: number,
+  frameAt: (s: number) => TrackFrame,
+  branch: (d: number) => number,
+  material: THREE.Material,
+  base = 0,
+  shift?: (d: number) => number,
+): THREE.Object3D[] {
+  const count = Math.floor(length / SLEEPER.spacing);
+  if (count <= 0) return [];
+  const mesh = new THREE.InstancedMesh(
+    taperedBoxGeometry(SLEEPER.topWidth, SLEEPER.bottomWidth, SLEEPER.height, SLEEPER.length),
+    material,
+    count,
+  );
+  const m = new THREE.Matrix4();
+  const p = new THREE.Vector3();
+  const scale = new THREE.Vector3();
+  for (let i = 0; i < count; i++) {
+    const d = i * SLEEPER.spacing;
+    const f = frameAt(start + d);
+    const off = branch(d);
+    // 4 本のレールをまたぐので、枝が離れたぶんだけ長くする。実物の分岐まくらぎも
+    // 2.4m から 5m 弱まで、10cm 刻みの何十種類かが用意されている。
+    const span = Math.min(5.0, SLEEPER.length + Math.abs(off));
+    const centre = base + off / 2 + (shift ? shift(d) : 0);
+    p.copy(f.position)
+      .addScaledVector(f.cantRight, centre)
+      .addScaledVector(f.up, -RAIL.height - SLEEPER.height / 2);
+    scale.set(1, 1, span / SLEEPER.length);
+    mesh.setMatrixAt(i, m.compose(p, frameQuaternion(f), scale));
+  }
+  mesh.instanceMatrix.needsUpdate = true;
+  return [mesh];
 }
 
 /**

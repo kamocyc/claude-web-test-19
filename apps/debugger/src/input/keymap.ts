@@ -74,3 +74,48 @@ export const KEY_BINDINGS: Readonly<Record<string, KeyAction>> = {
 export function lookupKey(key: string): KeyAction | undefined {
   return KEY_BINDINGS[key.toLowerCase()];
 }
+
+/** 車内を歩くモードの操作 */
+export type WalkCommand =
+  | 'forward'
+  | 'backward'
+  | 'left'
+  | 'right'
+  | 'run'
+  | 'turnLeft'
+  | 'turnRight'
+  | 'lookUp'
+  | 'lookDown';
+
+/**
+ * 車内を歩くモードのキー。
+ *
+ * **運転のキーとは別の表**にしてある。歩いているあいだは運転できない
+ * （手すりにつかまっている人はハンドルを握れない）という割り切りなので、
+ * `W` `A` `S` `D` が運転のノッチと重なっていても取り合いにならない。歩行中は
+ * こちらの表だけを引き、運転の表は引かない — 逆に画面と進行の操作
+ * （視点・自動運転・一時停止・倍率・消音）は歩きながらでも効く。
+ *
+ * マウスを使えない場面（ヘッドレスでの撮影など）のために、`Q` `E` で首を振り、
+ * `PageUp` `PageDown` で見上げ・見下ろしができるようにしてある。
+ */
+export const WALK_BINDINGS: Readonly<Record<string, WalkCommand>> = {
+  w: 'forward',
+  s: 'backward',
+  a: 'left',
+  d: 'right',
+  arrowup: 'forward',
+  arrowdown: 'backward',
+  arrowleft: 'left',
+  arrowright: 'right',
+  shift: 'run',
+  q: 'turnLeft',
+  e: 'turnRight',
+  pageup: 'lookUp',
+  pagedown: 'lookDown',
+};
+
+/** `KeyboardEvent.key` から歩行の指令を引く */
+export function lookupWalkKey(key: string): WalkCommand | undefined {
+  return WALK_BINDINGS[key.toLowerCase()];
+}

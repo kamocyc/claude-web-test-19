@@ -712,3 +712,47 @@ body.ui-hidden #gmeter {
     font-size: 12px;
   }
 }
+
+/* --- 車内を歩くモードの案内 --------------------------------------------- */
+/*
+ * 歩いているあいだは運転のキーが効かない。そのことと歩き方を画面の下に出す。
+ * HUD と同じ見た目にしてあるが、位置は下（視線の邪魔にならないところ）。
+ */
+#walkhint {
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  transform: translateX(-50%);
+  display: none;
+  max-width: min(720px, calc(100% - 32px));
+  padding: 8px 14px;
+  border: 1px solid #2a3441;
+  border-radius: 8px;
+  background: rgb(10 14 20 / 78%);
+  color: #cfd8e3;
+  font-size: 12px;
+  line-height: 1.7;
+  text-align: center;
+  pointer-events: none;
+  backdrop-filter: blur(3px);
+}
+
+body.walking #walkhint {
+  display: block;
+}
+
+body.ui-hidden #walkhint {
+  display: none;
+}
+
+#walkhint b {
+  color: #eaf1f8;
+}
+
+#walkhint .ok {
+  color: #6cd08a;
+}
+
+#walkhint .warn {
+  color: #ffc451;
+}

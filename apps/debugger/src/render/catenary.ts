@@ -139,6 +139,65 @@ export function buildCatenary(
     out.push(buildSupport(frameAt(s), staggerAt(i)));
   }
 
+  // --- 隣の線路の架線 ---
+  //
+  // 交換設備と複線区間には線路がもう 1 本ある。**電車は架線が無ければ走れない**
+  // ので、そこにも同じ架線が張られていなければならない。隣の線路にだけ架線が
+  // 無い絵は、対向列車が走ってくるほど嘘が目立つ。
+  //
+  // 支持は、複線でよく使われる 3 通り（片持ちブラケットを 2 本・架線ビーム・
+  // 両側建植）のうち、いちばん単純な**両側建植**にする。自線の柱は左側通行の
+  // 反対側（右）に建っているので、隣の線路のさらに外側にもう 1 本建てて、
+  // そこから隣の線路へブラケットを伸ばす。
+  for (const loop of route.adjacentTrack.loops) {
+    const offsetAt = (s: number): number => route.adjacentTrack.offsetAt(s);
+    const contact: THREE.Vector3[] = [];
+    const messenger: THREE.Vector3[] = [];
+    for (let s = loop.entry; s <= loop.exit; s += 2.5) {
+      const f = frameAt(s);
+      const lateral = offsetAt(s);
+      contact.push(
+        f.position
+          .clone()
+          .addScaledVector(f.right, lateral + contactStagger(s))
+          .add(new THREE.Vector3(0, CATENARY.contactHeight, 0)),
+      );
+      if (!inTunnel(s)) {
+        messenger.push(
+          f.position
+            .clone()
+            .addScaledVector(f.right, lateral + contactStagger(s) * 0.5)
+            .add(new THREE.Vector3(0, messengerHeight(s), 0)),
+        );
+      }
+    }
+    if (contact.length >= 2) {
+      out.push(
+        new THREE.Mesh(
+          wireGeometry(contact, CATENARY.contactDiameter / 2, 5),
+          new THREE.MeshLambertMaterial({ color: CONTACT_COLOR }),
+        ),
+      );
+    }
+    if (messenger.length >= 2) {
+      out.push(
+        new THREE.Mesh(
+          wireGeometry(messenger, CATENARY.messengerDiameter / 2, 4),
+          new THREE.MeshLambertMaterial({ color: WIRE_COLOR }),
+        ),
+      );
+    }
+    // 柱は自線と同じ径間（50m）で、隣の線路のさらに外側に建てる。
+    // 分岐器の周りは線路がまだ寄りきっていないので、間隔が所定になってから。
+    for (const s of supports) {
+      if (s < loop.entry + 40 || s > loop.exit - 40 || inTunnel(s)) continue;
+      const lateral = offsetAt(s);
+      if (Math.abs(lateral) < 2.5) continue;
+      const i = Math.round(s / CATENARY.span);
+      out.push(buildSupport(frameAt(s), staggerAt(i), lateral));
+    }
+  }
+
   return out;
 }
 
@@ -205,7 +264,7 @@ function buildRigidConductor(
  * 「曲線引金具」がトロリ線を軌道の内側へ引く。ここでは主管・振止金具・
  * ちょう架線支持金具・曲線引の 4 つを組み立てる。
  */
-function buildSupport(frame: TrackFrame, stagger: number): THREE.Object3D {
+function buildSupport(frame: TrackFrame, stagger: number, trackLateral = 0): THREE.Object3D {
   const group = new THREE.Group();
   // 日本の在来線は左側通行で、ホームも信号機も進行方向左側に置く。
   // 電化柱はそれらと場所を取り合わないよう反対の右側に建植する。
@@ -280,7 +339,9 @@ function buildSupport(frame: TrackFrame, stagger: number): THREE.Object3D {
 
   // 柱の局所系: X = 進行方向、Y = 鉛直、Z = 軌道の右方向
   group.quaternion.copy(frameQuaternion(frame, false));
-  group.position.copy(frame.position).addScaledVector(frame.right, poleLateral);
+  // `trackLateral` は支える線路そのものの横位置。隣の線路（複線区間）を
+  // 支えるときだけ 0 でなくなる。柱もブラケットもまとめてその線路の脇へ移す。
+  group.position.copy(frame.position).addScaledVector(frame.right, trackLateral + poleLateral);
   // 局所 Z を「軌道中心へ向かう向き」に読み替えるため、各部材の横位置は
   // 上のベクトル生成で z 成分ではなく x 成分に入れてある（下の tube() が入れ替える）
   return group;

@@ -17,6 +17,8 @@ import { ChartPanel } from './charts/panel.ts';
 import { DriverState, type HandlePosition } from './input/driverState.ts';
 import { DriverDesk } from './input/keyboard.ts';
 import { createCabInterior } from './render/cab.ts';
+import type { CarInterior } from './render/interior.ts';
+import { CarShells, Walker } from './render/walk.ts';
 import { Precipitation } from './render/precipitation.ts';
 import { CAMERA_LABEL, CAMERA_MODES, CameraRig, type CameraMode } from './render/cameras.ts';
 import { Presenter } from './render/renderer.ts';
@@ -60,6 +62,7 @@ const appElement = document.querySelector<HTMLElement>('#app')!;
 const touchElement = document.querySelector<HTMLElement>('#touch')!;
 const touchButton = document.querySelector<HTMLButtonElement>('#touchui')!;
 const drawerButton = document.querySelector<HTMLButtonElement>('#drawer')!;
+const walkHint = document.querySelector<HTMLElement>('#walkhint')!;
 
 /** 指で触る端末か（タッチ運転台を出すかと、描画の重さの判断に使う） */
 const coarsePointer = window.matchMedia('(pointer: coarse)');
@@ -147,6 +150,18 @@ function showOptions(options: RunOptions): void {
 }
 showOptions(DEFAULT_RUN_OPTIONS);
 
+/**
+ * URL で視点を指定する入口（`?view=walk` / `?view=cab` …）。
+ *
+ * 開始位置（`?s=`）と同じく**見たいものをすぐ見るため**のもので、車内の
+ * 見た目を確かめるのに毎回 `C` を押して数える必要がなくなる。知らない名前が
+ * 来たら黙って既定（運転席）にする。
+ */
+function parseCameraMode(search: string): CameraMode | null {
+  const value = new URLSearchParams(search).get('view');
+  return CAMERA_MODES.find((mode) => mode === value) ?? null;
+}
+
 /** URL で指定された開始位置・速度（確認用の入口。`startOverride.ts`） */
 const startOverride = parseStartOverride(window.location.search);
 if (startOverride.hideUi) document.body.classList.add('ui-hidden');
@@ -157,6 +172,8 @@ let sim = new Simulation(scenario);
 let scene = new TrackScene(scenario.route, sim, renderer);
 charts.setDriveKind(sim.traction.driveState.kind);
 let recorder = new InputRecorder();
+/** 車内を歩くモードの持ち物（シーンを組み直すたびに作り直す） */
+let interior = createInteriorView();
 let paused = false;
 let rateIndex = RATES.indexOf(1);
 let singleStep = false;
@@ -164,6 +181,33 @@ let sampleTimer = 0;
 let replaying: Recording | null = null;
 /** 自動運転の入切（シナリオを切り替えても保つ） */
 let autoDrive = false;
+
+/**
+ * 車内を歩くモードの持ち物。
+ *
+ * 歩行者（`Walker`）は客室の割り付けを知っている必要があり、それは車両の
+ * 仕様で決まるので、シナリオを組み直したら作り直す。外板の細工（`CarShells`）
+ * も同じ理由で車体ごとに持つ。
+ */
+interface InteriorView {
+  readonly cars: ReadonlyArray<{ object: THREE.Object3D; interior: CarInterior }>;
+  readonly walker: Walker;
+  readonly shells: CarShells;
+}
+
+function createInteriorView(): InteriorView {
+  const cars = scene.cars;
+  return {
+    cars,
+    walker: new Walker(cars.map((car) => car.interior.layout)),
+    shells: new CarShells(cars),
+  };
+}
+
+/** 歩行者の目（車体局所座標系での位置と向きを一度ここへ入れてから世界へ移す） */
+const walkPose = new THREE.Object3D();
+const walkPosition = new THREE.Vector3();
+const walkQuaternion = new THREE.Quaternion();
 
 /** ノッチ段数は車両で変わる。切り替えに追従できるよう関数で渡す。 */
 const notchCounts = {
@@ -186,6 +230,7 @@ const desk = new DriverDesk(
   {
     ...notchCounts,
     onCameraCycle: () => cycleCamera(),
+    isWalking: () => cameraRig.mode === 'walk',
     onUiToggle: () => document.body.classList.toggle('ui-hidden'),
     onAutoDriveToggle: () => setAutoDrive(!autoDrive),
     onPauseToggle: () => setPaused(!paused),
@@ -232,6 +277,10 @@ function applyCameraMode(mode: CameraMode): void {
   cameraRig.setMode(mode);
   cabInterior.group.visible = mode === 'cab';
   scene.setLeadCarVisible(mode !== 'cab');
+  // 車内を歩くあいだだけ、外板のガラスを透かして外が見えるようにする
+  interior.shells.setWalking(mode === 'walk');
+  document.body.classList.toggle('walking', mode === 'walk');
+  if (mode !== 'walk' && document.pointerLockElement === canvas) document.exitPointerLock();
 }
 
 /**
@@ -287,6 +336,7 @@ function restart(id = scenarioId, override: StartOverride = startOverride): void
   precipitation.setLook(scene.look);
   scene.scene.add(precipitation.group);
   recorder = new InputRecorder();
+  interior = createInteriorView();
   replaying = null;
   sampleTimer = 0;
   desk.reset();
@@ -365,6 +415,18 @@ drawerButton.addEventListener('click', () => {
 
 // AudioContext はユーザ操作の中でしか開始できない。画面のどこを触っても解錠する。
 canvas.addEventListener('pointerdown', () => startAudio());
+
+// 車内を歩くモードでは、画面を押すとポインタを掴んで首を振れるようにする。
+// Pointer Lock はユーザ操作の中でしか要求できないので、click で取る。
+canvas.addEventListener('click', () => {
+  if (cameraRig.mode !== 'walk') return;
+  if (document.pointerLockElement === canvas) return;
+  void canvas.requestPointerLock?.();
+});
+document.addEventListener('mousemove', (e) => {
+  if (cameraRig.mode !== 'walk' || document.pointerLockElement !== canvas) return;
+  interior.walker.look(e.movementX, e.movementY);
+});
 muteButton.addEventListener('click', () => {
   releaseFocus(muteButton);
   startAudio();
@@ -491,6 +553,70 @@ function advanceSimulation(wall: number): number {
 }
 
 /**
+ * 車内を歩くモードの 1 フレーム。
+ *
+ * 歩く速さは**実時間**で進める（時間倍率を上げても人が速く歩くわけではない）。
+ * 一方、内装のうち吊り革の振れと扉の開閉はシミュレーションの状態そのものなので、
+ * こちらは `sim` から読むだけでよい。
+ */
+function updateWalk(wall: number): void {
+  const { walker, shells, cars } = interior;
+  const keys = desk.walkKeys;
+  // キーで首を振る（マウスを使えない場面のための逃げ道）
+  walker.turn(keys.turn * wall * 2.0, keys.look * wall * 1.4);
+  const body = sim.dynamics.vehicles[walker.state.carIndex]?.body;
+  walker.step(wall, keys, body);
+
+  // 車内案内表示器に出す文言。次の停車駅と、編成の行先（終点）。
+  const next = sim.nextStation;
+  const stations = sim.scenario.route.stations;
+  const destination = stations[stations.length - 1]?.name ?? '';
+  const nextName = next?.station.name ?? destination;
+  // 「まもなく」は停止位置まで 600m を切ってから（実物の案内もこのあたり）
+  const arriving = next ? next.station.stopPosition - sim.dynamics.frontPosition < 600 : false;
+  const doorPosition = sim.doors.state.position;
+
+  for (let i = 0; i < cars.length; i++) {
+    const car = cars[i]!;
+    const strap = sim.dynamics.vehicles[i]?.body.passenger.strap;
+    car.interior.update({
+      doorPosition,
+      strapLateral: strap?.lateral ?? 0,
+      strapLongitudinal: strap?.longitudinal ?? 0,
+      nextStation: nextName,
+      kind: '各駅停車',
+      destination,
+      arriving,
+    });
+  }
+  shells.update(doorPosition);
+
+  // 目の位置と向きを車体局所系で組み立て、車体の姿勢で世界座標へ移す。
+  const car = cars[walker.state.carIndex];
+  if (!car) return;
+  walker.pose(body, walkPose);
+  walkPosition.copy(walkPose.position).applyMatrix4(car.object.matrixWorld);
+  walkQuaternion.copy(car.object.quaternion).multiply(walkPose.quaternion);
+
+  // 歩いているあいだは運転できない。行き止まりにしないため、自動運転を勧める。
+  walkHint.innerHTML = walkHintText();
+}
+
+/** 車内を歩くモードの案内（画面下に出す） */
+function walkHintText(): string {
+  const auto = autoDrive
+    ? '<span class="ok">自動運転で走行中</span>'
+    : '<span class="warn">運転士は不在です — <b>O</b> で自動運転（ATO）を入れてください</span>';
+  return [
+    '<b>車内</b> — <b>W A S D</b> 歩く / <b>Shift</b> 早足 / 画面を押すとマウスで視点',
+    '<b>Q E</b> 首を振る / <b>PageUp PageDown</b> 見上げる・見下ろす / <b>C</b> 視点を戻す',
+    `歩行中は運転のキーが効きません。${auto}`,
+  ]
+    .map((line) => `<div>${line}</div>`)
+    .join('');
+}
+
+/**
  * ページが背面に回っているか。
  *
  * ブラウザは背面のタブで `requestAnimationFrame` を止め、タイマも 1 分に 1 回まで
@@ -567,12 +693,16 @@ function frame(now: number): void {
   if (cameraRig.mode === 'cab') {
     cabInterior.update(sim, { ...handles, oneHandle: deskState.layout === 'one-handle' }, advance);
   }
+  const walking = cameraRig.mode === 'walk';
+  if (walking) updateWalk(wall);
   const frontFrame = scene.frontFrame(sim);
   cameraRig.update({
     frame: frontFrame,
     trainLength: trainLength(),
     cabPosition: scene.cabPosition,
     cabQuaternion: scene.cabQuaternion,
+    walkPosition: walking ? walkPosition : undefined,
+    walkQuaternion: walking ? walkQuaternion : undefined,
   });
   // 降水はカメラが定まってから動かす（巻き戻しの箱をカメラに合わせるため）。
   // 空も同じ理由でここで運ぶ。
@@ -596,7 +726,7 @@ function frame(now: number): void {
 }
 
 scene.scene.add(cameraRig.camera);
-applyCameraMode('cab');
+applyCameraMode(parseCameraMode(window.location.search) ?? 'cab');
 setTouchConsole(touchOverride ?? prefersTouchConsole());
 setMuted(false);
 updateRateLabel();
