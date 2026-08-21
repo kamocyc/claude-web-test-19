@@ -26,10 +26,11 @@ import {
   buildGradePosts,
   buildSignals,
   buildStations,
+  type CrowdHandle,
   type SignalHandle,
 } from './wayside.ts';
 import { CAR } from './dimensions.ts';
-import { createEnvironment, grassSurface } from './textures.ts';
+import { breakUpTiling, createEnvironment, GRASS_TILE, grassSurface } from './textures.ts';
 
 const GROUND_COLOR = 0x87a06a;
 
@@ -78,6 +79,8 @@ export class TrackScene {
   private frontLights: FrontLights | undefined;
   private rearLights: FrontLights | undefined;
   private readonly signalHandles: Map<string, SignalHandle>;
+  /** ホームで待っている人（`update()` が時刻を渡して揺らす） */
+  private readonly crowds: readonly CrowdHandle[];
   private readonly crossingHandles: Map<string, CrossingHandle>;
   /** ダイヤ列車（先行列車・対向列車）の車体 */
   private readonly scheduledTrains: ScheduledTrainView[] = [];
@@ -130,7 +133,9 @@ export class TrackScene {
     this.add(buildDistancePosts(route, this.frameAt), true);
     this.add(buildGradePosts(route, this.frameAt), true);
     this.add(buildCurvePosts(route, this.frameAt), true);
-    this.add(buildStations(route, this.frameAt), true);
+    const stations = buildStations(route, this.frameAt);
+    this.add(stations.objects, true);
+    this.crowds = stations.crowds;
     this.add(buildBeacons(route, this.frameAt), false);
     this.add(buildTunnels(route, this.frameAt), false);
     this.add(buildBridges(route, this.frameAt), true);
@@ -230,16 +235,17 @@ export class TrackScene {
     }
     geom.setIndex(indices);
     geom.computeVertexNormals();
-    const ground = new THREE.Mesh(
-      geom,
-      new THREE.MeshStandardMaterial({
-        ...coatMaterial(grassSurface().maps(7), 1, surfaceCoat(GROUND_COLOR, this.look)),
-        // 地面は 1 枚を何十回も繰り返すので、凹凸を強くすると繰り返しが目に付く
-        normalScale: new THREE.Vector2(0.45, 0.45),
-        vertexColors: true,
-        side: THREE.DoubleSide,
-      }),
-    );
+    const material = new THREE.MeshStandardMaterial({
+      ...coatMaterial(grassSurface().maps(GRASS_TILE), 1, surfaceCoat(GROUND_COLOR, this.look)),
+      // 地面は 1 枚を何十回も繰り返すので、凹凸を強くすると繰り返しが目に付く
+      normalScale: new THREE.Vector2(0.45, 0.45),
+      vertexColors: true,
+      side: THREE.DoubleSide,
+    });
+    // 貼り幅 7m の格子が絵の上に浮くのを崩す。開けた場所を追跡視点や俯瞰視点で
+    // 見ると、それまで地面全体が碁盤の目に見えていた（`breakUpTiling`）。
+    breakUpTiling(material);
+    const ground = new THREE.Mesh(geom, material);
     // 地表は影を受けるだけ。線路の周り数百 m を覆う 1 枚の板なので、
     // これ自身に影を落とさせると自分の裏側を陰にして縞が出る。
     ground.receiveShadow = true;
@@ -411,6 +417,12 @@ export class TrackScene {
 
     // 雲を流す。空だけが止まっていると、走っていても時間が経っていないように見える
     this.sky.setTime(sim.elapsed);
+
+    // ホームで待っている人。**止まったままの人形はいないほうがまし**なので、
+    // 重心の揺れと向き直りだけでも時刻に応じて動かす（`CrowdHandle`）。
+    // 駅を通り過ぎたあとも動かし続けるが、人は路線全体で百数十人しかいない
+    // ので、見えていない駅のぶんを間引く手間のほうが高くつく。
+    for (const crowd of this.crowds) crowd.update(sim.elapsed);
 
     // 影を焼く範囲を列車に追従させる。路線全体を 1 枚の影の地図に収めることは
     // できないので、列車の周り 100m ほどだけを高い解像度で焼く。

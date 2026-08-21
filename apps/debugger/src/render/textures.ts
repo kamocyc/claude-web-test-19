@@ -500,6 +500,14 @@ export const facadeSurface = surface(
  * しまう。そこで低い周波数の模様はほとんど入れず、細かい草の粒だけで質感を作る。
  * 遠くの地面が単色に見えないのは、この粒がまばらに散っているからである。
  */
+/**
+ * 草のテクスチャ 1 枚が受け持つ実寸 [m]。
+ *
+ * 線路際の地表（`scene.ts`）も遠景の地表（`scenery.ts`）もこの値で貼る。
+ * 継ぎ目で草の大きさが変わると、そこに線が引かれたように見えてしまう。
+ */
+export const GRASS_TILE = 7;
+
 export const grassSurface = surface(
   (ctx, size, rand) => {
     ctx.fillStyle = '#61794a';
@@ -529,6 +537,107 @@ export const grassSurface = surface(
   0x5eed01,
   0.8,
 );
+
+/**
+ * 繰り返しの格子を崩す（デタイリング）。
+ *
+ * ## なぜ要るか
+ *
+ * 地表は 1 枚のテクスチャを何十回も繰り返して貼る。どれだけ大きな模様を
+ * 描き込まないようにしても、**同じ絵が等間隔に並ぶ**こと自体は消せないので、
+ * 開けた場所を低い視点から見ると、貼り幅（草なら 7m）の格子が絵の上に
+ * 浮かんで見える。実際、俯瞰視点では地面全体が碁盤の目に見えていた。
+ *
+ * ## どう崩すか
+ *
+ * 定石は「同じ絵を、**波長の比が整数にならない**別の大きさでもう 1 枚重ねる」
+ * ことである。7m と 21m のように整数倍にすると 21m ごとに位相がそろって
+ * 元の格子が戻ってくるので、7m : 23m のような**素数どうしの比**を選ぶ。
+ * 重なりの周期は 7×23 = 161m まで延び、そこまで行くともう霞の中である。
+ * さらに 2 枚目を面内で回しておくと、縦横に走る筋（草の粒の並び）も
+ * そろわなくなる。
+ *
+ * 重ねかたは掛け算ではなく**混ぜ算**にする。掛けると 2 枚ぶんの明暗が
+ * 積み重なって地面のコントラストが上がり、遠景が斑（まだら）になる。
+ *
+ * ただし混ぜれば混ぜたぶんだけ模様は眠くなるので、**視距離で立ち上げる**。
+ * 足元は貼り 1 枚ぶんしか映っておらず繰り返しに見えようがないので崩さず、
+ * 1 画面に何枚も並び始める十数 m 先から効かせる（`DetileOptions.from`）。
+ *
+ * @param material 貼り終えた材質（`map` が要る。`normalMap` があればそちらも崩す）
+ * @param ratio 2 枚目の波長の比（1 枚目 ÷ 2 枚目）。既定は 7 : 23
+ * @param amount 2 枚目の混ぜ具合。上げるほど格子は消えるが、絵は眠くなる
+ */
+export function breakUpTiling(
+  material: THREE.MeshStandardMaterial,
+  { ratio = 7 / 23, amount = 0.5, angle = 0.61, from = 12, to = 50 }: DetileOptions = {},
+): void {
+  const c = Math.cos(angle).toFixed(5);
+  const s = Math.sin(angle).toFixed(5);
+  const k = ratio.toFixed(5);
+  const m = amount.toFixed(5);
+  // 2 枚目の貼り位置をずらす。原点で 2 枚がそろうと、そこだけ元の格子が顔を出す
+  const shift = 'vec2(0.37, 0.19)';
+  const uv = (varying: string): string =>
+    `mat2(${c}, -${s}, ${s}, ${c}) * ${varying} * ${k} + ${shift}`;
+  // 混ぜ具合は視距離で立ち上げる（`DetileOptions.from` を参照）
+  const blend = (name: string): string =>
+    `\tfloat ${name} = ${m} * smoothstep(${from.toFixed(1)}, ${to.toFixed(1)}, length(vViewPosition));`;
+  // 差し込む着色器には日本語を入れない（GLSL ES の原文は ASCII しか許されない）
+  material.onBeforeCompile = (shader) => {
+    // 2 枚目を混ぜる前に 1 枚目で割る。`diffuseColor` にはもう 1 枚目が
+    // 掛かっているので、割らずに掛けると 2 枚が積み重なって斑になる。
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <map_fragment>',
+      [
+        '#include <map_fragment>',
+        '#ifdef USE_MAP',
+        blend('detileBlend'),
+        `\tvec3 detileColor = texture2D( map, ${uv('vMapUv')} ).rgb;`,
+        '\tdiffuseColor.rgb *= mix( vec3(1.0),',
+        '\t\tdetileColor / max( sampledDiffuseColor.rgb, vec3(0.004) ), detileBlend );',
+        '#endif',
+      ].join('\n'),
+    );
+    // 凹凸も同じだけずらして混ぜる。色だけ崩しても、繰り返しの陰影が
+    // 残っていると格子は見えたままになる。法線の xy は**テクスチャの向きで
+    // 書かれた傾き**なので、貼る側を回したぶんだけ逆に回してから接空間へ
+    // 渡す（回さないと、2 枚目の凹凸だけ光が別の向きから当たる）。
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <normal_fragment_maps>',
+      [
+        '#include <normal_fragment_maps>',
+        '#ifdef USE_NORMALMAP_TANGENTSPACE',
+        blend('detileNormalBlend'),
+        `\tvec3 detileN = texture2D( normalMap, ${uv('vNormalMapUv')} ).xyz * 2.0 - 1.0;`,
+        `\tdetileN.xy = mat2(${c}, ${s}, -${s}, ${c}) * detileN.xy * normalScale;`,
+        '\tnormal = normalize( mix( normal, normalize( tbn * detileN ), detileNormalBlend ) );',
+        '#endif',
+      ].join('\n'),
+    );
+  };
+  // 同じ値で崩した材質どうしは着色器を使い回してよい
+  material.customProgramCacheKey = () => `detile-${k}-${m}-${c}-${from}-${to}`;
+}
+
+/** `breakUpTiling` の指定 */
+export interface DetileOptions {
+  /** 2 枚目の波長の比（1 枚目 ÷ 2 枚目）。整数比にしないこと */
+  readonly ratio?: number;
+  /** 2 枚目の混ぜ具合 0..1 */
+  readonly amount?: number;
+  /** 2 枚目を面内で回す角 [rad] */
+  readonly angle?: number;
+  /**
+   * 崩し始める視距離と、崩し切る視距離 [m]。
+   *
+   * **足元には効かせない。** 目の前の数 m には貼り 1 枚ぶんしか映らないので
+   * 繰り返しは見えず、そこで 2 枚を混ぜると草の粒がただ眠くなるだけになる。
+   * 格子として見えてくるのは、1 画面に何枚も並ぶ十数 m 先からである。
+   */
+  readonly from?: number;
+  readonly to?: number;
+}
 
 /**
  * 錆びた鋼（レールの腹部・継目板・古い金物）。

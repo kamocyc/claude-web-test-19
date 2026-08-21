@@ -20,7 +20,11 @@ import { FACADE } from './dimensions.ts';
  *    窓ではなく、2.8m ごとに横一列に並ぶベランダの床と手すり壁である。
  *    これが出っ張っていないと、どんなテクスチャを貼っても壁にしか見えない。
  *
- * ここではその 3 つだけを立体で足す。壁そのものは今までどおりテクスチャに
+ *  - 工場（波板）に**窓が 1 つも無い**。実物の工場は壁の大半が無窓だが、
+ *    軒下に鋼製サッシの連窓が 1 段通っていて、その横一本の影が壁の高さを
+ *    読ませている。無いと近景でただの波板の箱に見える。
+ *
+ * ここではその 4 つだけを立体で足す。壁そのものは今までどおりテクスチャに
  * 任せる（窓を全部くり抜くと頂点が桁で増えるうえ、屋内を作る羽目になる）。
  *
  * ## テクスチャと合わせる
@@ -66,6 +70,22 @@ const BALCONY = {
   base: 0.05,
 } as const;
 
+/**
+ * 工場・倉庫の高窓の寸法 [m]（出どころは `dimensions.ts` の `FACADE`）。
+ *
+ * 住宅のサッシと違い、**壁 1 面につき 1 段の帯**しかない。窓の数が少ないぶん
+ * 頂点も少なくて済むので、方立まで立体で入れられる。
+ */
+const STRIP = {
+  drop: FACADE.stripDrop,
+  height: FACADE.stripHeight,
+  mullion: FACADE.stripMullion,
+  frame: FACADE.stripFrame,
+  jamb: FACADE.stripJamb,
+  reveal: FACADE.stripReveal,
+  corner: FACADE.stripCorner,
+} as const;
+
 /** 建物 1 型ぶんの外皮の指定 */
 export interface FacadeSpec {
   readonly width: number;
@@ -77,6 +97,14 @@ export interface FacadeSpec {
   readonly openings: readonly Opening[];
   /** ベランダを付けるか（集合住宅） */
   readonly balcony: boolean;
+  /**
+   * 軒下の高窓（連窓）を付けるか（工場・倉庫）。
+   *
+   * 外壁テクスチャ（波板）には窓を描いていないので、こちらは重ねる相手が
+   * 無い。壁のどこに開けても二重には見えないぶん、位置は実物の寸法だけで
+   * 決められる。
+   */
+  readonly strip?: boolean;
 }
 
 /** 出っ張りの形。枠側とガラス側で材質が違うので別々に返す */
@@ -107,6 +135,7 @@ export function buildFacade(spec: FacadeSpec): Facade {
       addWindows(frames, panes, spec, face, across, out);
     }
     if (spec.balcony) addBalcony(frames, spec, face, across, out);
+    if (spec.strip) addStripWindow(frames, panes, spec, face, across, out);
   }
 
   return {
@@ -220,6 +249,87 @@ function addWindows(
         }
       }
     }
+  }
+}
+
+/**
+ * 軒下の高窓（工場・倉庫）。
+ *
+ * 波板の工場は、近づくと**窓が 1 つも無い板**に見えていた。実物の工場は
+ * 壁の大半が無窓だが、軒下に鋼製サッシの連窓が 1 段だけ通っていて、その
+ * 無目（横枠）と方立（縦枠）の影が壁に横の線を引く。**この 1 本の線があるか
+ * どうか**で、波板の箱が工場に見えるかどうかが決まる。
+ *
+ * 住宅のサッシ（`addWindows`）と違ってテクスチャに描いた窓と重ねる必要が
+ * ないので、割り付けは実寸だけで決める。ガラスは方立で仕切られた 1 枚ずつに
+ * 分けて置く — 1 枚の板で帯を覆うと、その手前にある方立が隠れてしまう。
+ */
+function addStripWindow(
+  frames: THREE.BufferGeometry[],
+  panes: THREE.BufferGeometry[],
+  spec: FacadeSpec,
+  face: Face,
+  across: number,
+  out: number,
+): void {
+  const band = across - STRIP.corner * 2;
+  // 隅の柱を除くと窓が 1 枚も入らない壁（小さい建屋の妻面）には付けない
+  if (band < STRIP.mullion) return;
+  const top = spec.height - STRIP.drop;
+  const bottom = top - STRIP.height;
+  if (bottom < 2.0) return;
+  const middle = (top + bottom) / 2;
+  // 無目（上下の横枠）。帯の全長に通す
+  for (const y of [bottom, top]) {
+    frames.push(
+      placeOn(
+        new THREE.BoxGeometry(band, STRIP.frame, STRIP.jamb),
+        face,
+        0,
+        y,
+        STRIP.reveal - STRIP.jamb / 2,
+        out,
+      ),
+    );
+  }
+  // 水切り。下枠の下に少しだけ出して、壁に横一本の影を落とす
+  frames.push(
+    placeOn(
+      new THREE.BoxGeometry(band + 0.16, 0.06, STRIP.reveal + 0.1),
+      face,
+      0,
+      bottom - STRIP.frame / 2 - 0.03,
+      (STRIP.reveal + 0.1) / 2 - 0.02,
+      out,
+    ),
+  );
+  // 方立で割る。1 枚の幅が鋼製サッシの標準（1.8m）に近くなる枚数を選ぶ
+  const bays = Math.max(1, Math.round(band / STRIP.mullion));
+  const bay = band / bays;
+  for (let i = 0; i <= bays; i++) {
+    const a = -band / 2 + i * bay;
+    frames.push(
+      placeOn(
+        new THREE.BoxGeometry(STRIP.frame, STRIP.height, STRIP.jamb),
+        face,
+        a,
+        middle,
+        STRIP.reveal - STRIP.jamb / 2,
+        out,
+      ),
+    );
+    if (i === bays) continue;
+    // ガラスは枠より前へ置く（`addWindows` と同じ理由。枠は中身の詰まった箱）
+    panes.push(
+      placeOn(
+        new THREE.PlaneGeometry(bay - STRIP.frame, STRIP.height - STRIP.frame),
+        face,
+        a + bay / 2,
+        middle,
+        STRIP.reveal + 0.002,
+        out,
+      ),
+    );
   }
 }
 

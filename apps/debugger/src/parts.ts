@@ -23,6 +23,8 @@ import {
 import { createCabInterior } from './render/cab.ts';
 import { buildCar } from './render/vehicle.ts';
 import { buildLevelCrossings } from './render/structures.ts';
+import { buildScenery, landUseAt } from './render/scenery.ts';
+import { weatherLook } from './render/weather.ts';
 import { frameQuaternion } from './render/geometry.ts';
 
 /** 1 種類あたりに並べる数（多ければ間引く） */
@@ -147,7 +149,7 @@ const KINDS: ReadonlyArray<Kind> = [
   {
     key: 'station',
     label: '駅（ホーム・駅名標・停止位置目標）',
-    build: () => buildStations(route, frameAt),
+    build: () => buildStations(route, frameAt).objects,
     spots: () => route.stations.map((s) => s.stopPosition),
     side: 1,
     back: 22,
@@ -178,7 +180,7 @@ const KINDS: ReadonlyArray<Kind> = [
   {
     key: 'stationhouse',
     label: '駅ごとの違い（駅舎・改札・番線標・車止め）',
-    build: () => buildStations(route, frameAt),
+    build: () => buildStations(route, frameAt).objects,
     spots: () => route.stations.map((s) => s.stopPosition),
     // 駅舎はホームの背面（線路の左）に建つ。運転席の高さからはホームに隠れて
     // 見えないので、**ホーム全体が視野に入るところまで下がって**高いところから
@@ -201,6 +203,23 @@ const KINDS: ReadonlyArray<Kind> = [
     lookHeight: 2.0,
   },
   {
+    key: 'works',
+    label: '工場（波板の外壁・軒下の連窓）',
+    /**
+     * 沿線の景色を丸ごと組んでから、工場地帯に立って見る。
+     *
+     * 建物は 1 棟ずつ持てない（用途ごとに 1 つの InstancedMesh へまとめて
+     * あるため）ので、**部品ではなく場所**を指す。踏切や地上子と同じ扱い。
+     */
+    build: () => buildScenery(route, frameAt, weatherLook('dry')),
+    spots: () => industrialSpots(),
+    back: 30,
+    side: -1,
+    standOff: -14,
+    height: 6,
+    lookHeight: 6,
+  },
+  {
     key: 'cab',
     label: '運転台（静止状態）',
     build: () => [createCabInterior().group],
@@ -208,6 +227,23 @@ const KINDS: ReadonlyArray<Kind> = [
     eye: true,
   },
 ];
+
+/**
+ * 工場の建つ距離程。
+ *
+ * 土地利用は距離程だけで決まる（`landUseAt`）ので、路線を舐めて工場地帯の
+ * 区間を拾えばよい。同じ区間の中で何枚も撮っても仕方がないので、
+ * 200m 以内に並んだものはまとめる。
+ */
+function industrialSpots(): number[] {
+  const spots: number[] = [];
+  for (let s = 200; s < route.length - 200; s += 40) {
+    if (landUseAt(route, s) !== 'industry') continue;
+    if (spots.length > 0 && s - spots[spots.length - 1]! < 200) continue;
+    spots.push(s);
+  }
+  return spots;
+}
 
 /** WebGL の文脈は 1 つだけ使い、絵は 2D のキャンバスへ写す（何十個並べても足りる） */
 const renderer = new THREE.WebGLRenderer({ antialias: true });

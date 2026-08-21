@@ -16,11 +16,13 @@ import {
 import {
   apartmentSurface,
   asphaltSurface,
+  breakUpTiling,
   concreteSurface,
   corrugatedSurface,
   contactShadowTexture,
   fenceAlphaTexture,
   glowTexture,
+  GRASS_TILE,
   grassSurface,
   grassTuftTexture,
   leafCardTexture,
@@ -71,6 +73,15 @@ import {
 /** 土地利用が変わる長さ [m]。実際の市街地と郊外の切り替わりもこのくらい */
 const ZONE_LENGTH = 340;
 
+/**
+ * 景色の乱数の種。
+ *
+ * 既定値をここに置いてあるのは、**外から「どこが工場地帯か」を引ける**ように
+ * するためである（`landUseAt`）。部品の姿見（`parts.ts`）は、工場の建つ距離程を
+ * 知らないとそこへカメラを置けない。
+ */
+const DEFAULT_SEED = 0xc0ffee;
+
 /** 用地境界のフェンスの位置（軌道中心から）と高さ [m] */
 /**
  * 用地境界のフェンス。
@@ -91,7 +102,7 @@ const UTILITY_POLE = { height: 11.0, offset: 7.4, pitch: 40, topDiameter: 0.19 }
 const GROUND = -1.2;
 
 /** 沿線の土地利用 */
-type LandUse = 'residential' | 'apartment' | 'industry' | 'field' | 'wood' | 'bamboo';
+export type LandUse = 'residential' | 'apartment' | 'industry' | 'field' | 'wood' | 'bamboo';
 
 /** 用途ごとの出やすさ（駅から離れた区間で使う） */
 const LAND_USE_WEIGHTS: ReadonlyArray<readonly [LandUse, number]> = [
@@ -139,6 +150,29 @@ class Bucket {
   }
 }
 
+/**
+ * 樹種 1 つぶんの置き場所を、線路に近いものと遠いものに分けて持つ入れ物。
+ *
+ * **近景の樹冠だけ札を細かくする**ために分ける（`leafCanopy` の `grain`）。
+ * 窓いっぱいに来る木は 1 枚 1 枚の板が見えてしまうが、同じ細かさを路線全体の
+ * 何百本にも掛けると頂点が跳ね上がる。遠くの木は霞の中で輪郭しか見えないので、
+ * 安い形のままでよい。
+ */
+class TreeBuckets {
+  readonly near = new Bucket();
+  readonly far = new Bucket();
+
+  /** 近景（線路際）に置くかどうかで振り分ける */
+  at(near: boolean): Bucket {
+    return near ? this.near : this.far;
+  }
+
+  /** 遠近を区別しない用（接地の陰など） */
+  get spots(): readonly Spot[] {
+    return [...this.near.spots, ...this.far.spots];
+  }
+}
+
 /** 積んだ置き場所を InstancedMesh にする。0 個なら何も返さない */
 function instance(
   bucket: Bucket,
@@ -174,7 +208,7 @@ function spread(rng: Rng, low: number, high: number, squash = 0.22): THREE.Vecto
  * 同じ距離程からは必ず同じ用途が出る（区間番号だけから決めているため）。
  * 駅の前後 300m は市街地に固定する。
  */
-function landUseAt(route: CompiledRoute, s: number, seed: number): LandUse {
+export function landUseAt(route: CompiledRoute, s: number, seed: number = DEFAULT_SEED): LandUse {
   const nearStation = route.stations.some(
     (st) => s > st.platformStart - 300 && s < st.platformEnd + 300,
   );
@@ -337,7 +371,7 @@ export function buildScenery(
   options: SceneryOptions = {},
 ): THREE.Object3D[] {
   const step = options.step ?? 13;
-  const seed = options.seed ?? 0xc0ffee;
+  const seed = options.seed ?? DEFAULT_SEED;
   const rng = new Rng(seed);
   const out: THREE.Object3D[] = [];
 
@@ -363,9 +397,10 @@ export function buildScenery(
   const cars = new Bucket();
   const units = new Bucket();
 
-  const broadleaf = new Bucket();
-  const cedar = new Bucket();
-  const bamboo = new Bucket();
+  const broadleaf = new TreeBuckets();
+  const cedar = new TreeBuckets();
+  const bamboo = new TreeBuckets();
+  // 低木は線路際にしか置かないので、遠近を分ける必要がない
   const shrub = new Bucket();
 
   const count = Math.floor(route.length / step);
@@ -405,7 +440,7 @@ export function buildScenery(
       if (use === 'wood' || use === 'field') {
         // 林と田畑の縁には広葉樹と杉が混じって生える。杉は列で植わることが多い
         const conifer = rng.chance(use === 'wood' ? 0.42 : 0.18);
-        const bucket = conifer ? cedar : broadleaf;
+        const bucket = (conifer ? cedar : broadleaf).at(near);
         if (use === 'field' && !near && rng.chance(0.55)) continue;
         bucket.add({
           position,
@@ -425,7 +460,7 @@ export function buildScenery(
       if (use === 'bamboo') {
         // 竹は 1 本ずつではなく株で生える。1 か所に数本まとめて立てる
         for (let k = 0; k < 5; k++) {
-          bamboo.add({
+          bamboo.at(near).add({
             position: position
               .clone()
               .addScaledVector(f.right, rng.range(-2.2, 2.2))
@@ -885,6 +920,9 @@ function buildBuildings(
       tile: WALL_TILE[type.wall],
       openings: type.wall === 'siding' ? SIDING_OPENINGS : [],
       balcony: type.wall === 'apartment',
+      // 波板の工場は軒下の連窓だけ。壁のテクスチャには窓を描いていないので、
+      // ここで足す立体がその建物の窓のすべてになる。
+      strip: type.wall === 'corrugated',
     });
     if (facade.frame) {
       const mesh = instance(bucket, facade.frame, trim);
@@ -913,9 +951,9 @@ function buildBuildings(
  * やり方より頂点は増えるが、どの向きから見ても厚みがあり、影も立体として落ちる。
  */
 function buildVegetation(
-  broadleaf: Bucket,
-  cedar: Bucket,
-  bamboo: Bucket,
+  broadleaf: TreeBuckets,
+  cedar: TreeBuckets,
+  bamboo: TreeBuckets,
   shrub: Bucket,
   look: WeatherLook,
 ): THREE.Object3D[] {
@@ -946,52 +984,144 @@ function buildVegetation(
     });
   const bark = new THREE.MeshStandardMaterial({ color: 0x4d4033, roughness: 0.95 });
 
+  /**
+   * 樹冠を 2 通り組む。線路際の木だけ札を細かく（枚数を多く）する。
+   *
+   * 形は 2 つになるが材質は共有するので、増えるのは描画の呼び出し 1 回ぶん
+   * だけで済む。
+   */
+  const canopies = (
+    trees: TreeBuckets,
+    spec: CanopySpec,
+    material: THREE.MeshStandardMaterial,
+    tint?: number,
+  ): void => {
+    for (const [bucket, grain] of [
+      [trees.near, NEAR_GRAIN],
+      [trees.far, 1],
+    ] as const) {
+      const spots = tint === undefined ? bucket : sameSpots(bucket, tint);
+      const mesh = instance(spots, leafCanopy(spec, grain), material);
+      if (mesh) out.push(mesh);
+    }
+  };
+
+  /**
+   * 幹。近景も遠景も同じ形でよい（円柱なので、近づいても板には見えない）。
+   *
+   * @param tint 幹の色。省かないかぎり置き場所ごとの色を上書きする
+   *   （竹の稈だけは 1 本ずつ色が違うので省く）
+   */
+  const trunks = (
+    trees: TreeBuckets,
+    geometry: THREE.BufferGeometry,
+    material: THREE.Material,
+    tint?: number,
+  ): void => {
+    for (const bucket of [trees.near, trees.far]) {
+      const mesh = instance(
+        tint === undefined ? bucket : sameSpots(bucket, tint),
+        geometry,
+        material,
+      );
+      if (mesh) out.push(mesh);
+    }
+  };
+
   // 広葉樹: 幹 + 交差させた葉の札。札を球面上へ散らすと、外から見て
   // どの向きからも葉が縁を作る。
-  if (broadleaf.spots.length > 0) {
-    const canopy = leafCanopy(3.3, 6.0, 2.4, 11, 0x2b71cd);
-    const mesh = instance(broadleaf, canopy, leaf(0.86));
-    if (mesh) out.push(mesh);
-    const trunk = new THREE.CylinderGeometry(0.16, 0.28, 4.6, 6);
-    trunk.translate(0, 2.3, 0);
-    const trunks = instance(sameSpots(broadleaf, 0xb8a894), trunk, bark);
-    if (trunks) out.push(trunks);
-  }
+  canopies(broadleaf, BROADLEAF_CANOPY, leaf(0.86));
+  const broadleafTrunk = new THREE.CylinderGeometry(0.16, 0.28, 4.6, 6);
+  broadleafTrunk.translate(0, 2.3, 0);
+  trunks(broadleaf, broadleafTrunk, bark, 0xb8a894);
 
   // スギ: 細く高い円錐の面へ札を並べる。人工林の尖った輪郭になる
-  if (cedar.spots.length > 0) {
-    const canopy = leafCanopy(1.7, 8.4, 4.6, 13, 0x51d0a7, 0.55);
-    const mesh = instance(cedar, canopy, leaf(0.9));
-    if (mesh) out.push(mesh);
-    const trunk = new THREE.CylinderGeometry(0.13, 0.24, 5.2, 5);
-    trunk.translate(0, 2.6, 0);
-    const trunks = instance(sameSpots(cedar, 0x9c8a70), trunk, bark);
-    if (trunks) out.push(trunks);
-  }
+  canopies(cedar, CEDAR_CANOPY, leaf(0.9));
+  const cedarTrunk = new THREE.CylinderGeometry(0.13, 0.24, 5.2, 5);
+  cedarTrunk.translate(0, 2.6, 0);
+  trunks(cedar, cedarTrunk, bark, 0x9c8a70);
 
   // 竹: 稈（かん）は 15m でほぼ一様な太さ。葉は上 1/3 にだけ付く
-  if (bamboo.spots.length > 0) {
-    const culm = new THREE.CylinderGeometry(0.055, 0.075, 14, 5);
-    culm.translate(0, 7, 0);
-    // 稈（かん）は黄緑がかった明るい色。竹林が明るく見えるのはこの幹の色による
-    const culms = instance(
-      bamboo,
-      culm,
-      new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.6 }),
-    );
-    if (culms) out.push(culms);
-    const canopy = leafCanopy(1.3, 12.2, 1.9, 7, 0x9a2f61);
-    const leaves = instance(sameSpots(bamboo, 0xe8e4bc), canopy, leaf(0.9));
-    if (leaves) out.push(leaves);
-  }
+  const culm = new THREE.CylinderGeometry(0.055, 0.075, 14, 5);
+  culm.translate(0, 7, 0);
+  // 稈（かん）は黄緑がかった明るい色。竹林が明るく見えるのはこの幹の色による
+  trunks(bamboo, culm, new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.6 }));
+  canopies(bamboo, BAMBOO_CANOPY, leaf(0.9), 0xe8e4bc);
 
-  // 線路際の低木。背が低く、まとまって生える
+  // 線路際の低木。背が低く、まとまって生える。**運転席からいちばん近くを
+  // 流れる緑**なので、樹冠と同じ理由で札を細かくする。
   if (shrub.spots.length > 0) {
-    const canopy = leafCanopy(1.0, 0.55, 0.5, 5, 0x3c9a12);
-    const mesh = instance(shrub, canopy, leaf(0.95));
+    const mesh = instance(shrub, leafCanopy(SHRUB_CANOPY, SHRUB_GRAIN), leaf(0.95));
     if (mesh) out.push(mesh);
   }
   return out;
+}
+
+/**
+ * 近景の樹冠で、葉の札をどれだけ小さくするか。
+ *
+ * 元の札は差し渡し 8m あって、**樹冠そのものより大きい**。窓いっぱいに木が
+ * 来ると 1 枚が 1 枚として読めてしまうのはこのためで、絵に描いてある葉むらも
+ * 1 つ 900mm という有り得ない大きさになっていた。0.45 倍にすれば札は 3.8m、
+ * 葉むらは 400mm ほどになり、実物の小枝 1 本ぶんに近づく。枚数は
+ * `leafCanopy` が覆う面積を保つように増やす（1/0.45² ≒ 5 倍）。
+ */
+const NEAR_GRAIN = 0.45;
+
+/** 低木の札。樹木ほど細かくしなくてよい（低木は葉むらが大きく、背が低い） */
+const SHRUB_GRAIN = 0.6;
+
+/** 広葉樹（ケヤキ・クヌギ）— 横に広がる丸い樹冠 */
+const BROADLEAF_CANOPY: CanopySpec = {
+  radius: 3.3,
+  height: 6.0,
+  spread: 2.4,
+  count: 11,
+  seed: 0x2b71cd,
+};
+
+/** スギ（人工林）— 上へ行くほど絞った円錐 */
+const CEDAR_CANOPY: CanopySpec = {
+  radius: 1.7,
+  height: 8.4,
+  spread: 4.6,
+  count: 13,
+  seed: 0x51d0a7,
+  taper: 0.55,
+};
+
+/** モウソウチク — 稈の上のほうにだけ葉が付く */
+const BAMBOO_CANOPY: CanopySpec = {
+  radius: 1.3,
+  height: 12.2,
+  spread: 1.9,
+  count: 7,
+  seed: 0x9a2f61,
+};
+
+/** 線路際の低木 */
+const SHRUB_CANOPY: CanopySpec = {
+  radius: 1.0,
+  height: 0.55,
+  spread: 0.5,
+  count: 5,
+  seed: 0x3c9a12,
+};
+
+/** 樹冠 1 つぶんの形（樹種ごとに決まる） */
+interface CanopySpec {
+  /** 樹冠の半径 [m] */
+  readonly radius: number;
+  /** 樹冠の中心高さ [m] */
+  readonly height: number;
+  /** 上下の広がり [m] */
+  readonly spread: number;
+  /** 札の枚数（`grain` で増える） */
+  readonly count: number;
+  /** 同じ種からは必ず同じ形が出る */
+  readonly seed: number;
+  /** 上へ行くほど半径を絞る割合（スギのような円錐形にする） */
+  readonly taper?: number;
 }
 
 /**
@@ -1002,18 +1132,13 @@ function buildVegetation(
  * 樹冠の中身が詰まって見えるようにするためで、中を通した板は横から見ると
  * 一直線に見えてしまう。札は必ず外を向く（法線が外向き）。
  *
- * @param count 札の枚数。多いほど密になるが、頂点はこれに比例する
- * @param seed 同じ種からは必ず同じ形が出る
- * @param taper 上へ行くほど半径を絞る割合（スギのような円錐形にする）
+ * @param grain 札の大きさの倍率。小さくするほど 1 枚が目立たなくなるが、
+ *   そのぶん**枚数を面積の比（1/grain²）で増やす**ので、樹冠の詰まり具合は
+ *   変わらない。頂点はその枚数に比例するので、線路際の木にだけ効かせる。
  */
-function leafCanopy(
-  radius: number,
-  height: number,
-  spread: number,
-  count: number,
-  seed: number,
-  taper = 0,
-): THREE.BufferGeometry {
+function leafCanopy(spec: CanopySpec, grain = 1): THREE.BufferGeometry {
+  const { radius, height, spread, seed, taper = 0 } = spec;
+  const count = Math.max(1, Math.round(spec.count / (grain * grain)));
   const rand = mulberry(seed);
   const parts: THREE.BufferGeometry[] = [];
   for (let i = 0; i < count; i++) {
@@ -1023,17 +1148,20 @@ function leafCanopy(
     const r = Math.sqrt(Math.max(0, 1 - y * y));
     const phi = i * 2.399963;
     const shrink = 1 - taper * (0.5 + y / 2);
-    const size = radius * (1.05 + rand() * 0.5) * (0.75 + shrink * 0.4);
+    const size = radius * (1.05 + rand() * 0.5) * (0.75 + shrink * 0.4) * grain;
     const card = new THREE.PlaneGeometry(size * 1.7, size * 1.7);
     // 板の向き: 外向きの法線に揃えたうえで、面内で回して同じ絵の繰り返しを崩す
     card.rotateZ(rand() * Math.PI * 2);
     const normal = new THREE.Vector3(Math.cos(phi) * r, y, Math.sin(phi) * r);
     const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), normal);
     card.applyQuaternion(q);
+    // 殻の厚みの中へ散らす。全部を同じ半径に置くと、**近景で札が多いほど
+    // 「薄い殻」に見える**（枚数を増やすと縁がそろってしまうため）。
+    const shell = 0.42 + rand() * 0.34;
     card.translate(
-      normal.x * radius * shrink * 0.55,
-      height + normal.y * spread * 0.55,
-      normal.z * radius * shrink * 0.55,
+      normal.x * radius * shrink * shell,
+      height + normal.y * spread * shell,
+      normal.z * radius * shrink * shell,
     );
     parts.push(card);
   }
@@ -1596,20 +1724,21 @@ export function buildOuterGround(
   geom.setIndex(indices);
   geom.computeVertexNormals();
 
-  const grassMaps = grassSurface().maps(7);
-  const mesh = new THREE.Mesh(
-    geom,
-    new THREE.MeshStandardMaterial({
-      color: mixColor(0x87a06a, look.surface.tint, look.surface.mix),
-      // 雪が積もれば下地の模様は見えない（`weather.ts` の `surfaceCoat` と同じ扱い）
-      map: look.surface.mix > 0.5 ? null : grassMaps.map,
-      normalMap: grassMaps.normalMap,
-      // 1 格子 = 220m もあるので、凹凸は繰り返しの模様としてしか見えない
-      normalScale: new THREE.Vector2(0.2, 0.2),
-      vertexColors: true,
-      roughness: 1,
-    }),
-  );
+  const grassMaps = grassSurface().maps(GRASS_TILE);
+  const material = new THREE.MeshStandardMaterial({
+    color: mixColor(0x87a06a, look.surface.tint, look.surface.mix),
+    // 雪が積もれば下地の模様は見えない（`weather.ts` の `surfaceCoat` と同じ扱い）
+    map: look.surface.mix > 0.5 ? null : grassMaps.map,
+    normalMap: grassMaps.normalMap,
+    // 1 格子 = 220m もあるので、凹凸は繰り返しの模様としてしか見えない
+    normalScale: new THREE.Vector2(0.2, 0.2),
+    vertexColors: true,
+    roughness: 1,
+  });
+  // 貼り幅の格子を崩す。**遠景ほど 1 画素あたりの繰り返し数が多い**ので、
+  // 手前の板より効く（手前の板も `scene.ts` で同じ処理をしている）。
+  breakUpTiling(material);
+  const mesh = new THREE.Mesh(geom, material);
   // 影の箱（列車の周り 200m）の外にしか無いので、影の受け渡しは要らない
   mesh.receiveShadow = false;
   mesh.castShadow = false;

@@ -592,11 +592,13 @@ export function buildBeacons(
 export function buildStations(
   route: CompiledRoute,
   frameAt: (s: number) => TrackFrame,
-): THREE.Object3D[] {
+): { objects: THREE.Object3D[]; crowds: CrowdHandle[] } {
   const out: THREE.Object3D[] = [];
+  // 待っている人の取っ手。`TrackScene.update()` がここへ時刻を渡して揺らす
+  const crowds: CrowdHandle[] = [];
   for (let i = 0; i < route.stations.length; i++) {
     const station = route.stations[i]!;
-    out.push(...buildPlatform(station, frameAt));
+    out.push(...buildPlatform(station, frameAt, crowds));
     /**
      * 隣に線路がある駅は、その線路にもホームが要る。
      *
@@ -608,7 +610,9 @@ export function buildStations(
     const adjacent = route.adjacentTrack.offsetAt(station.stopPosition);
     const character = stationCharacter(route, station, i);
     if (Math.abs(adjacent) > 2.5) {
-      out.push(...buildOppositePlatform(station, frameAt, adjacent));
+      const opposite = buildOppositePlatform(station, frameAt, adjacent);
+      out.push(...opposite.objects);
+      if (opposite.crowd) crowds.push(opposite.crowd);
       if (needsFootbridge(character)) {
         out.push(...buildFootbridge(station, frameAt, adjacent));
       }
@@ -617,7 +621,7 @@ export function buildStations(
     // ホームと上屋は全駅で同じものを使う（実物もそうなっている）。
     out.push(...buildStationExtras(route, station, frameAt, character));
   }
-  return out;
+  return { objects: out, crowds };
 }
 
 /**
@@ -627,37 +631,153 @@ export function buildStations(
  * **背丈のあるものが縦に立っている**というだけでホームの寸法が読めるように
  * なる（上屋の高さも、ホームの幅も、人を基準にして見ている）。
  * 立ち位置は乗車位置目標のあたりに寄せる — 実際の客もそこに並ぶ。
+ *
+ * ## 動かす
+ *
+ * 止まったままの人形は、置かないよりも目立つ。**人は立っているあいだも
+ * 止まっていない**からで、直立は倒立振子を足首で釣り合わせ続けている状態に
+ * すぎず、重心は絶えず前後左右へ 10〜20mm 揺れている（`interior.ts` の
+ * 立っている乗客と同じ見方）。ここでは物理を解かず、
+ *
+ *  - 足元を軸にした 1 度ほどの傾き（重心の揺れ）
+ *  - ときどき向きを変える（列車が来る方を見る／連れと話す）
+ *  - ときどき首を振る
+ *
+ * の 3 つを時刻の関数として重ねる。歩かせる必要はない。**わずかでも動いて
+ * いれば人形には見えなくなる。**
+ *
+ * ## 形
+ *
+ * 胴と頭は**扁平にする**。円柱と球のままだと、向きを変えても輪郭が 1 mm も
+ * 変わらず、せっかく回しても止まって見える。寸法は日本人成人の平均から
+ * 肩幅 440mm・胸厚 260mm、頭は幅 155mm・奥行き 190mm・高さ 220mm。
  */
 function buildPeople(
   spots: ReadonlyArray<{ position: THREE.Vector3; quaternion: THREE.Quaternion; tint: number }>,
-): THREE.Object3D[] {
-  if (spots.length === 0) return [];
+): { objects: THREE.Object3D[]; crowd: CrowdHandle | null } {
+  if (spots.length === 0) return { objects: [], crowd: null };
   const height = 1.68;
   const body = new THREE.CapsuleGeometry(0.17, height * 0.42, 4, 8);
+  // 肩幅 440mm・胸厚 260mm（直径 340mm の断面をその比に潰す）
+  body.scale(0.44 / 0.34, 1, 0.26 / 0.34);
   body.translate(0, height * 0.62, 0);
   const legs = new THREE.CapsuleGeometry(0.13, height * 0.34, 4, 6);
   legs.translate(0, height * 0.26, 0);
+  // 頭は首の付け根で回すので、**原点に置いたまま**にして行列で運ぶ
   const head = new THREE.SphereGeometry(0.105, 8, 6);
-  head.translate(0, height * 0.94, 0);
-  const person = mergeSimple([body, legs, head]);
-  const mesh = new THREE.InstancedMesh(
-    person,
-    new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.85 }),
-    spots.length,
-  );
-  const m = new THREE.Matrix4();
-  const one = new THREE.Vector3(1, 1, 1);
+  head.scale(0.155 / 0.21, 0.22 / 0.21, 0.19 / 0.21);
+  const material = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.85 });
+  const trunk = new THREE.InstancedMesh(mergeSimple([body, legs]), material, spots.length);
+  const heads = new THREE.InstancedMesh(head, material, spots.length);
   const colour = new THREE.Color();
   for (let i = 0; i < spots.length; i++) {
     const spot = spots[i]!;
-    mesh.setMatrixAt(i, m.compose(spot.position, spot.quaternion, one));
-    mesh.setColorAt(i, colour.setHex(spot.tint));
+    trunk.setColorAt(i, colour.setHex(spot.tint));
+    // 頭（顔と髪）は服の色ではない。日本の通勤客の頭は暗い髪と肌の中間くらい
+    heads.setColorAt(i, colour.setHex(0x9a7f6c));
   }
-  mesh.instanceMatrix.needsUpdate = true;
-  if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-  mesh.castShadow = true;
-  return [mesh];
+  for (const mesh of [trunk, heads]) {
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+    mesh.castShadow = true;
+  }
+  const crowd = new CrowdHandle(spots, trunk, heads, height * 0.94);
+  crowd.update(0);
+  return { objects: [trunk, heads], crowd };
 }
+
+/**
+ * ホームで待つ人の動き。
+ *
+ * 位置は組み立てたときのまま持っておき、毎フレームそこからの**ずれ**だけを
+ * 作り直す。人数は 1 駅十数人・路線全体で百数十人なので、行列を組み直す
+ * 手間は無視できる。
+ *
+ * 動きはすべて時刻と**個体ごとの位相**だけの関数にしてある。乱数を使うと
+ * 記録の再生でホームの人だけが別の動きをすることになるうえ、フレーム時間に
+ * 依存して速さが変わる。
+ */
+export class CrowdHandle {
+  private readonly base: ReadonlyArray<{
+    position: THREE.Vector3;
+    quaternion: THREE.Quaternion;
+    /** この人の位相。立ち位置から作るので、同じ駅でも人ごとに違う */
+    phase: number;
+  }>;
+  private readonly matrix = new THREE.Matrix4();
+  private readonly local = new THREE.Matrix4();
+  private readonly rotation = new THREE.Quaternion();
+  private readonly scratch = new THREE.Quaternion();
+  private readonly one = new THREE.Vector3(1, 1, 1);
+  private readonly origin = new THREE.Vector3();
+
+  constructor(
+    spots: ReadonlyArray<{ position: THREE.Vector3; quaternion: THREE.Quaternion }>,
+    private readonly trunk: THREE.InstancedMesh,
+    private readonly heads: THREE.InstancedMesh,
+    /** 頭の中心（足元からの高さ [m]）。首を振るのはこの点のまわり */
+    private readonly neck: number,
+  ) {
+    this.base = spots.map((spot) => ({
+      position: spot.position.clone(),
+      quaternion: spot.quaternion.clone(),
+      // 立ち位置そのものを位相にすれば、隣どうしが同じ揺れ方をしない
+      phase: (spot.position.x * 0.7 + spot.position.z * 1.3) % (Math.PI * 2),
+    }));
+  }
+
+  /** @param time 経過時刻 [s] */
+  update(time: number): void {
+    for (let i = 0; i < this.base.length; i++) {
+      const person = this.base[i]!;
+      const p = person.phase;
+      // --- 重心の揺れ ---
+      // 足首を支点にした傾き。静止立位の重心動揺は前後左右 10〜20mm ほどで、
+      // 身長 1.7m で割ると 0.01rad にしかならない。周期も 2〜3 秒と、
+      // 思うより遅い。**近くで見たときに生きて見えるのはこの成分**である。
+      const lean = 0.009 * Math.sin(time * 2.1 + p) + 0.005 * Math.sin(time * 0.83 + p * 1.7);
+      // それとは別に、待っている人は 10 秒に 1 度ほど**軸足を入れ替える**。
+      // こちらは腰が 3〜5cm 横へ動くので、遠目に見えるのはもっぱらこれ。
+      const shift = 0.028 * Math.tanh(3 * Math.sin(time * 0.11 + p * 1.9));
+      const roll = 0.011 * Math.sin(time * 1.7 + p * 1.3) + shift;
+      // --- 向き ---
+      // ゆっくりした揺らぎに、ときどきの向き直りを足す。`tanh` は 2 つの向きの
+      // あいだを素早く行き来する形になるので、「列車の来る方を見た」に見える。
+      const turn =
+        0.09 * Math.sin(time * 0.23 + p * 2.3) + 0.42 * Math.tanh(4 * Math.sin(time * 0.06 + p));
+      this.rotation
+        .copy(person.quaternion)
+        .multiply(this.scratch.setFromAxisAngle(UP, turn))
+        .multiply(this.scratch.setFromAxisAngle(FORWARD, roll))
+        .multiply(this.scratch.setFromAxisAngle(RIGHT, lean));
+      // 体重を移し替えるぶんの上下（数 mm）。傾きだけだと足が地面を擦って見える
+      this.origin.copy(person.position);
+      this.origin.y += 0.004 * Math.sin(time * 1.05 + p * 0.9);
+      this.matrix.compose(this.origin, this.rotation, this.one);
+      this.trunk.setMatrixAt(i, this.matrix);
+
+      // --- 首 ---
+      // ずっと首を振っていると落ち着きが無く見える。`envelope` は 30 秒に
+      // 1 度ほど立ち上がる山で、その間だけ首が動く。
+      const envelope = Math.max(0, Math.sin(time * 0.19 + p * 2.7)) ** 6;
+      this.rotation
+        .setFromAxisAngle(UP, 0.62 * envelope * Math.sin(time * 1.1 + p))
+        .multiply(
+          this.scratch.setFromAxisAngle(RIGHT, 0.14 * envelope * Math.sin(time * 0.74 + p * 1.4)),
+        );
+      this.local.compose(NECK.set(0, this.neck, 0), this.rotation, this.one);
+      this.heads.setMatrixAt(i, this.matrix.multiply(this.local));
+    }
+    this.trunk.instanceMatrix.needsUpdate = true;
+    this.heads.instanceMatrix.needsUpdate = true;
+  }
+}
+
+/** 回転の軸（人の局所座標。X = 右、Y = 上、Z = 前） */
+const UP = new THREE.Vector3(0, 1, 0);
+const RIGHT = new THREE.Vector3(1, 0, 0);
+const FORWARD = new THREE.Vector3(0, 0, 1);
+/** 首の付け根を運ぶための作業用 */
+const NECK = new THREE.Vector3();
 
 /** 服の色。日本の通勤客は暗い色が多い */
 const CLOTHES = [0x3a3f48, 0x2b3038, 0x50565e, 0x6b5f52, 0x8a4a44, 0x3c4a5c, 0x9a9188] as const;
@@ -694,7 +814,7 @@ function buildOppositePlatform(
   station: CompiledRoute['stations'][number],
   frameAt: (s: number) => TrackFrame,
   adjacent: number,
-): THREE.Object3D[] {
+): { objects: THREE.Object3D[]; crowd: CrowdHandle | null } {
   const out: THREE.Object3D[] = [];
   const length = station.platformEnd - station.platformStart;
   const mid = (station.platformEnd + station.platformStart) / 2;
@@ -844,8 +964,9 @@ function buildOppositePlatform(
       tint: CLOTHES[Math.floor(rng.range(0, CLOTHES.length))]!,
     });
   }
-  out.push(...buildPeople(people));
-  return out;
+  const crowd = buildPeople(people);
+  out.push(...crowd.objects);
+  return { objects: out, crowd: crowd.crowd };
 }
 
 /**
@@ -1003,6 +1124,8 @@ function buildFootbridge(
 function buildPlatform(
   station: CompiledRoute['stations'][number],
   frameAt: (s: number) => TrackFrame,
+  /** 待っている人を動かす取っ手。積んだものは `buildStations` が返す */
+  crowds: CrowdHandle[],
 ): THREE.Object3D[] {
   const out: THREE.Object3D[] = [];
   const length = station.platformEnd - station.platformStart;
@@ -1325,7 +1448,9 @@ function buildPlatform(
         tint: CLOTHES[Math.floor(rng.range(0, CLOTHES.length))]!,
       });
     }
-    out.push(...buildPeople(waiting));
+    const built = buildPeople(waiting);
+    out.push(...built.objects);
+    if (built.crowd) crowds.push(built.crowd);
   }
 
   // --- 停止位置目標（何両編成の停止位置かを書いた板） ---
