@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import type { VehicleSpec } from '@railsim/core';
 import { CAR, CATENARY } from './dimensions.ts';
-import { glowTexture, stainlessSurface } from './textures.ts';
+import { glowTexture, plateTexture, stainlessSurface } from './textures.ts';
+import { hdrColor } from './postprocess.ts';
 
 /**
  * 20m 級 4 扉通勤形電車の車体。
@@ -385,6 +386,18 @@ function buildRoof(bodyLength: number, powered: boolean): THREE.Group {
   coolerLid.position.y = roofY + 0.46;
   group.add(coolerLid);
 
+  // 雨樋（あまどい）。屋根の肩の縁に沿って前後に走る細い溝で、側面から見た
+  // ときに**屋根と車体を分ける 1 本の線**になる。実物の通勤形はどれも持っていて、
+  // これが無いと屋根が車体に溶けて丸太のように見える。
+  for (const z of [-1, 1] as const) {
+    const gutter = new THREE.Mesh(
+      new THREE.BoxGeometry(bodyLength - 0.3, 0.07, 0.09),
+      metal(0x8f959b, 0.55, 0.6),
+    );
+    gutter.position.set(0, CAR.roofHeight - CAR.roofRadius * 0.62, z * (CAR.bodyWidth / 2 - 0.1));
+    group.add(gutter);
+  }
+
   // ランボード（屋根上を歩くための板）
   for (const z of [-0.75, 0.75]) {
     const board = new THREE.Mesh(
@@ -669,14 +682,28 @@ function buildFrontEnd(
   // 前面窓（運転士側が広い。運転士は左に座るので、前を向いたとき左側が大きい）
   group.add(face(1.35, 0.78, windowTop - 0.2, outward * -0.62, GLASS_COLOR, 0.035));
   group.add(face(0.85, 0.72, windowTop - 0.23, outward * 0.72, GLASS_COLOR, 0.035));
-  // 行先表示器
-  group.add(face(0.9, 0.26, windowTop + 0.5, outward * 0.5, 0x101418, 0.03));
+  // 行先表示器（種別 + 行先）。実物は幕か LED で、昼間でも読めるだけの
+  // 明るさで光っている。自ら光る面にしておくと、後処理のブルームで
+  // わずかに滲み、遠くからでも「そこに表示がある」と分かる。
+  const destination = new THREE.Mesh(
+    new THREE.BoxGeometry(0.04, 0.26, 0.9),
+    new THREE.MeshStandardMaterial({
+      map: plateTexture(['各駅停車 登戸'], { background: '#101418', color: '#f2e6b4', aspect: 3.4 }),
+      emissive: 0xffffff,
+      emissiveIntensity: 0.35,
+      roughness: 0.4,
+    }),
+  );
+  destination.position.set(x + outward * 0.03, windowTop + 0.5, outward * 0.5);
+  // 板の絵は進行方向の外側から読む。裏返っている側は 180 度回す
+  if (outward < 0) destination.rotation.y = Math.PI;
+  group.add(destination);
 
   // 前照灯（下部左右）と尾灯
   for (const dz of [-1, 1]) {
     const head = new THREE.Mesh(
       new THREE.CylinderGeometry(0.11, 0.11, 0.06, 12),
-      new THREE.MeshBasicMaterial({ color: 0xfff6d8 }),
+      new THREE.MeshBasicMaterial({ color: hdrColor(HEAD_LAMP_OFF, 1) }),
     );
     head.rotation.z = Math.PI / 2;
     head.position.set(x + outward * 0.04, CAR.floorHeight + 0.42, dz * 1.05);
@@ -701,7 +728,7 @@ function buildFrontEnd(
 
     const tail = new THREE.Mesh(
       new THREE.CylinderGeometry(0.07, 0.07, 0.05, 10),
-      new THREE.MeshBasicMaterial({ color: 0x5a1512 }),
+      new THREE.MeshBasicMaterial({ color: hdrColor(TAIL_LAMP_OFF, 1) }),
     );
     tail.rotation.z = Math.PI / 2;
     tail.position.set(x + outward * 0.04, CAR.floorHeight + 0.42, dz * 0.78);
@@ -716,8 +743,13 @@ function buildFrontEnd(
 
   const lights: FrontLights = {
     setHeadlight(on, high) {
-      const color = on ? (high ? HEAD_LAMP_HIGH : HEAD_LAMP_LOW) : HEAD_LAMP_OFF;
-      for (const head of heads) (head.material as THREE.MeshBasicMaterial).color.setHex(color);
+      // 点灯している灯具は画面の白より明るい。倍率を掛けておくと、後処理の
+      // ブルームがしきい値（1.3）を超えたぶんだけ滲ませる（`postprocess.ts`）。
+      // 減光では倍率も落ちるので、滲みの大きさで前照灯と減光が見分けられる。
+      const color = on
+        ? hdrColor(high ? HEAD_LAMP_HIGH : HEAD_LAMP_LOW, high ? HEAD_GAIN : HEAD_GAIN * 0.35)
+        : hdrColor(HEAD_LAMP_OFF, 1);
+      for (const head of heads) (head.material as THREE.MeshBasicMaterial).color.copy(color);
       for (const halo of halos) {
         halo.visible = on;
         // 減光では滲みも小さくする（灯具そのものより周りの明るさで差が分かる）
@@ -726,7 +758,9 @@ function buildFrontEnd(
     },
     setTail(on) {
       for (const tail of tails) {
-        (tail.material as THREE.MeshBasicMaterial).color.setHex(on ? TAIL_LAMP_ON : TAIL_LAMP_OFF);
+        (tail.material as THREE.MeshBasicMaterial).color.copy(
+          on ? hdrColor(TAIL_LAMP_ON, TAIL_GAIN) : hdrColor(TAIL_LAMP_OFF, 1),
+        );
       }
     },
   };
@@ -736,6 +770,10 @@ function buildFrontEnd(
 
   return { group, lights };
 }
+
+/** 点灯した前照灯・尾灯の輝度倍率（ブルームのしきい値 1.3 を超えるように） */
+const HEAD_GAIN = 3.6;
+const TAIL_GAIN = 2.6;
 
 /** 前照灯（点灯・減光・消灯）と尾灯（点灯・消灯）の色 */
 const HEAD_LAMP_HIGH = 0xfff6d8;

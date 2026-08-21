@@ -54,11 +54,24 @@ const EMA_ALPHA = 0.08;
 /**
  * ブルームの設定。
  *
- * しきい値 1.0 は「トーンマッピング後に白飛びする明るさ」の境目である。
- * 昼間の空や白い壁はここを少し超える程度なので弱くにじみ、信号の灯火や
- * 前照灯（`hdrColor()` で数倍の値を持たせてある）は強くにじむ。
+ * しきい値は**何を光らせるか**を決める。1.0（白飛びの境目）に置くと、
+ * 昼間の空も、日の当たった白い壁も、ホームの床も一緒に滲んで、画面全体に
+ * もやが掛かったようになる（実際そうなった）。灯火だけを光らせたいので、
+ * 「白より明らかに明るいもの」まで上げる。
+ *
+ * 各所の輝度倍率（`hdrColor()`）は
+ *
+ *  | もの             | 倍率 | しきい値 1.3 を超えるか |
+ *  |------------------|------|--------------------------|
+ *  | 晴天の空・雲     | 〜1.1| 超えない                 |
+ *  | 日なたの白い壁   | 〜0.9| 超えない                 |
+ *  | 信号の灯火       | 3.2  | 超える                   |
+ *  | 踏切の警報灯     | 3.0  | 超える                   |
+ *  | 前照灯（点灯）   | 3.6  | 超える                   |
+ *
+ * となっていて、この表がそのままブルームの設計になっている。
  */
-const BLOOM = { strength: 0.42, radius: 0.55, threshold: 1.0 } as const;
+const BLOOM = { strength: 0.3, radius: 0.4, threshold: 1.3 } as const;
 
 /**
  * 自ら光る面の色を「画面より明るい」値にする。
@@ -117,6 +130,21 @@ const GradeShader = {
   `,
 };
 
+/**
+ * URL で品質段を固定する（`?fx=full` / `?fx=bloom` / `?fx=off`）。
+ *
+ * 既定は実測に任せた自動の切り下げだが、それだと**遅い環境では後処理が
+ * まったく見られない**。ソフトウェア描画で確認しているときにブルームの
+ * 強さを詰められないのは困るので、逃げ道を用意しておく。
+ * `startOverride.ts` を通さずここで直接読むのは、これが描画の設定であって
+ * 走行条件ではないからである（記録・再生の対象にしてはいけない）。
+ */
+function fixedQuality(): PostQuality | null {
+  if (typeof location === 'undefined') return null;
+  const value = new URLSearchParams(location.search).get('fx');
+  return value === 'full' || value === 'bloom' || value === 'off' ? value : null;
+}
+
 export class Postprocess {
   private readonly composer: EffectComposer;
   private readonly renderPass: RenderPass;
@@ -125,6 +153,8 @@ export class Postprocess {
   private readonly fxaaPass: ShaderPass;
   private readonly renderer: THREE.WebGLRenderer;
   private quality: PostQuality = 'full';
+  /** URL で固定されていれば、実測で切り下げない */
+  private readonly locked: PostQuality | null = fixedQuality();
   private ema = 0;
   private samples = 0;
   private width = 1;
@@ -153,6 +183,7 @@ export class Postprocess {
     this.composer.addPass(this.gradePass);
     this.composer.addPass(this.fxaaPass);
     this.composer.addPass(new OutputPass());
+    if (this.locked) this.quality = this.locked;
     this.applyQuality();
   }
 
@@ -189,6 +220,7 @@ export class Postprocess {
   }
 
   private measure(ms: number): void {
+    if (this.locked) return;
     // 最初の数フレームはシェーダの初回コンパイルが混じるので数えない
     this.samples++;
     if (this.samples < 8) return;

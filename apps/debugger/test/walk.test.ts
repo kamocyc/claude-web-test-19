@@ -25,10 +25,12 @@ describe('区間の引き算', () => {
   });
 
   it('重なった開口はまとめて 1 つとして抜く', () => {
-    expect(subtractSpans(0, 10, [
-      [2, 5],
-      [4, 6],
-    ])).toEqual([
+    expect(
+      subtractSpans(0, 10, [
+        [2, 5],
+        [4, 6],
+      ]),
+    ).toEqual([
       [0, 2],
       [6, 10],
     ]);

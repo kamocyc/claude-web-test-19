@@ -89,7 +89,16 @@ function panel(
  * 運転台の面は塗装ではなく**梨地（しぼ）の樹脂**で、細かい粒が見える。単色の
  * 板にすると「灰色の平面」にしか見えないので、地の模様だけ入れておく。
  */
-function grained(color: number, x: number, y: number, z: number, w: number, h: number, d: number): THREE.Mesh { // prettier-ignore
+function grained(
+  color: number,
+  x: number,
+  y: number,
+  z: number,
+  w: number,
+  h: number,
+  d: number,
+): THREE.Mesh {
+  // prettier-ignore
   const map = cabPanelTexture();
   const item = new THREE.Mesh(
     new THREE.BoxGeometry(w, h, d),
@@ -146,9 +155,10 @@ class Gauge {
         map: texture,
         roughness: 0.75,
         metalness: 0,
-        // 計器の文字板は照明で照らされている（実物も内部照明を持つ）
+        // 計器の文字板は内部照明で照らされているが、強くしすぎると日射しが
+        // 差し込んだときに白く飛んで**目盛りが読めなくなる**。読めることを優先する。
         emissive: 0xffffff,
-        emissiveIntensity: 0.28,
+        emissiveIntensity: 0.1,
         emissiveMap: texture,
       }),
     );

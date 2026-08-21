@@ -8,13 +8,7 @@ import {
 import { buildCatenary } from './catenary.ts';
 import { makeFrameAt, type TrackFrame } from './frame.ts';
 import { buildHorizon, buildScenery, buildTunnels } from './scenery.ts';
-import {
-  createDaylight,
-  createSky,
-  SHADOW_DISTANCE,
-  SUN_DIRECTION,
-  type SkyHandle,
-} from './sky.ts';
+import { aimShadowBox, createDaylight, createSky, type SkyHandle } from './sky.ts';
 import { coatMaterial, fogDensity, surfaceCoat, weatherLook, type WeatherLook } from './weather.ts';
 import { buildTrack, buildTurnouts } from './track.ts';
 import {
@@ -401,10 +395,15 @@ export class TrackScene {
     // できないので、列車の周り 100m ほどだけを高い解像度で焼く。
     const lead = this.vehicleMeshes[0];
     if (lead) {
-      this.sun.target.position.copy(lead.position);
-      // 光源を運ぶ距離は影の箱の near/far と対になっている（`sky.ts`）ので、
-      // ここで別の値を書くと影が手前で切れる。
-      this.sun.position.copy(lead.position).addScaledVector(SUN_DIRECTION, SHADOW_DISTANCE);
+      // 箱の置き方（前方へ寄せる・画素へ丸める）は `sky.ts` が決める。
+      // 光源の距離と near/far は対になっているので、ここで別の値を書くと
+      // 影が手前で切れる。
+      aimShadowBox(
+        this.sun.position,
+        this.sun.target.position,
+        lead.position,
+        this.frameAt(sim.dynamics.vehicles[0]!.s).forward,
+      );
     }
   }
 

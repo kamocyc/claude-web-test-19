@@ -14,6 +14,7 @@ import {
   tactileSurface,
 } from './textures.ts';
 import { hdrColor } from './postprocess.ts';
+import { Rng } from '@railsim/core';
 
 /**
  * 沿線の設備（信号機・標識・地上子・駅）。
@@ -594,7 +595,352 @@ export function buildStations(
   const out: THREE.Object3D[] = [];
   for (const station of route.stations) {
     out.push(...buildPlatform(station, frameAt));
+    /**
+     * 隣に線路がある駅は、その線路にもホームが要る。
+     *
+     * 単線の駅は片面ホーム 1 面 1 線でよいが、複線区間の駅（稲田堤・向ヶ丘）は
+     * 上下線が別々なので、**線路を挟んで 2 面 2 線**になる。日本の複線区間の
+     * 中間駅でいちばん多い形がこれで、2 つのホームは跨線橋か地下通路で結ぶ。
+     * 片側にしかホームが無い複線駅は、上りの客が乗れないので成り立たない。
+     */
+    const adjacent = route.adjacentTrack.offsetAt(station.stopPosition);
+    if (Math.abs(adjacent) > 2.5) {
+      out.push(...buildOppositePlatform(station, frameAt, adjacent));
+      out.push(...buildFootbridge(station, frameAt, adjacent));
+    }
   }
+  return out;
+}
+
+/**
+ * 待っている人。
+ *
+ * 人のいないホームは無人駅にしか見えない。頭・胴・脚だけの単純な形でも、
+ * **背丈のあるものが縦に立っている**というだけでホームの寸法が読めるように
+ * なる（上屋の高さも、ホームの幅も、人を基準にして見ている）。
+ * 立ち位置は乗車位置目標のあたりに寄せる — 実際の客もそこに並ぶ。
+ */
+function buildPeople(
+  spots: ReadonlyArray<{ position: THREE.Vector3; quaternion: THREE.Quaternion; tint: number }>,
+): THREE.Object3D[] {
+  if (spots.length === 0) return [];
+  const height = 1.68;
+  const body = new THREE.CapsuleGeometry(0.17, height * 0.42, 4, 8);
+  body.translate(0, height * 0.62, 0);
+  const legs = new THREE.CapsuleGeometry(0.13, height * 0.34, 4, 6);
+  legs.translate(0, height * 0.26, 0);
+  const head = new THREE.SphereGeometry(0.105, 8, 6);
+  head.translate(0, height * 0.94, 0);
+  const person = mergeSimple([body, legs, head]);
+  const mesh = new THREE.InstancedMesh(
+    person,
+    new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.85 }),
+    spots.length,
+  );
+  const m = new THREE.Matrix4();
+  const one = new THREE.Vector3(1, 1, 1);
+  const colour = new THREE.Color();
+  for (let i = 0; i < spots.length; i++) {
+    const spot = spots[i]!;
+    mesh.setMatrixAt(i, m.compose(spot.position, spot.quaternion, one));
+    mesh.setColorAt(i, colour.setHex(spot.tint));
+  }
+  mesh.instanceMatrix.needsUpdate = true;
+  if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+  mesh.castShadow = true;
+  return [mesh];
+}
+
+/** 服の色。日本の通勤客は暗い色が多い */
+const CLOTHES = [0x3a3f48, 0x2b3038, 0x50565e, 0x6b5f52, 0x8a4a44, 0x3c4a5c, 0x9a9188] as const;
+
+/** 位置・法線・UV を持たない単純な形をつなぐ（人形のような無地のもの用） */
+function mergeSimple(parts: readonly THREE.BufferGeometry[]): THREE.BufferGeometry {
+  const positions: number[] = [];
+  const normals: number[] = [];
+  for (const part of parts) {
+    const geom = part.index ? part.toNonIndexed() : part;
+    const p = geom.attributes.position!;
+    if (!geom.attributes.normal) geom.computeVertexNormals();
+    const n = geom.attributes.normal!;
+    for (let i = 0; i < p.count; i++) {
+      positions.push(p.getX(i), p.getY(i), p.getZ(i));
+      normals.push(n.getX(i), n.getY(i), n.getZ(i));
+    }
+  }
+  const merged = new THREE.BufferGeometry();
+  merged.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  merged.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+  return merged;
+}
+
+/**
+ * 向かい側のホーム（複線区間の駅）。
+ *
+ * 自分が走っている線路のホーム（`buildPlatform`）と鏡に置くが、運転席から
+ * 見えるのは**線路側の立面と床**だけなので、そちら側だけを作る。上屋・
+ * 縁端ブロック・点字ブロック・白線・駅名標・待っている人まで入れれば、
+ * すれ違いざまに見える範囲では本物と区別が付かない。
+ */
+function buildOppositePlatform(
+  station: CompiledRoute['stations'][number],
+  frameAt: (s: number) => TrackFrame,
+  adjacent: number,
+): THREE.Object3D[] {
+  const out: THREE.Object3D[] = [];
+  const length = station.platformEnd - station.platformStart;
+  const mid = (station.platformEnd + station.platformStart) / 2;
+  const f = frameAt(mid);
+  const q = frameQuaternion(f, false);
+  /** 隣の線路がどちら側にあるか（+1 = 進行方向右） */
+  const side: 1 | -1 = adjacent > 0 ? 1 : -1;
+  /** ホームの縁端（隣の線路の中心から 1600mm 外側） */
+  const edge = adjacent + side * PLATFORM.edgeOffset;
+  const centre = edge + side * (PLATFORM.width / 2);
+  const back = edge + side * PLATFORM.width;
+
+  const place = <T extends THREE.Object3D>(
+    mesh: T,
+    lateral: number,
+    height: number,
+    along = 0,
+  ): T => {
+    const local = mesh.quaternion.clone();
+    mesh.quaternion.copy(q).multiply(local);
+    mesh.position
+      .copy(f.position)
+      .addScaledVector(f.right, lateral)
+      .addScaledVector(f.forward, along)
+      .add(new THREE.Vector3(0, height, 0));
+    return mesh;
+  };
+
+  const concrete = concreteSurface();
+  const deckMaterial = new THREE.MeshStandardMaterial({
+    color: 0xc2bdb3,
+    ...platformDeckSurface().maps(1.2),
+    normalScale: new THREE.Vector2(0.6, 0.6),
+    roughness: 0.9,
+  });
+  const wallMaterial = new THREE.MeshStandardMaterial({
+    color: 0x9c968c,
+    ...concrete.maps(2.0),
+    normalScale: new THREE.Vector2(0.7, 0.7),
+    roughness: 0.95,
+  });
+  const steel = new THREE.MeshStandardMaterial({
+    color: 0xa4aab0,
+    metalness: 0.55,
+    roughness: 0.5,
+  });
+
+  // 床
+  const deck = new THREE.Mesh(meterPlane(length, PLATFORM.width), deckMaterial);
+  deck.rotation.x = -Math.PI / 2;
+  out.push(place(deck, centre, PLATFORM.height, 0));
+  // 線路側の立面。板の表を線路へ向ける（面の向きを間違えると裏が見える）
+  const wall = new THREE.Mesh(meterPlane(length, PLATFORM.height), wallMaterial);
+  if (side > 0) wall.rotation.y = Math.PI;
+  out.push(place(wall, edge, PLATFORM.height / 2, 0));
+  // 背面と両端
+  const backWall = new THREE.Mesh(meterPlane(length, PLATFORM.height), wallMaterial);
+  if (side < 0) backWall.rotation.y = Math.PI;
+  out.push(place(backWall, back, PLATFORM.height / 2, 0));
+  for (const sign of [-1, 1] as const) {
+    const end = new THREE.Mesh(meterPlane(PLATFORM.width, PLATFORM.height), wallMaterial);
+    end.rotation.y = (sign * Math.PI) / 2;
+    out.push(place(end, centre, PLATFORM.height / 2, (sign * length) / 2));
+  }
+  // 白線と点字ブロック
+  const line = new THREE.Mesh(
+    meterPlane(length, 0.1),
+    new THREE.MeshStandardMaterial({ color: 0xf2f4f6, roughness: 0.7 }),
+  );
+  line.rotation.x = -Math.PI / 2;
+  out.push(place(line, edge + side * 0.12, PLATFORM.height + 0.003, 0));
+  const tactile = new THREE.Mesh(
+    meterPlane(length, PLATFORM.tactileWidth),
+    new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      ...tactileSurface().maps(0.3),
+      normalScale: new THREE.Vector2(1.2, 1.2),
+      roughness: 0.75,
+    }),
+  );
+  tactile.rotation.x = -Math.PI / 2;
+  out.push(place(tactile, edge + side * PLATFORM.tactileOffset, PLATFORM.height + 0.004, 0));
+
+  // 上屋（柱・桁・屋根）
+  const roofLength = Math.min(length - 2, length * 0.85);
+  const roofY = PLATFORM.height + PLATFORM.roofHeight;
+  const columnLateral = [edge + side * 1.2, back - side * 1.0];
+  const bays = Math.max(2, Math.round(roofLength / PLATFORM.roofPitch));
+  for (let i = 0; i <= bays; i++) {
+    const x = -roofLength / 2 + (roofLength * i) / bays;
+    for (const lateral of columnLateral) {
+      const column = new THREE.Mesh(hBeamGeometry(PLATFORM.roofHeight, 0.2, 0.16), steel);
+      out.push(place(column, lateral, PLATFORM.height + PLATFORM.roofHeight / 2, x));
+    }
+  }
+  for (const lateral of columnLateral) {
+    const girder = new THREE.Mesh(new THREE.BoxGeometry(roofLength, 0.3, 0.14), steel);
+    out.push(place(girder, lateral, roofY - 0.2, 0));
+  }
+  const roof = new THREE.Mesh(
+    meterPlane(roofLength, PLATFORM.width - 1.4),
+    new THREE.MeshStandardMaterial({
+      color: 0x9298a0,
+      ...roofPanelSurface().maps(2.4, 0.6),
+      normalScale: new THREE.Vector2(1.4, 1.4),
+      metalness: 0.45,
+      roughness: 0.55,
+      side: THREE.DoubleSide,
+    }),
+  );
+  roof.rotation.x = -Math.PI / 2 - side * 0.035;
+  out.push(place(roof, centre, roofY, 0));
+
+  // 駅名標（線路側から読む面と、ホーム側から読む面）
+  const signMaterial = new THREE.MeshStandardMaterial({
+    map: stationSignTexture(station.name),
+    roughness: 0.6,
+  });
+  const signGeometry = new THREE.PlaneGeometry(1.9, 0.48);
+  for (const t of [0.3, 0.7]) {
+    const x = -roofLength / 2 + roofLength * t;
+    const sign = new THREE.Group();
+    for (const dz of [-1, 1] as const) {
+      const face = new THREE.Mesh(signGeometry, signMaterial);
+      face.rotation.y = dz > 0 ? 0 : Math.PI;
+      face.position.z = dz * 0.01;
+      sign.add(face);
+    }
+    out.push(place(sign, edge + side * 1.4, roofY - 0.85, x));
+  }
+
+  // 待っている人（向かい側なので、こちらを向いて立っている）
+  const rng = new Rng(0x51a7 + Math.round(station.stopPosition));
+  const people: Array<{ position: THREE.Vector3; quaternion: THREE.Quaternion; tint: number }> = [];
+  for (let i = 0; i < 7; i++) {
+    const along = rng.range(-roofLength / 2 + 2, roofLength / 2 - 2);
+    const lateral = edge + side * rng.range(1.1, 2.6);
+    const pf = frameAt(mid + along);
+    people.push({
+      position: pf.position
+        .clone()
+        .addScaledVector(pf.right, lateral)
+        .add(new THREE.Vector3(0, PLATFORM.height, 0)),
+      quaternion: frameQuaternion(pf, false).multiply(
+        new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), rng.range(0, 6.28)),
+      ),
+      tint: CLOTHES[Math.floor(rng.range(0, CLOTHES.length))]!,
+    });
+  }
+  out.push(...buildPeople(people));
+  return out;
+}
+
+/**
+ * 跨線橋（こせんきょう）。
+ *
+ * 2 面 2 線の駅で線路を渡るための橋。運転席からは**駅に入る直前にその下を
+ * くぐる**ので、駅が近いことを最初に知らせるものでもある。
+ *
+ * 高さは架線が決める。トロリ線がレール面上 5000mm、ちょう架線が 5960mm
+ * なので、桁の下端はそれより上へ逃がさなければならない。電化区間の建築限界
+ * （レール面上 6500mm 以上）に合わせてある。
+ */
+function buildFootbridge(
+  station: CompiledRoute['stations'][number],
+  frameAt: (s: number) => TrackFrame,
+  adjacent: number,
+): THREE.Object3D[] {
+  const out: THREE.Object3D[] = [];
+  // ホームの端寄り（進来する列車から見て奥）に架ける
+  const at = station.platformEnd - 18;
+  const f = frameAt(at);
+  const q = frameQuaternion(f, false);
+  const side: 1 | -1 = adjacent > 0 ? 1 : -1;
+  /** 桁の下端（レール面上）。架線の上を逃げる */
+  const clearance = 6.5;
+  const deckThickness = 0.45;
+  const from = -side * (PLATFORM.edgeOffset + PLATFORM.width - 1.5);
+  const to = adjacent + side * (PLATFORM.edgeOffset + PLATFORM.width - 1.5);
+  const span = Math.abs(to - from);
+
+  const steel = new THREE.MeshStandardMaterial({
+    color: 0x9aa0a6,
+    metalness: 0.5,
+    roughness: 0.55,
+  });
+  const panel = new THREE.MeshStandardMaterial({
+    color: 0xb8bcc0,
+    ...roofPanelSurface().maps(2.4, 0.6),
+    normalScale: new THREE.Vector2(1.0, 1.0),
+    metalness: 0.4,
+    roughness: 0.6,
+    side: THREE.DoubleSide,
+  });
+  const glass = new THREE.MeshStandardMaterial({
+    color: 0x39424a,
+    metalness: 0.7,
+    roughness: 0.1,
+    side: THREE.DoubleSide,
+  });
+
+  const group = new THREE.Group();
+  const centre = (from + to) / 2;
+  // 床版
+  const deck = new THREE.Mesh(new THREE.BoxGeometry(3.0, deckThickness, span), steel);
+  deck.position.set(0, clearance + deckThickness / 2, centre);
+  group.add(deck);
+  // 側壁（腰壁 + 窓）と屋根
+  for (const dz of [-1.5, 1.5]) {
+    const parapet = new THREE.Mesh(new THREE.BoxGeometry(0.1, 1.1, span), panel);
+    parapet.position.set(dz, clearance + deckThickness + 0.55, centre);
+    group.add(parapet);
+    const window = new THREE.Mesh(new THREE.PlaneGeometry(span, 1.3), glass);
+    window.rotation.y = Math.PI / 2;
+    window.position.set(dz, clearance + deckThickness + 1.75, centre);
+    group.add(window);
+  }
+  const roof = new THREE.Mesh(new THREE.BoxGeometry(3.4, 0.12, span), panel);
+  roof.position.set(0, clearance + deckThickness + 2.45, centre);
+  group.add(roof);
+
+  // 階段（両ホームへ降りる。踏面 300mm・蹴上げ 170mm の実物どおりの寸法）
+  for (const end of [from, to] as const) {
+    // 段は「ホームの端から橋の中央へ向かって」上がっていく
+    const dir = Math.sign(centre - end) || 1;
+    const rise = clearance - PLATFORM.height;
+    const steps = Math.round(rise / 0.17);
+    for (let i = 0; i < steps; i++) {
+      const step = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.17, 0.3), steel);
+      step.position.set(0, PLATFORM.height + 0.085 + i * 0.17, end + dir * 0.3 * (i + 0.5));
+      group.add(step);
+    }
+    // 階段の踊り場から桁までのつなぎ
+    const landing = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.2, 1.4), steel);
+    landing.position.set(0, clearance, end + dir * (0.3 * steps + 0.7));
+    group.add(landing);
+  }
+
+  // 橋脚（ホーム上に立つ 2 本）
+  for (const end of [from, to] as const) {
+    const column = new THREE.Mesh(
+      new THREE.BoxGeometry(0.32, clearance - PLATFORM.height, 0.32),
+      steel,
+    );
+    column.position.set(1.3, PLATFORM.height + (clearance - PLATFORM.height) / 2, end);
+    group.add(column);
+    const column2 = column.clone();
+    column2.position.x = -1.3;
+    group.add(column2);
+  }
+
+  group.quaternion.copy(q);
+  group.position.copy(f.position);
+  out.push(group);
   return out;
 }
 
@@ -894,6 +1240,36 @@ function buildPlatform(
       const panel = new THREE.Mesh(new THREE.PlaneGeometry(0.94, 1.35), faceMaterial);
       out.push(place(panel, back + 0.83, PLATFORM.height + 1.15, x));
     }
+  }
+
+  // --- 待っている人 ---
+  //
+  // 乗車位置目標のあたりに寄せて立たせる。実際の客も、扉が来る場所を知って
+  // いてそこに並ぶ。少人数でも、**背丈のあるものが縦に立っている**だけで
+  // ホームの幅も上屋の高さも読めるようになる。
+  {
+    const rng = new Rng(0x2f81 + Math.round(station.stopPosition));
+    const waiting: Array<{
+      position: THREE.Vector3;
+      quaternion: THREE.Quaternion;
+      tint: number;
+    }> = [];
+    for (let i = 0; i < 9; i++) {
+      const along = rng.range(-roofLength / 2 + 2, roofLength / 2 - 2);
+      const lateral = edge - rng.range(1.1, 3.0);
+      const pf = frameAt(mid + along);
+      waiting.push({
+        position: pf.position
+          .clone()
+          .addScaledVector(pf.right, lateral)
+          .add(new THREE.Vector3(0, PLATFORM.height, 0)),
+        quaternion: frameQuaternion(pf, false).multiply(
+          new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), rng.range(0, 6.28)),
+        ),
+        tint: CLOTHES[Math.floor(rng.range(0, CLOTHES.length))]!,
+      });
+    }
+    out.push(...buildPeople(waiting));
   }
 
   // --- 停止位置目標（何両編成の停止位置かを書いた板） ---

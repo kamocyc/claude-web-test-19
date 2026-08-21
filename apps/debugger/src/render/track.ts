@@ -127,7 +127,6 @@ export function buildTrack(
   const offset = RAIL_CENTRE_OFFSET(route.alignment.gauge);
 
   // --- レール ---
-  const railStations = stationsAlong(route.length, 3, frameAt);
   const rail = railMaterial();
   // 頭頂面（走行面）。車輪に磨かれた鏡面なので、空を映して銀色に光る
   const railhead = new THREE.MeshStandardMaterial({
@@ -135,22 +134,30 @@ export function buildTrack(
     metalness: 1,
     roughness: 0.14,
   });
-  for (const side of [-1, 1] as const) {
-    const geom = sweepSection(
-      railStations.map((st) => ({ ...st, lateral: side * offset })),
-      RAIL_SECTION,
-      { closed: true },
-    );
-    out.push(new THREE.Mesh(geom, rail));
+  // レールは全長を 1 本のメッシュにしてはいけない。視錐台の判定はメッシュ
+  // 単位なので、14.2km を 1 本にすると**端が視野に入っただけで全長 11 万頂点が
+  // 毎フレーム描かれる**（影を焼くときも同じ）。区間ごとに切っておけば、
+  // 実際に見えている数区間だけになる。
+  for (const [start, end] of chunkSpans(0, route.length)) {
+    // 区間の継ぎ目に隙間を作らないよう、端は次の区間と共有する
+    const stations = stationsBetween(start, end, 3, frameAt);
+    for (const side of [-1, 1] as const) {
+      const geom = sweepSection(
+        stations.map((st) => ({ ...st, lateral: side * offset })),
+        RAIL_SECTION,
+        { closed: true },
+      );
+      out.push(new THREE.Mesh(geom, rail));
 
-    const headGeom = sweepSection(
-      railStations.map((st) => ({ ...st, lateral: side * offset, vertical: 0.002 })),
-      [
-        [-RAIL.headWidth / 2 + 0.006, 0],
-        [RAIL.headWidth / 2 - 0.006, 0],
-      ],
-    );
-    out.push(new THREE.Mesh(headGeom, railhead));
+      const headGeom = sweepSection(
+        stations.map((st) => ({ ...st, lateral: side * offset, vertical: 0.002 })),
+        [
+          [-RAIL.headWidth / 2 + 0.006, 0],
+          [RAIL.headWidth / 2 - 0.006, 0],
+        ],
+      );
+      out.push(new THREE.Mesh(headGeom, railhead));
+    }
   }
 
   // --- 道床・路盤 ---
@@ -172,7 +179,8 @@ export function buildTrack(
     normalScale: new THREE.Vector2(0.8, 0.8),
     side: THREE.DoubleSide,
   });
-  for (const [start, end] of ballastedSpans(route)) {
+  for (const [spanStart, spanEnd] of ballastedSpans(route)) {
+    for (const [start, end] of chunkSpans(spanStart, spanEnd)) {
     const bed = stationsBetween(start, end, 5, frameAt);
     out.push(new THREE.Mesh(sweepSection(bed, ballastFaces), ballastMaterial));
     out.push(new THREE.Mesh(sweepSection(bed, [section[0]!, section[1]!]), slope));
@@ -182,6 +190,7 @@ export function buildTrack(
         slope,
       ),
     );
+    }
   }
 
   // --- まくらぎ ---
@@ -386,18 +395,17 @@ function crossoverGeometry(
   return { spacing, tail, length: 2 * turnout.leadLength + tail };
 }
 
-/** 一定間隔のステーションを作る。終端はかならず含める */
-function stationsAlong(
-  length: number,
-  step: number,
-  frameAt: (s: number) => TrackFrame,
-): SweepStation[] {
-  const n = Math.max(1, Math.ceil(length / step));
-  const out: SweepStation[] = [];
-  for (let i = 0; i <= n; i++) {
-    out.push({ frame: frameAt(Math.min((i * length) / n, length)) });
-  }
-  return out;
+/**
+ * 長い区間を描画の単位へ割る。
+ *
+ * 400m は「近すぎて無駄が出る」と「長すぎて視野の外まで描く」の折り合い。
+ * 運転席から見える範囲がおよそ 1km なので、そのうち 2〜3 区間だけが
+ * 実際に描かれることになる。
+ */
+function chunkSpans(start: number, end: number, size = 400): Array<[number, number]> {
+  const out: Array<[number, number]> = [];
+  for (let s = start; s < end; s += size) out.push([s, Math.min(end, s + size)]);
+  return out.length > 0 ? out : [[start, end]];
 }
 
 /**
@@ -416,55 +424,63 @@ function buildSleepers(
 ): THREE.Group {
   const group = new THREE.Group();
   const total = Math.floor(route.length / SLEEPER.spacing);
-  const positions: number[] = [];
+  const top = -RAIL.height;
+  // まくらぎは 25000 本ある。1 つのインスタンスにまとめると、レールと同じ理由で
+  // 視野の外のぶんまで毎フレーム描かれる。区間ごとに分ける。
+  const byChunk = new Map<number, number[]>();
   for (let i = 0; i < total; i++) {
     const s = i * SLEEPER.spacing;
     if (skip.some(([a, b]) => s >= a && s <= b)) continue;
-    positions.push(s);
+    const chunk = Math.floor(s / 400);
+    const list = byChunk.get(chunk);
+    if (list) list.push(s);
+    else byChunk.set(chunk, [s]);
   }
-  const count = positions.length;
-  const top = -RAIL.height;
 
-  const sleeper = new THREE.InstancedMesh(
-    taperedBoxGeometry(SLEEPER.topWidth, SLEEPER.bottomWidth, SLEEPER.height, SLEEPER.length),
-    new THREE.MeshStandardMaterial({
-      color: SLEEPER_COLOR,
-      ...sleeperSurface().maps(0.9),
-      normalScale: new THREE.Vector2(0.7, 0.7),
-      roughness: 0.92,
-    }),
-    count,
+  const sleeperGeometry = taperedBoxGeometry(
+    SLEEPER.topWidth,
+    SLEEPER.bottomWidth,
+    SLEEPER.height,
+    SLEEPER.length,
   );
+  const sleeperMaterial = new THREE.MeshStandardMaterial({
+    color: SLEEPER_COLOR,
+    ...sleeperSurface().maps(0.9),
+    normalScale: new THREE.Vector2(0.7, 0.7),
+    roughness: 0.92,
+  });
   // 締結装置（レール締結ばねと軌道パッド）。まくらぎ 1 本につき左右 2 個
-  const fastening = new THREE.InstancedMesh(
-    new THREE.BoxGeometry(0.2, 0.03, 0.19),
-    new THREE.MeshStandardMaterial({
-      color: FITTING_COLOR,
-      ...rustedSteelSurface().maps(0.25),
-      metalness: 0.7,
-      roughness: 0.6,
-    }),
-    count * 2,
-  );
+  const fasteningGeometry = new THREE.BoxGeometry(0.2, 0.03, 0.19);
+  const fasteningMaterial = new THREE.MeshStandardMaterial({
+    color: FITTING_COLOR,
+    ...rustedSteelSurface().maps(0.25),
+    metalness: 0.7,
+    roughness: 0.6,
+  });
 
   const m = new THREE.Matrix4();
   const p = new THREE.Vector3();
   const one = new THREE.Vector3(1, 1, 1);
-  for (let i = 0; i < count; i++) {
-    const f = frameAt(positions[i]!);
-    const q = frameQuaternion(f);
-    p.copy(f.position).addScaledVector(f.up, top - SLEEPER.height / 2);
-    sleeper.setMatrixAt(i, m.compose(p, q, one));
-    for (let k = 0; k < 2; k++) {
-      p.copy(f.position)
-        .addScaledVector(f.cantRight, (k === 0 ? -1 : 1) * railOffset)
-        .addScaledVector(f.up, top - 0.015);
-      fastening.setMatrixAt(i * 2 + k, m.compose(p, q, one));
+  for (const positions of byChunk.values()) {
+    const count = positions.length;
+    const sleeper = new THREE.InstancedMesh(sleeperGeometry, sleeperMaterial, count);
+    const fastening = new THREE.InstancedMesh(fasteningGeometry, fasteningMaterial, count * 2);
+    for (let i = 0; i < count; i++) {
+      const f = frameAt(positions[i]!);
+      const q = frameQuaternion(f);
+      p.copy(f.position).addScaledVector(f.up, top - SLEEPER.height / 2);
+      sleeper.setMatrixAt(i, m.compose(p, q, one));
+      for (let k = 0; k < 2; k++) {
+        p.copy(f.position)
+          .addScaledVector(f.cantRight, (k === 0 ? -1 : 1) * railOffset)
+          .addScaledVector(f.up, top - 0.015);
+        fastening.setMatrixAt(i * 2 + k, m.compose(p, q, one));
+      }
     }
+    sleeper.instanceMatrix.needsUpdate = true;
+    fastening.instanceMatrix.needsUpdate = true;
+    group.add(sleeper, fastening);
   }
-  sleeper.instanceMatrix.needsUpdate = true;
-  fastening.instanceMatrix.needsUpdate = true;
-  group.add(sleeper, fastening);
   return group;
 }
 

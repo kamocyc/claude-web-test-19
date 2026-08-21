@@ -16,9 +16,11 @@ import {
   asphaltSurface,
   concreteSurface,
   corrugatedSurface,
+  contactShadowTexture,
   fenceAlphaTexture,
-  foliageSurface,
   glowTexture,
+  grassTuftTexture,
+  leafCardTexture,
   paddySurface,
   plateTexture,
   roofPanelSurface,
@@ -344,6 +346,11 @@ export function buildScenery(
   const byKey = new Map(ARCHETYPES.map((a) => [a.key, a]));
 
   // --- 植生 ---
+  /** 敷地の塀・駐車場の車・室外機 */
+  const walls = new Bucket();
+  const cars = new Bucket();
+  const units = new Bucket();
+
   const broadleaf = new Bucket();
   const cedar = new Bucket();
   const bamboo = new Bucket();
@@ -428,20 +435,185 @@ export function buildScenery(
       // 沿線の家は道路の並びに合わせて建つ。道路は線路に沿っているので、
       // 家も線路と平行になる。まれに直交する区画（別の道路に面した家）を混ぜる。
       const turn = rng.chance(0.18) ? Math.PI / 2 : 0;
+      const orientation = yaw.clone().multiply(yawOnly(turn + rng.range(-0.04, 0.04)));
       buildings.get(type.key)!.add({
         position: offset,
-        quaternion: yaw.clone().multiply(yawOnly(turn + rng.range(-0.04, 0.04))),
+        quaternion: orientation,
         tint: pick(rng, type.tints),
       });
+      // 敷地まわり。日本の住宅地では、家そのものより**家と家のあいだにある
+      // もの**が景色を作っている。ブロック塀・駐車場の車・室外機の 3 つは
+      // どの家にもあり、これが入るだけで「建物の模型」から「街」になる。
+      if (type.wall === 'siding') {
+        if (rng.chance(0.75)) {
+          walls.add({
+            position: position.clone().addScaledVector(f.right, side * -1.2),
+            quaternion: orientation,
+            tint: pick(rng, [0xc8c4b8, 0xbdb9ae, 0xd0ccc0]),
+            scale: new THREE.Vector3(rng.range(0.7, 1.25), 1, 1),
+          });
+        }
+        if (rng.chance(0.5)) {
+          cars.add({
+            position: position
+              .clone()
+              .addScaledVector(f.right, side * 1.6)
+              .addScaledVector(f.forward, rng.range(-4, 4)),
+            quaternion: orientation.clone().multiply(yawOnly(rng.chance(0.5) ? 0 : Math.PI)),
+            tint: pick(rng, [0xe8e8e6, 0x2c2f33, 0x8b9095, 0x2f4a70, 0x8a2f2f, 0xd8d2c0]),
+          });
+        }
+        if (rng.chance(0.65)) {
+          units.add({
+            position: offset
+              .clone()
+              .addScaledVector(f.right, side * -(type.depth * 0.5 + 0.4))
+              .addScaledVector(f.forward, rng.range(-2, 2)),
+            quaternion: orientation,
+            tint: 0xd6d2c8,
+          });
+        }
+      }
     }
   }
 
   out.push(...buildBuildings(buildings, byKey));
+  // 接地の陰。建物と樹木の足元を暗くして、地面に載って見えるようにする
+  out.push(
+    ...buildContactShadows([
+      ...[...buildings].flatMap(([key, bucket]) =>
+        bucket.spots.map((spot) => ({ spot, radius: (byKey.get(key)!.width + byKey.get(key)!.depth) * 0.42 })),
+      ),
+      ...broadleaf.spots.map((spot) => ({ spot, radius: 2.8 })),
+      ...cedar.spots.map((spot) => ({ spot, radius: 1.6 })),
+      ...shrub.spots.map((spot) => ({ spot, radius: 1.1 })),
+    ]),
+  );
+  out.push(...buildYards(walls, cars, units));
   out.push(...buildVegetation(broadleaf, cedar, bamboo, shrub));
   out.push(...buildBoundaryFence(route, frameAt, outward));
   out.push(...buildUtilityLine(route, frameAt, outward));
   out.push(...buildServiceRoad(route, frameAt, outward));
   out.push(...buildPaddies(route, frameAt, seed));
+  out.push(...buildTracksideGrass(route, frameAt, outward, seed));
+  return out;
+}
+
+/**
+ * 接地の陰。
+ *
+ * 根元に敷く乗算合成の板。詳しくは `contactShadowTexture()` を参照。
+ * 影の地図（±100m）の外にある建物にも効くので、遠景の建物が地面から
+ * 浮いて見えるのを防ぐ役目もある。
+ */
+function buildContactShadows(
+  items: ReadonlyArray<{ spot: Spot; radius: number }>,
+): THREE.Object3D[] {
+  if (items.length === 0) return [];
+  const material = new THREE.MeshBasicMaterial({
+    map: contactShadowTexture(),
+    // 乗算合成。下地の色を変えずに暗くするだけなので、草の上でも舗装の上でも
+    // 同じように効く。透明度で重ねると、板が四角く見えてしまう。
+    blending: THREE.MultiplyBlending,
+    transparent: true,
+    // 地面と同じ高さに寝かせるので、深度を書くと自分の下の地面と喧嘩する
+    depthWrite: false,
+    // 板は地面に貼り付いている。深度のずらしを入れないと縞が出る
+    polygonOffset: true,
+    polygonOffsetFactor: -2,
+    polygonOffsetUnits: -2,
+  });
+  const geometry = new THREE.PlaneGeometry(1, 1);
+  geometry.rotateX(-Math.PI / 2);
+  const mesh = new THREE.InstancedMesh(geometry, material, items.length);
+  const m = new THREE.Matrix4();
+  const scale = new THREE.Vector3();
+  const position = new THREE.Vector3();
+  for (let i = 0; i < items.length; i++) {
+    const { spot, radius } = items[i]!;
+    // 木の根元は幹の太さではなく樹冠の広がりで暗くなる。地面から 3cm 浮かせる
+    position.copy(spot.position);
+    position.y += 0.03;
+    const k = spot.scale ? spot.scale.x : 1;
+    scale.set(radius * 2 * k, 1, radius * 2 * k);
+    mesh.setMatrixAt(i, m.compose(position, spot.quaternion, scale));
+  }
+  mesh.instanceMatrix.needsUpdate = true;
+  mesh.castShadow = false;
+  mesh.receiveShadow = false;
+  // 地面（不透明）のあとに描く
+  mesh.renderOrder = 1;
+  return [mesh];
+}
+
+/**
+ * 線路際の雑草。
+ *
+ * 地表が板に見えるいちばんの原因は、**地面から立ち上がっているものが無い**
+ * ことである。道床ののり尻から柵の外まで、手入れの届かない帯には膝丈の草が
+ * 生えていて、走っているとそれが手前をいちばん速く流れていく。
+ *
+ * 300m ごとに別のインスタンスにしてあるのは、視錐台の判定がメッシュ単位
+ * だからである。1 本にまとめると、端が視野に入っただけで 14km ぶんの草が
+ * 毎フレーム描かれる。
+ */
+function buildTracksideGrass(
+  route: CompiledRoute,
+  frameAt: (s: number) => TrackFrame,
+  outward: (s: number, side: -1 | 1) => number,
+  seed: number,
+): THREE.Object3D[] {
+  const out: THREE.Object3D[] = [];
+  const tuft = grassTuftTexture();
+  const material = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    map: tuft.map,
+    alphaMap: tuft.alpha,
+    alphaTest: 0.4,
+    side: THREE.DoubleSide,
+    roughness: 0.92,
+    metalness: 0,
+  });
+  // 交差板 2 枚（幅 0.8m・高さ 0.55m）。原点は根元
+  const card = new THREE.PlaneGeometry(0.8, 0.55);
+  card.translate(0, 0.275, 0);
+  const crossed = card.clone();
+  crossed.rotateY(Math.PI / 2);
+  const geometry = mergeGeometries([card, crossed]);
+
+  const rng = new Rng(seed ^ 0x9e3779b9);
+  /** 1 束あたりの距離程 [m]。細かくするほど密になる */
+  const pitch = 1.6;
+  for (const [spanStart, spanEnd] of fenceSpans(route)) {
+    for (const [start, end] of chunks(spanStart, spanEnd, 300)) {
+      const spots: Spot[] = [];
+      for (let s = start; s < end; s += pitch) {
+        const f = frameAt(s + rng.range(-0.6, 0.6));
+        for (const side of [-1, 1] as const) {
+          if (rng.chance(0.35)) continue;
+          // 盛土ののり尻（3.7m）から柵（4.6m）の外側までの帯
+          const lateral = side * (outward(s, side) + rng.range(3.6, 7.2));
+          spots.push({
+            position: f.position
+              .clone()
+              .addScaledVector(f.right, lateral)
+              .setY(f.position.y + GROUND + 0.02),
+            quaternion: yawOnly(rng.range(0, Math.PI)),
+            tint: pick(rng, [0xd8dcb0, 0xc6d2a4, 0xe2dcac, 0xb8c89c]),
+            scale: spread(rng, 0.8, 1.7, 0.3),
+          });
+        }
+      }
+      const bucket = new Bucket();
+      for (const spot of spots) bucket.add(spot);
+      const mesh = instance(bucket, geometry, material);
+      if (mesh) {
+        // 草が影を落としても絵は変わらず、影の地図に描く手間だけが増える
+        mesh.castShadow = false;
+        out.push(mesh);
+      }
+    }
+  }
   return out;
 }
 
@@ -460,14 +632,58 @@ function chunks(start: number, end: number, size = 300): Array<[number, number]>
   return out;
 }
 
+/**
+ * 敷地まわりの小物（ブロック塀・車・室外機）。
+ *
+ * ブロック塀は 390 × 190mm のコンクリートブロックを 8 段積んだ高さ 1.6m。
+ * 車は全長 4.2m の 5 ナンバー車（日本の住宅地の駐車場に置いてあるのは
+ * だいたいこの大きさ）。室外機は 800 × 300 × 600mm。
+ */
+function buildYards(walls: Bucket, cars: Bucket, units: Bucket): THREE.Object3D[] {
+  const out: THREE.Object3D[] = [];
+
+  // ブロック塀。1 区画 8m ぶんを 1 インスタンスにして、長さだけ振る
+  const wallGeometry = meterBox(8, 1.6, 0.12);
+  wallGeometry.translate(0, 0.8, 0);
+  const wallMesh = instance(
+    walls,
+    wallGeometry,
+    new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      ...concreteSurface().maps(0.39, 0.19),
+      normalScale: new THREE.Vector2(1.2, 1.2),
+      roughness: 0.96,
+    }),
+  );
+  if (wallMesh) out.push(wallMesh);
+
+  // 車。箱を 2 つ重ねただけだが、屋根が低くて前後に傾いた面があれば車に見える
+  const bodyGeom = new THREE.BoxGeometry(4.2, 0.72, 1.72);
+  bodyGeom.translate(0, 0.66, 0);
+  const cabinGeom = new THREE.BoxGeometry(2.3, 0.62, 1.6);
+  cabinGeom.translate(-0.15, 1.31, 0);
+  const carMesh = instance(
+    cars,
+    mergeGeometries([bodyGeom, cabinGeom]),
+    new THREE.MeshStandardMaterial({ color: 0xffffff, metalness: 0.55, roughness: 0.32 }),
+  );
+  if (carMesh) out.push(carMesh);
+
+  // 室外機
+  const unitGeom = meterBox(0.8, 0.6, 0.3);
+  unitGeom.translate(0, 0.45, 0);
+  const unitMesh = instance(
+    units,
+    unitGeom,
+    new THREE.MeshStandardMaterial({ color: 0xffffff, metalness: 0.3, roughness: 0.6 }),
+  );
+  if (unitMesh) out.push(unitMesh);
+  return out;
+}
+
 /** 局所 Y 軸まわりだけの回転 */
 function yawOnly(angle: number): THREE.Quaternion {
   return new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), angle);
-}
-
-/** 小数部（GLSL の fract と同じ）。頂点を乱すのに使う */
-function fract(v: number): number {
-  return v - Math.floor(v);
 }
 
 function pick<T>(rng: Rng, items: readonly T[]): T {
@@ -568,16 +784,21 @@ function buildVegetation(
   shrub: Bucket,
 ): THREE.Object3D[] {
   const out: THREE.Object3D[] = [];
-  // 樹冠の質感。1 枚を 1.1m で貼ると、葉の塊（30cm 前後）が実物と同じ大きさに
-  // なる。平滑な陰影（`flatShading` を切る）に葉のむらを重ねると、
-  // 「低ポリゴンの塊」ではなく「茂み」に見えるようになる。
-  const foliage = foliageSurface().maps(1.1);
+  const cards = leafCardTexture();
+  /**
+   * 葉の材質。
+   *
+   * 抜き型（`alphaMap`）を `alphaTest` で使う。`transparent` にすると板どうしの
+   * 描き順で手前の板が奥の板を消してしまい、樹冠に穴が空く。`alphaTest` なら
+   * 深度を書けるので順序に関係なく正しく重なる — 交差板の樹木で必ず問題に
+   * なるところで、ここを間違えると木が瞬く。
+   */
   const leaf = (roughness: number): THREE.MeshStandardMaterial =>
     new THREE.MeshStandardMaterial({
       color: 0xffffff,
-      map: foliage.map,
-      normalMap: foliage.normalMap,
-      normalScale: new THREE.Vector2(1.1, 1.1),
+      map: cards.map,
+      alphaMap: cards.alpha,
+      alphaTest: 0.42,
       roughness,
       metalness: 0,
       // 葉は薄いので裏から光が透ける。両面を描かないと樹冠の内側が黒く抜ける
@@ -585,13 +806,10 @@ function buildVegetation(
     });
   const bark = new THREE.MeshStandardMaterial({ color: 0x4d4033, roughness: 0.95 });
 
-  // 広葉樹: 幹 + 押しつぶした球 3 つ（1 つでは輪郭が幾何学的すぎる）
+  // 広葉樹: 幹 + 交差させた葉の札。札を球面上へ散らすと、外から見て
+  // どの向きからも葉が縁を作る。
   if (broadleaf.spots.length > 0) {
-    const canopy = mergeBlobs([
-      [0, 6.4, 0, 3.5, 2.6],
-      [1.9, 5.2, 0.8, 2.4, 1.9],
-      [-1.6, 5.6, -1.1, 2.2, 1.8],
-    ]);
+    const canopy = leafCanopy(3.3, 6.0, 2.4, 11, 0x2b71cd);
     const mesh = instance(broadleaf, canopy, leaf(0.86));
     if (mesh) out.push(mesh);
     const trunk = new THREE.CylinderGeometry(0.16, 0.28, 4.6, 6);
@@ -600,16 +818,13 @@ function buildVegetation(
     if (trunks) out.push(trunks);
   }
 
-  // スギ: 細く尖った円錐を 2 段。上ほど細い
+  // スギ: 細く高い円錐の面へ札を並べる。人工林の尖った輪郭になる
   if (cedar.spots.length > 0) {
-    const cone = mergeCones([
-      [0, 4.2, 2.5, 7.5],
-      [0, 9.0, 1.5, 5.5],
-    ]);
-    const mesh = instance(cedar, cone, leaf(0.9));
+    const canopy = leafCanopy(1.7, 8.4, 4.6, 13, 0x51d0a7, 0.55);
+    const mesh = instance(cedar, canopy, leaf(0.9));
     if (mesh) out.push(mesh);
-    const trunk = new THREE.CylinderGeometry(0.13, 0.24, 4.4, 5);
-    trunk.translate(0, 2.2, 0);
+    const trunk = new THREE.CylinderGeometry(0.13, 0.24, 5.2, 5);
+    trunk.translate(0, 2.6, 0);
     const trunks = instance(sameSpots(cedar, 0x9c8a70), trunk, bark);
     if (trunks) out.push(trunks);
   }
@@ -625,25 +840,75 @@ function buildVegetation(
       new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.6 }),
     );
     if (culms) out.push(culms);
-    const foliage = mergeBlobs([
-      [0, 11.5, 0, 1.5, 2.6],
-      [0.5, 13.2, 0.3, 1.0, 1.6],
-    ]);
-    const leaves = instance(sameSpots(bamboo, 0xe8e4bc), foliage, leaf(0.9));
+    const canopy = leafCanopy(1.3, 12.2, 1.9, 7, 0x9a2f61);
+    const leaves = instance(sameSpots(bamboo, 0xe8e4bc), canopy, leaf(0.9));
     if (leaves) out.push(leaves);
   }
 
-  // 線路際の低木・雑草。背が低く、まとまって生える
+  // 線路際の低木。背が低く、まとまって生える
   if (shrub.spots.length > 0) {
-    const blob = mergeBlobs([
-      [0, 0.55, 0, 1.0, 0.55],
-      [0.7, 0.4, 0.3, 0.7, 0.4],
-      [-0.6, 0.45, -0.4, 0.75, 0.45],
-    ]);
-    const mesh = instance(shrub, blob, leaf(0.95));
+    const canopy = leafCanopy(1.0, 0.55, 0.5, 5, 0x3c9a12);
+    const mesh = instance(shrub, canopy, leaf(0.95));
     if (mesh) out.push(mesh);
   }
   return out;
+}
+
+/**
+ * 交差板の樹冠。
+ *
+ * 半径 `radius`・中心高さ `height`・上下の広がり `spread` の楕円体の**表面へ**
+ * 札を貼る。中心を通す（よくある「3 枚直交」）のではなく表面へ置くのは、
+ * 樹冠の中身が詰まって見えるようにするためで、中を通した板は横から見ると
+ * 一直線に見えてしまう。札は必ず外を向く（法線が外向き）。
+ *
+ * @param count 札の枚数。多いほど密になるが、頂点はこれに比例する
+ * @param seed 同じ種からは必ず同じ形が出る
+ * @param taper 上へ行くほど半径を絞る割合（スギのような円錐形にする）
+ */
+function leafCanopy(
+  radius: number,
+  height: number,
+  spread: number,
+  count: number,
+  seed: number,
+  taper = 0,
+): THREE.BufferGeometry {
+  const rand = mulberry(seed);
+  const parts: THREE.BufferGeometry[] = [];
+  for (let i = 0; i < count; i++) {
+    // 球面上に等間隔に近く散らす（黄金角のらせん）
+    const t = (i + 0.5) / count;
+    const y = 1 - 2 * t;
+    const r = Math.sqrt(Math.max(0, 1 - y * y));
+    const phi = i * 2.399963;
+    const shrink = 1 - taper * (0.5 + y / 2);
+    const size = radius * (1.05 + rand() * 0.5) * (0.75 + shrink * 0.4);
+    const card = new THREE.PlaneGeometry(size * 1.7, size * 1.7);
+    // 板の向き: 外向きの法線に揃えたうえで、面内で回して同じ絵の繰り返しを崩す
+    card.rotateZ(rand() * Math.PI * 2);
+    const normal = new THREE.Vector3(Math.cos(phi) * r, y, Math.sin(phi) * r);
+    const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), normal);
+    card.applyQuaternion(q);
+    card.translate(
+      normal.x * radius * shrink * 0.55,
+      height + normal.y * spread * 0.55,
+      normal.z * radius * shrink * 0.55,
+    );
+    parts.push(card);
+  }
+  return mergeGeometries(parts);
+}
+
+/** mulberry32。形を作るときの乱数（`Rng` は配置用なので混ぜない） */
+function mulberry(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
 }
 
 /** 同じ置き場所を別の色で使い回す（幹と葉のように、位置は同じで色が違うもの） */
@@ -654,70 +919,33 @@ function sameSpots(bucket: Bucket, tint: number): Bucket {
 }
 
 /**
- * 複数の潰した球を 1 つの形にまとめる。
- * `[x, y, z, 半径, 高さの半分]` を並べる。
- */
-function mergeBlobs(
-  blobs: ReadonlyArray<readonly [number, number, number, number, number]>,
-): THREE.BufferGeometry {
-  const parts: THREE.BufferGeometry[] = [];
-  for (const [x, y, z, r, h] of blobs) {
-    // 正 20 面体を 1 段分割（80 面）。そのままだと球にしか見えないので、
-    // 頂点を半径方向へ乱してでこぼこにする。葉の塊の縁が不揃いになると、
-    // 平滑な球ではなく「茂み」の輪郭になる。種は位置から決めるので、
-    // 同じ形は必ず同じ場所に出る。
-    const geom = new THREE.IcosahedronGeometry(1, 1);
-    const pos = geom.attributes.position!;
-    for (let i = 0; i < pos.count; i++) {
-      const vx = pos.getX(i);
-      const vy = pos.getY(i);
-      const vz = pos.getZ(i);
-      const wobble =
-        0.82 + 0.36 * fract(Math.sin(vx * 12.9898 + vy * 78.233 + vz * 37.719) * 43758.5453);
-      pos.setXYZ(i, vx * wobble, vy * wobble, vz * wobble);
-    }
-    geom.scale(r, h, r);
-    geom.translate(x, y, z);
-    parts.push(geom);
-  }
-  return mergeGeometries(parts);
-}
-
-/** 円錐を積み上げて 1 つの形にする。`[x, 底の高さ, 半径, 高さ]` */
-function mergeCones(
-  cones: ReadonlyArray<readonly [number, number, number, number]>,
-): THREE.BufferGeometry {
-  const parts: THREE.BufferGeometry[] = [];
-  for (const [x, base, r, h] of cones) {
-    const geom = new THREE.ConeGeometry(r, h, 7, 1);
-    geom.translate(x, base + h / 2, 0);
-    parts.push(geom);
-  }
-  return mergeGeometries(parts);
-}
-
-/**
  * 形をつなぎ合わせる。
  *
  * three.js の `BufferGeometryUtils` を読み込まずに済ませるための最小の実装。
- * 位置と法線だけを持つ、索引を持たない形しか扱わない（樹木にはそれで足りる）。
+ * 索引を持たない位置・法線・UV だけを扱う。**UV を運ぶのが肝**で、
+ * 葉の札は抜き型（`alphaMap`）で輪郭を作るため、UV が落ちると樹冠が
+ * ただの四角い板の集まりになる。
  */
 function mergeGeometries(parts: readonly THREE.BufferGeometry[]): THREE.BufferGeometry {
   const positions: number[] = [];
   const normals: number[] = [];
+  const uvs: number[] = [];
   for (const part of parts) {
     const geom = part.index ? part.toNonIndexed() : part;
     const p = geom.attributes.position!;
-    geom.computeVertexNormals();
+    if (!geom.attributes.normal) geom.computeVertexNormals();
     const n = geom.attributes.normal!;
+    const uv = geom.attributes.uv;
     for (let i = 0; i < p.count; i++) {
       positions.push(p.getX(i), p.getY(i), p.getZ(i));
       normals.push(n.getX(i), n.getY(i), n.getZ(i));
+      uvs.push(uv ? uv.getX(i) : 0, uv ? uv.getY(i) : 0);
     }
   }
   const merged = new THREE.BufferGeometry();
   merged.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
   merged.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+  merged.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
   return merged;
 }
 

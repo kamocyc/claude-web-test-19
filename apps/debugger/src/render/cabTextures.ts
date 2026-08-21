@@ -64,7 +64,7 @@ export function dialTexture(
     const c = size / 2;
     const r = size * 0.46;
 
-    ctx.fillStyle = '#f2f4f6';
+    ctx.fillStyle = '#e6eaee';
     ctx.beginPath();
     ctx.arc(c, c, r, 0, Math.PI * 2);
     ctx.fill();

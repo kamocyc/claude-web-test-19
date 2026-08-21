@@ -599,8 +599,16 @@ function updateWalk(wall: number): void {
   walkQuaternion.copy(car.object.quaternion).multiply(walkPose.quaternion);
 
   // 歩いているあいだは運転できない。行き止まりにしないため、自動運転を勧める。
-  walkHint.innerHTML = walkHintText();
+  // 毎フレーム同じ文字列を書き込むと DOM を無駄に触るので、変わったときだけ。
+  const hint = walkHintText();
+  if (hint !== lastWalkHint) {
+    lastWalkHint = hint;
+    walkHint.innerHTML = hint;
+  }
 }
+
+/** 直前に出した案内の文言（同じなら書き直さない） */
+let lastWalkHint = '';
 
 /** 車内を歩くモードの案内（画面下に出す） */
 function walkHintText(): string {

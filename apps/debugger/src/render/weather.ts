@@ -55,10 +55,10 @@ const CLEAR: WeatherLook = {
   // 夏の午後の晴天。天頂は濃い青、地平線ぎわは大気の散乱で白く抜ける。
   // 雲は積雲がまばら（覆い 0.34）で、日の当たる面はほぼ白く飛ぶ。
   sky: {
-    top: 0x1c56c6,
-    horizon: 0xd2e4f4,
+    top: 0x1b52c8,
+    horizon: 0xbcd8f0,
     ground: 0x8d9c88,
-    exponent: 0.62,
+    exponent: 0.48,
     cloudCover: 0.26,
     cloudLight: 1.15,
   },

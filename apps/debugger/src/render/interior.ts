@@ -1160,10 +1160,15 @@ function buildEndWalls(c: Ctx): THREE.Group {
 
   for (const end of [-1, 1] as const) {
     const x = end > 0 ? c.layout.walkableTo : c.layout.walkableFrom;
+    // 妻面は**平天井の高さまで**立てる。肩の高さ（ceilingSide）で止めると、
+    // 天井の斜面と妻面のあいだに細い隙間が残り、通路から見上げたときに
+    // そこから連結面の上（＝屋根の外）が覗いてしまう。斜面より上へ出た部分は
+    // 天井の裏に隠れるので、高くするぶんには害がない。
+    const wallTop = c.ceiling;
     if (c.layout.cabSide === end) {
       // 運転室の仕切り。ここから先へは入れない。
       walls.push(
-        box([t, c.ceilingSide - c.floor, INTERIOR.width], [x - (end * t) / 2, (c.floor + c.ceilingSide) / 2, 0]), // prettier-ignore
+        box([t, wallTop - c.floor, INTERIOR.width], [x - (end * t) / 2, (c.floor + wallTop) / 2, 0]), // prettier-ignore
       );
       // 仕切り扉と、その上の小窓（運転室の様子がわずかに見える）
       trims.push(box([0.04, 1.9, 0.72], [x - end * (t / 2 + 0.02), c.floor + 0.95, -end * 0.55]));

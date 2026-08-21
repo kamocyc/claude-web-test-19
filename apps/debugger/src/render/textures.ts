@@ -1214,3 +1214,167 @@ export const rippleSurface = surface(
   0x71ac33,
   1.6,
 );
+
+/**
+ * 接地の陰（アンビエントオクルージョン）。
+ *
+ * 物が地面に**載って**見えるかどうかは、影よりもまず「足元の暗さ」で決まる。
+ * 建物や樹木の根元では、空からの光が周りの面に遮られて届かなくなるので、
+ * 地面が暗くなる。太陽の落とす影とは別のもので、曇りの日にも出る。
+ *
+ * まともに解くなら画面空間の遮蔽（SSAO/GTAO）だが、深度と法線の的をもう 1 枚
+ * 持つ必要があり、ソフトウェア描画では手が出ない。ここでは**根元へ暗い板を
+ * 敷く**という古い手を使う。乗算合成なので、下地が何であっても暗くなるだけで
+ * 色は変わらない。中心が濃く、縁で 1（＝何もしない）へ抜ける。
+ */
+export function contactShadowTexture(): THREE.Texture {
+  const size = 128;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d')!;
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, size, size);
+  const g = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+  // 中心 0.45 は「空の半分が塞がれている」くらいの暗さ。これ以上濃くすると
+  // 物の下に黒い水たまりがあるように見える。
+  g.addColorStop(0, 'rgba(72,70,64,0.42)');
+  g.addColorStop(0.35, 'rgba(96,94,88,0.24)');
+  g.addColorStop(0.7, 'rgba(150,148,142,0.08)');
+  g.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, size, size);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
+
+/**
+ * 葉の塊（交差板に貼る抜き型つきの札）。
+ *
+ * 樹冠を塊（球）で作ると、どれだけ頂点を乱しても**縁が滑らかな立体**にしか
+ * ならない。実際の樹冠の輪郭は葉の隙間でぼろぼろに抜けていて、そこが
+ * 「木」と「緑の岩」を分けている。板を数枚交差させ、この抜き型を貼ると、
+ * 頂点数を減らしたうえで縁が葉の形になる。
+ *
+ * 1 枚に描くのは 1.6m 角ぶんの小枝で、葉が 30 枚ほど付いている。
+ */
+export function leafCardTexture(): { map: THREE.Texture; alpha: THREE.Texture } {
+  const size = 256;
+  const colour = document.createElement('canvas');
+  colour.width = size;
+  colour.height = size;
+  const cx = colour.getContext('2d')!;
+  const alphaCanvas = document.createElement('canvas');
+  alphaCanvas.width = size;
+  alphaCanvas.height = size;
+  const ax = alphaCanvas.getContext('2d')!;
+  cx.clearRect(0, 0, size, size);
+  ax.fillStyle = '#000000';
+  ax.fillRect(0, 0, size, size);
+  const rand = rng(0x4a17d3);
+
+  /** 1 枚の葉。楕円を斜めに置く */
+  const leaf = (x: number, y: number, r: number, angle: number, light: number): void => {
+    for (const ctx of [cx, ax]) {
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(angle);
+      ctx.beginPath();
+      ctx.ellipse(0, 0, r, r * 0.42, 0, 0, Math.PI * 2);
+      if (ctx === ax) ctx.fillStyle = '#ffffff';
+      else {
+        const l = light;
+        ctx.fillStyle = `rgb(${Math.round(l * 0.62)},${Math.round(l)},${Math.round(l * 0.4)})`;
+      }
+      ctx.fill();
+      ctx.restore();
+    }
+  };
+
+  // 小枝（中心から放射状に伸びる枝に葉が付く）
+  for (let branch = 0; branch < 7; branch++) {
+    const a0 = (branch / 7) * Math.PI * 2 + rand() * 0.5;
+    const len = size * (0.26 + rand() * 0.2);
+    for (let i = 0; i < 9; i++) {
+      const t = 0.2 + (i / 9) * 0.8;
+      const x = size / 2 + Math.cos(a0) * len * t;
+      const y = size / 2 + Math.sin(a0) * len * t;
+      // 先へ行くほど小さく、光が当たって明るい
+      const r = size * 0.055 * (1.25 - t * 0.5);
+      const light = 74 + t * 96 + rand() * 34;
+      leaf(x + (rand() - 0.5) * 14, y + (rand() - 0.5) * 14, r, a0 + (rand() - 0.5) * 1.6, light);
+    }
+  }
+  // 中心の詰まったところ（枝の付け根は葉が重なって暗い）
+  for (let i = 0; i < 26; i++) {
+    const a = rand() * Math.PI * 2;
+    const d = rand() * size * 0.17;
+    leaf(
+      size / 2 + Math.cos(a) * d,
+      size / 2 + Math.sin(a) * d,
+      size * 0.055,
+      rand() * Math.PI,
+      54 + rand() * 40,
+    );
+  }
+
+  const map = new THREE.CanvasTexture(colour);
+  map.colorSpace = THREE.SRGBColorSpace;
+  map.anisotropy = 8;
+  const alpha = new THREE.CanvasTexture(alphaCanvas);
+  alpha.anisotropy = 8;
+  return { map, alpha };
+}
+
+/**
+ * 草束（線路際の雑草）。
+ *
+ * 手入れの届かない線路際には膝丈の雑草が生える。地面のテクスチャをどれだけ
+ * 細かくしても、**地表から立ち上がっているもの**が無ければ地面は板に見える。
+ * 縦に伸びた葉を数十本描き、交差板に貼る。下端は不透明、上端へ向かって
+ * まばらになる（実際の草も先へ行くほど疎になる）。
+ */
+export function grassTuftTexture(): { map: THREE.Texture; alpha: THREE.Texture } {
+  const w = 128;
+  const h = 128;
+  const colour = document.createElement('canvas');
+  colour.width = w;
+  colour.height = h;
+  const cx = colour.getContext('2d')!;
+  const alphaCanvas = document.createElement('canvas');
+  alphaCanvas.width = w;
+  alphaCanvas.height = h;
+  const ax = alphaCanvas.getContext('2d')!;
+  ax.fillStyle = '#000000';
+  ax.fillRect(0, 0, w, h);
+  const rand = rng(0x77aa31);
+  for (let i = 0; i < 46; i++) {
+    const x0 = 6 + rand() * (w - 12);
+    const height = h * (0.45 + rand() * 0.5);
+    const lean = (rand() - 0.5) * w * 0.28;
+    const width = 1.4 + rand() * 1.8;
+    const l = 96 + rand() * 74;
+    const dry = rand() < 0.22;
+    for (const ctx of [cx, ax]) {
+      ctx.beginPath();
+      ctx.moveTo(x0 - width, h);
+      ctx.quadraticCurveTo(x0 + lean * 0.4, h - height * 0.6, x0 + lean, h - height);
+      ctx.quadraticCurveTo(x0 + lean * 0.4 + width, h - height * 0.6, x0 + width, h);
+      ctx.closePath();
+      ctx.fillStyle =
+        ctx === ax
+          ? '#ffffff'
+          : dry
+            ? `rgb(${Math.round(l * 1.1)},${Math.round(l * 0.94)},${Math.round(l * 0.5)})`
+            : `rgb(${Math.round(l * 0.6)},${Math.round(l)},${Math.round(l * 0.42)})`;
+      ctx.fill();
+    }
+  }
+  const map = new THREE.CanvasTexture(colour);
+  map.colorSpace = THREE.SRGBColorSpace;
+  map.anisotropy = 8;
+  const alpha = new THREE.CanvasTexture(alphaCanvas);
+  alpha.anisotropy = 8;
+  return { map, alpha };
+}

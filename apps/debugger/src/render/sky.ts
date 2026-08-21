@@ -170,6 +170,16 @@ const FRAGMENT = /* glsl */ `
     vec3 color =
       h < 0.0 ? mix(horizonColor, groundColor, smoothstep(0.0, 0.09, -h)) * skyGain : sky;
     gl_FragColor = vec4(color, 1.0);
+
+    // ここから下の 2 行を忘れると、**後処理を通したときと通さないときで空の色が
+    // 変わる**。three.js は組み込みの材質にはトーンマッピングと色空間の変換を
+    // 自動で足すが、自前のシェーダ材質には足さない。この 2 つの取り込みを
+    // 書いておけば、three.js が描画先に応じて中身を切り替えてくれる —
+    // 画面へ直接描くときは ACES + sRGB、後処理の的（リニアの浮動小数）へ
+    // 描くときは何もしない、という具合に。
+    // 空はリニアの放射輝度を出すものとして扱われるようになる。
+    #include <tonemapping_fragment>
+    #include <colorspace_fragment>
   }
 `;
 
@@ -188,11 +198,11 @@ const SUN_DISK_GAIN = 16;
 /**
  * 空の輝度の係数。
  *
- * `renderer.ts` の露出 1.5 は**地面が中間調に落ちる**ように決めた値で、
- * 空はそれに合わせて明るすぎる。1/1.5 より少しだけ強い 0.72 にすると、
- * 天頂の青が濃く残ったまま、地平線ぎわは白く抜けるという晴天の空になる。
+ * 空はリニアの放射輝度として ACES と露出（1.5）を通る。地面と同じ扱いに
+ * なったぶん、そのままでは明るすぎて水色に抜けるので落としてある。
+ * 0.5 は「天頂の青が濃く残り、地平線ぎわだけ白く抜ける」ところ。
  */
-const SKY_GAIN = 0.72;
+const SKY_GAIN = 0.5;
 
 /** 空の見た目を更新できる把手（雲を流すのに時刻を渡す） */
 export interface SkyHandle {
@@ -281,8 +291,8 @@ export function createDaylight(look: WeatherLook): {
   // 深度の全階調に割り当てられるので、ここを 700m も取ると 1 階調が 1cm 以上に
   // なり、ずらし量（bias）を大きくせざるを得ない。列車の周りだけを見るのだから
   // 光源から ±160m もあれば足りる。
-  sun.shadow.camera.near = SHADOW_DISTANCE - 160;
-  sun.shadow.camera.far = SHADOW_DISTANCE + 160;
+  sun.shadow.camera.near = SHADOW_DISTANCE - SHADOW_DEPTH;
+  sun.shadow.camera.far = SHADOW_DISTANCE + SHADOW_DEPTH;
   // **これを忘れると影が出ない。** three.js は影を焼くたびに光源の位置と向きから
   // ビュー行列を作り直すが、投影行列（＝焼く範囲）は作り直さない。上で
   // left/right/top/bottom を書き換えても、ここで作り直さなければ
@@ -309,8 +319,8 @@ export function createDaylight(look: WeatherLook): {
    * 尺度で -0.00025（= world 0.17m）取っていて、それが上屋やホームの影を
    * まるごと打ち消していた。
    */
-  sun.shadow.bias = -0.00025;
-  sun.shadow.normalBias = 0.05;
+  sun.shadow.bias = -0.00018;
+  sun.shadow.normalBias = 0.07;
   // 空からの光は太陽より弱くしておく。ここを強くすると影の中まで明るくなり、
   // せっかく落とした影が見えなくなる。
   const ambient = new THREE.HemisphereLight(
@@ -324,12 +334,60 @@ export function createDaylight(look: WeatherLook): {
 /** 影の地図の一辺 [画素] */
 const SHADOW_MAP_SIZE = 2048;
 /**
- * 影を焼く範囲（列車を中心とした正方形の半辺）[m]。
+ * 影を焼く範囲（正方形の半辺）[m]。
  *
- * 2048 画素をこの 2 倍の幅に割り当てるので、1 画素は 68mm になる。
+ * 2048 画素をこの 2 倍の幅に割り当てるので、1 画素は 98mm になる。
  * まくらぎ（幅 220mm）の影は形が残り、レール（頭部 65mm）の影は縁がぼける —
  * 晴れた日に道床を見たときの見え方と同じ分かれ方になる。
  */
-const SHADOW_EXTENT = 70;
+export const SHADOW_EXTENT = 100;
+/**
+ * 影の箱を列車のどれだけ前へ寄せるか [m]。
+ *
+ * **ここが 0 だと、駅に近づいても上屋の影が出ない。** 運転席から見えるのは
+ * 前方だけで、列車の後ろは決して見えない。箱を列車の中心に置くと、その半分
+ * （後ろ側 100m）を見えないところへ捨てていることになり、前は 100m しか
+ * 届かない。100m 先といえば駅の上屋やこれからくぐる橋がちょうどそこにある
+ * 距離で、実際「駅へ進入していく絵にだけ影が無い」という状態になっていた。
+ *
+ * 60m 前へ寄せると、後ろ 40m・前 160m を焼くことになる。編成長 80m の
+ * うち先頭 2 両ぶんは箱の中に残るので、自列車が道床に落とす影も消えない。
+ */
+const SHADOW_LOOKAHEAD = 60;
 /** 光源を列車からどれだけ離すか [m]。近すぎると手前の構造物が near で切れる */
-export const SHADOW_DISTANCE = 220;
+export const SHADOW_DISTANCE = 260;
+/**
+ * 影の箱の奥行き（光源から手前・奥へそれぞれ）[m]。
+ *
+ * near と far のあいだが深度の全階調に割り当てられるので、広く取るほど
+ * 1 階調が粗くなり、縞を消すための `bias` を大きくせざるを得なくなる。
+ * 箱の対角（√2 · SHADOW_EXTENT ≒ 141m）に高い構造物のぶんを足した値にする。
+ */
+const SHADOW_DEPTH = 200;
+
+/**
+ * 影の箱の中心を、列車の前方へ寄せた位置に置く。
+ *
+ * あわせて**影の地図 1 画素の大きさに丸める**。丸めないと、列車が動くたびに
+ * 箱が画素の途中でずれ、静止しているはずの影の縁が 1 画素ぶん行ったり来たり
+ * する（走っていると縁が沸き立って見える）。丸めておけば、影は画素の格子に
+ * 貼り付いたまま滑らかに流れていく。
+ *
+ * @param out 光源の `position` を書き込む先
+ * @param target 光源の `target.position` を書き込む先
+ * @param lead 先頭車の位置
+ * @param forward 進行方向の単位ベクトル
+ */
+export function aimShadowBox(
+  out: THREE.Vector3,
+  target: THREE.Vector3,
+  lead: THREE.Vector3,
+  forward: THREE.Vector3,
+): void {
+  target.copy(lead).addScaledVector(forward, SHADOW_LOOKAHEAD);
+  const texel = (2 * SHADOW_EXTENT) / SHADOW_MAP_SIZE;
+  target.x = Math.round(target.x / texel) * texel;
+  target.y = Math.round(target.y / texel) * texel;
+  target.z = Math.round(target.z / texel) * texel;
+  out.copy(target).addScaledVector(SUN_DIRECTION, SHADOW_DISTANCE);
+}
