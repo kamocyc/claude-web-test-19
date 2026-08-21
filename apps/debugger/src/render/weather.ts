@@ -65,7 +65,10 @@ const CLEAR: WeatherLook = {
   background: 0xa9c8e4,
   fog: { color: 0xc3d8ec, near: 400, far: 9000 },
   sun: { color: 0xfff2dc, intensity: 4.0, shadow: true },
-  ambient: { sky: 0xbfd8f5, ground: 0x6b7a5a, intensity: 0.34 },
+  // 空の散乱光と、日なたの地面（草地・砕石・舗装）からの照り返し。
+  // 照り返しの色は「日の当たった草地の色」であって、日陰の草の色ではない。
+  // ここを暗く取ると、下を向いた面（軒裏・桁下・車体の裾）だけが黒く落ちる。
+  ambient: { sky: 0xc9def8, ground: 0x9ba585, intensity: 0.62 },
   precipitation: 'none',
   density: 0,
   fallSpeed: 0,
@@ -98,7 +101,7 @@ export function weatherLook(rail: RailCondition): WeatherLook {
         // 雨脚の中は数百 m 先から白くかすむ
         fog: { color: 0x93a0ac, near: 180, far: 1700 },
         sun: { color: 0xdfe6ee, intensity: 1.1, shadow: false },
-        ambient: { sky: 0xa8b8c8, ground: 0x616858, intensity: 1.5 },
+        ambient: { sky: 0xa8b8c8, ground: 0x7c8474, intensity: 1.5 },
         precipitation: 'rain',
         density: 1,
         fallSpeed: 9.5,
@@ -120,7 +123,7 @@ export function weatherLook(rail: RailCondition): WeatherLook {
         // 降雪はいちばん視界が利かない
         fog: { color: 0xc9d1d8, near: 90, far: 950 },
         sun: { color: 0xeef2f7, intensity: 1.0, shadow: false },
-        ambient: { sky: 0xdbe3ea, ground: 0xa4aaae, intensity: 1.6 },
+        ambient: { sky: 0xdbe3ea, ground: 0xc4cacd, intensity: 1.6 },
         precipitation: 'snow',
         density: 1,
         fallSpeed: 1.4,
@@ -142,7 +145,7 @@ export function weatherLook(rail: RailCondition): WeatherLook {
         background: 0xa9adaa,
         fog: { color: 0xa9adaa, near: 400, far: 3400 },
         sun: { color: 0xf0e6d6, intensity: 1.5, shadow: true },
-        ambient: { sky: 0xb6bcc0, ground: 0x6a6350, intensity: 0.95 },
+        ambient: { sky: 0xb6bcc0, ground: 0x8a8068, intensity: 0.95 },
         precipitation: 'none',
         density: 0,
         fallSpeed: 0,

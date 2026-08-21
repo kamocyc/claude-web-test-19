@@ -105,6 +105,13 @@ export interface CarPassengers {
   update(lateralLean: number, longitudinalLean: number): void;
   /** 明るさを合わせる（車ごとに照明が少し違う） */
   setBrightness(k: number): void;
+  /**
+   * 形と材質を捨てる。
+   *
+   * シナリオを組み直すと乗客も組み直すので、前のぶんを捨てないと GPU 側の
+   * 資源が積み上がる（`THREE.Group` から外しただけでは解放されない）。
+   */
+  dispose(): void;
 }
 
 // --- 体を組む -------------------------------------------------------------
@@ -142,8 +149,10 @@ function ball(
   at: readonly [number, number, number],
   radius: number,
   scale: readonly [number, number, number] = [1, 1, 1],
+  segments = 8,
+  rings = 6,
 ): THREE.BufferGeometry {
-  const geometry = new THREE.SphereGeometry(radius, 8, 6);
+  const geometry = new THREE.SphereGeometry(radius, segments, rings);
   geometry.scale(scale[0], scale[1], scale[2]);
   geometry.translate(at[0], at[1], at[2]);
   return geometry;
@@ -173,17 +182,55 @@ function paint(geometry: THREE.BufferGeometry, base: number): THREE.BufferGeomet
   return geometry;
 }
 
+/**
+ * 頭の後ろ半分を髪の色に塗り替える。
+ *
+ * 局所 +X が向いている向きなので、`x < 0` が後頭部にあたる。生え際のあたりで
+ * 急に色が変わらないよう、境目は少しぼかす。
+ */
+function darkenBehind(geometry: THREE.BufferGeometry, headY: number): void {
+  const position = geometry.getAttribute('position');
+  const color = geometry.getAttribute('color') as THREE.BufferAttribute;
+  const hair = new THREE.Color(0x2b2119);
+  for (let i = 0; i < position.count; i++) {
+    const x = position.getX(i);
+    const y = position.getY(i);
+    // 後ろほど、そして上ほど髪に寄せる（あごの下まで髪では覆われていない）
+    const back = Math.min(1, Math.max(0, -x / 0.05));
+    const high = Math.min(1, Math.max(0, (y - (headY - 0.06)) / 0.05));
+    const k = back * high;
+    if (k <= 0) continue;
+    color.setXYZ(
+      i,
+      color.getX(i) * (1 - k) + hair.r * k,
+      color.getY(i) * (1 - k) + hair.g * k,
+      color.getZ(i) * (1 - k) + hair.b * k,
+    );
+  }
+  color.needsUpdate = true;
+}
+
 /** 頭と首と手（肌の色で塗る部位）。髪だけは暗く焼いておく。 */
-function headParts(headY: number, tilt: number, hands: THREE.BufferGeometry[]): THREE.BufferGeometry {
+function headParts(
+  headY: number,
+  tilt: number,
+  hands: THREE.BufferGeometry[],
+): THREE.BufferGeometry {
   const parts: THREE.BufferGeometry[] = [];
   // 首
   parts.push(paint(limb([0, headY - 0.16, 0], [0, headY - 0.07, 0], 0.048, 0.045), 0xffffff));
   // 頭。人体計測の平均で頭幅 155mm・頭長（前後）200mm・頭高 230mm なので、
   // 球を左右に**細く**前後に長く潰す。ここを球のままにすると、顔を作らない
   // ぶんだけ余計に「きのこ」に見える。局所 +X が向いている向き。
-  parts.push(paint(ball([0, headY, 0], 0.0775, [1.29, 1.45, 1.0]), 0xffffff));
+  const head = paint(ball([0, headY, 0], 0.0775, [1.29, 1.45, 1.0]), 0xffffff);
+  // 後頭部は髪に覆われている。**顔は作らないので、頭のどこまでが髪かで
+  // 「どちらを向いているか」を読ませる**——顔の無い肌色の球がこちらを向いて
+  // いるより、後頭部の黒がこちらを向いているほうが人に見える。形は増やさず、
+  // 頭の球の後ろ半分を髪の色で塗るだけで足りる。
+  darkenBehind(head, headY);
+  parts.push(head);
   // 髪（頭のてっぺんを覆う殻）。服の色に引きずられないよう暗く焼く。
-  const hair = new THREE.SphereGeometry(0.0795, 8, 5, 0, Math.PI * 2, 0, Math.PI * 0.56);
+  const hair = new THREE.SphereGeometry(0.0795, 8, 5, 0, Math.PI * 2, 0, Math.PI * 0.62);
   hair.scale(1.29, 1.45, 1.0);
   hair.translate(0, headY, 0);
   parts.push(paint(hair, 0x2b2119));
@@ -221,7 +268,7 @@ function standingBody(raised: boolean): BodyParts {
   torso.scale(0.66, 1, 1);
   top.push(paint(torso, 0xffffff));
   // 肩の丸み
-  for (const s of [-1, 1] as const) top.push(paint(ball([0, shoulderY, s * shoulderZ], 0.06), 0xffffff)); // prettier-ignore
+  for (const s of [-1, 1] as const) top.push(paint(ball([0, shoulderY, s * shoulderZ], 0.06, [1, 1, 1], 6, 4), 0xffffff)); // prettier-ignore
 
   for (const s of [-1, 1] as const) {
     const shoulder: [number, number, number] = [0, shoulderY, s * shoulderZ];
@@ -231,14 +278,14 @@ function standingBody(raised: boolean): BodyParts {
       const wrist: [number, number, number] = [0, 1.69, s * 0.15];
       top.push(paint(limb(shoulder, elbow, 0.05, 0.042), 0xffffff));
       top.push(paint(limb(elbow, wrist, 0.042, 0.034), 0xffffff));
-      hands.push(ball(wrist, 0.042));
+      hands.push(ball(wrist, 0.042, [1, 1, 1], 5, 3));
     } else {
       // 垂らした腕。体側にぴったり付けると板に見えるので、少し外へ開く。
       const elbow: [number, number, number] = [0.02, 1.1, s * (shoulderZ + 0.02)];
       const wrist: [number, number, number] = [0.06, 0.84, s * (shoulderZ + 0.03)];
       top.push(paint(limb(shoulder, elbow, 0.05, 0.042), 0xffffff));
       top.push(paint(limb(elbow, wrist, 0.042, 0.034), 0xffffff));
-      hands.push(ball(wrist, 0.04));
+      hands.push(ball(wrist, 0.04, [1, 1, 1], 5, 3));
     }
   }
 
@@ -284,7 +331,7 @@ function seatedBody(): BodyParts {
   const torso = limb(hip, [shoulderX, shoulderY + 0.02, 0], 0.175, 0.185, 8);
   torso.scale(0.66, 1, 1);
   top.push(paint(torso, 0xffffff));
-  for (const s of [-1, 1] as const) top.push(paint(ball([shoulderX, shoulderY, s * shoulderZ], 0.06), 0xffffff)); // prettier-ignore
+  for (const s of [-1, 1] as const) top.push(paint(ball([shoulderX, shoulderY, s * shoulderZ], 0.06, [1, 1, 1], 6, 4), 0xffffff)); // prettier-ignore
 
   for (const s of [-1, 1] as const) {
     const shoulder: [number, number, number] = [shoulderX, shoulderY, s * shoulderZ];
@@ -293,7 +340,7 @@ function seatedBody(): BodyParts {
     const wrist: [number, number, number] = [0.16, seat + 0.09, s * (shoulderZ - 0.02)];
     top.push(paint(limb(shoulder, elbow, 0.055, 0.045), 0xffffff));
     top.push(paint(limb(elbow, wrist, 0.045, 0.036), 0xffffff));
-    hands.push(ball(wrist, 0.042));
+    hands.push(ball(wrist, 0.042, [1, 1, 1], 5, 3));
   }
 
   // 膝から先は通路へ出る。座席の奥行きが 430mm しかないので、太ももが
@@ -556,6 +603,15 @@ export function buildPassengers(
     update,
     setBrightness(k: number): void {
       for (const material of materials) material.emissiveIntensity = 0.19 * k;
+    },
+    dispose(): void {
+      group.traverse((node) => {
+        if (node instanceof THREE.InstancedMesh) {
+          node.geometry.dispose();
+          node.dispose();
+        }
+      });
+      for (const material of materials) material.dispose();
     },
   };
 }

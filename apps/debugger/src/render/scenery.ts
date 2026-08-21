@@ -3,6 +3,7 @@ import { Rng, type CompiledRoute } from '@railsim/core';
 import { TUNNEL } from './dimensions.ts';
 import type { TrackFrame } from './frame.ts';
 import { mixColor, type WeatherLook } from './weather.ts';
+import { buildFacade, glassMaterial } from './facade.ts';
 import {
   frameQuaternion,
   meterBox,
@@ -20,6 +21,7 @@ import {
   contactShadowTexture,
   fenceAlphaTexture,
   glowTexture,
+  grassSurface,
   grassTuftTexture,
   leafCardTexture,
   paddySurface,
@@ -27,6 +29,7 @@ import {
   roofPanelSurface,
   roofTileSurface,
   sidingSurface,
+  SIDING_OPENINGS,
   tunnelLiningSurface,
 } from './textures.ts';
 
@@ -105,6 +108,12 @@ export interface SceneryOptions {
   readonly step?: number;
   /** 乱数シード（決定論的に同じ景色が生成される） */
   readonly seed?: number;
+  /**
+   * シーン側の環境マップの強さ（`scene.environmentIntensity`）。
+   * 窓ガラスの映り込みだけはこれで割り戻して、屋外の影の濃さの調整に
+   * 引きずられないようにする。
+   */
+  readonly environmentIntensity?: number;
 }
 
 /** 建物 1 棟の置き場所（インスタンス行列を作るのに要る値） */
@@ -480,7 +489,7 @@ export function buildScenery(
     }
   }
 
-  out.push(...buildBuildings(buildings, byKey));
+  out.push(...buildBuildings(buildings, byKey, options.environmentIntensity ?? 1));
   // 接地の陰。建物と樹木の足元を暗くして、地面に載って見えるようにする
   out.push(
     ...buildContactShadows([
@@ -559,6 +568,22 @@ function buildContactShadows(
  * ことである。道床ののり尻から柵の外まで、手入れの届かない帯には膝丈の草が
  * 生えていて、走っているとそれが手前をいちばん速く流れていく。
  *
+ * ## 等間隔に置くと草に見えない
+ *
+ * 決まった間隔で「何割かを間引く」だけだと、間引きの確率が場所によらないので
+ * **どこを切り取っても同じ密度**になり、走っていると草束が等間隔に並んで
+ * 流れていく。実際の線路際はそうなっていない。
+ *
+ *  - **のり面**（のり尻から柵まで）はいちばん濃い。斜面なので刈り払い機が
+ *    入りにくく、刈り残しが帯で残る。
+ *  - **平地**（柵の外）は中くらい。地主が刈る場所と放ってある場所がまだらになる。
+ *  - **駅の前後**は薄い。人の目に付くところは保線の手が入る。
+ *  - **田の畦**には刈られない草が列で残り、田面との境に濃い線を作る。
+ *
+ * そこで密度を「場所の関数」にする。距離程の低周波の波（波長 34m と 8.5m）で
+ * 濃い所と薄い所のむらを作り、そこへ上の 4 つの補正を掛ける。位置の関数なので
+ * **同じ場所は必ず同じ生え方になる**（決定論を壊さない）。
+ *
  * 300m ごとに別のインスタンスにしてあるのは、視錐台の判定がメッシュ単位
  * だからである。1 本にまとめると、端が視野に入っただけで 14km ぶんの草が
  * 毎フレーム描かれる。
@@ -571,7 +596,10 @@ function buildTracksideGrass(
   look: WeatherLook,
 ): THREE.Object3D[] {
   const out: THREE.Object3D[] = [];
-  const tuft = grassTuftTexture();
+  // 積もる天気では**抜き型ごと差し替える**。材質の色を白へ寄せるだけだと、
+  // 形が草のままなので「白い草が雪原に立っている」という絵になる。
+  const snowy = look.surface.mix > 0.5;
+  const tuft = grassTuftTexture(snowy);
   const material = new THREE.MeshStandardMaterial({
     // 雪の日は雑草も埋もれる
     color: mixColor(0xffffff, look.surface.tint, look.surface.mix * 0.9),
@@ -590,6 +618,10 @@ function buildTracksideGrass(
   const geometry = mergeGeometries([card, crossed]);
 
   const rng = new Rng(seed ^ 0x9e3779b9);
+  /** 雪の下の枯れ草は色を持たない。晴れの日は枯れ色と青い草が混じる */
+  const tints = snowy
+    ? ([0xf4f6f8, 0xe8eef4, 0xfbfcfd] as const)
+    : ([0xd8dcb0, 0xc6d2a4, 0xe2dcac, 0xb8c89c] as const);
   /** 1 束あたりの距離程 [m]。細かくするほど密になる */
   const pitch = 1.6;
   for (const [spanStart, spanEnd] of fenceSpans(route)) {
@@ -597,19 +629,38 @@ function buildTracksideGrass(
       const spots: Spot[] = [];
       for (let s = start; s < end; s += pitch) {
         const f = frameAt(s + rng.range(-0.6, 0.6));
+        // 駅の前後は刈られている。ホームの端から 60m ほどが目安
+        const tended = route.stations.some(
+          (st) => s > st.platformStart - 60 && s < st.platformEnd + 60,
+        );
+        // 田の区画では畦に草が残る（`buildPaddies` と同じ土地利用を見る）
+        const paddy = landUseAt(route, s, seed) === 'field';
         for (const side of [-1, 1] as const) {
-          if (rng.chance(0.35)) continue;
-          // 盛土ののり尻（3.7m）から柵（4.6m）の外側までの帯
-          const lateral = side * (outward(s, side) + rng.range(3.6, 7.2));
-          spots.push({
-            position: f.position
-              .clone()
-              .addScaledVector(f.right, lateral)
-              .setY(f.position.y + GROUND + 0.02),
-            quaternion: yawOnly(rng.range(0, Math.PI)),
-            tint: pick(rng, [0xd8dcb0, 0xc6d2a4, 0xe2dcac, 0xb8c89c]),
-            scale: spread(rng, 0.8, 1.7, 0.3),
-          });
+          const margin = outward(s, side);
+          for (const band of GRASS_BANDS) {
+            if (band.paddyOnly && !paddy) continue;
+            // 場所のむら。0 のところは地肌が出て、1 のところは繁っている
+            const patch = clamp01(
+              0.5 +
+                0.42 * Math.sin(s / 34 + (side > 0 ? 0 : 2.4)) +
+                0.3 * Math.sin(s / 8.5 + (side > 0 ? 1.1 : 3.7)),
+            );
+            const density = band.weight * patch * (tended ? 0.18 : 1);
+            // 期待値を保ったまま 0〜2 本に散らす（少数点以下は確率で切り上げ）
+            const n = Math.floor(density + rng.next());
+            for (let k = 0; k < n; k++) {
+              const lateral = side * (margin + rng.range(band.from, band.to));
+              spots.push({
+                position: f.position
+                  .clone()
+                  .addScaledVector(f.right, lateral)
+                  .setY(f.position.y + GROUND + 0.02),
+                quaternion: yawOnly(rng.range(0, Math.PI)),
+                tint: pick(rng, tints),
+                scale: spread(rng, band.low, band.high, 0.3),
+              });
+            }
+          }
         }
       }
       const bucket = new Bucket();
@@ -624,6 +675,36 @@ function buildTracksideGrass(
   }
   return out;
 }
+
+/** 0..1 に丸める */
+function clamp01(v: number): number {
+  return v < 0 ? 0 : v > 1 ? 1 : v;
+}
+
+/**
+ * 草の生える帯。軌道中心から外へ向かって 3 本ある。
+ *
+ * `weight` は「1 束ぶんの距離程（1.6m）あたり何本置くか」の期待値で、
+ * ここへ場所のむらと駅前の刈り込みが掛かる。
+ */
+const GRASS_BANDS: ReadonlyArray<{
+  /** 軌道中心（隣線ぶんの余裕を足したもの）からの内・外 [m] */
+  from: number;
+  to: number;
+  weight: number;
+  /** 束の大きさの下限・上限（のり面の草はよく伸びる） */
+  low: number;
+  high: number;
+  /** 田の区画にだけ置くか（畦の草） */
+  paddyOnly?: boolean;
+}> = [
+  // のり面。刈り払い機が入りにくいぶんいちばん濃く、背も高い
+  { from: 3.6, to: 4.7, weight: 1.05, low: 0.9, high: 1.8 },
+  // 柵の外の平地
+  { from: 4.9, to: 7.4, weight: 0.5, low: 0.7, high: 1.4 },
+  // 田の畦。区画の境なので線路から少し離れたところに列で残る
+  { from: 11, to: 15, weight: 0.55, low: 0.6, high: 1.2, paddyOnly: true },
+];
 
 /**
  * 長い区間を短い塊に割る。
@@ -698,17 +779,43 @@ function pick<T>(rng: Rng, items: readonly T[]): T {
   return items[Math.min(items.length - 1, Math.floor(rng.next() * items.length))]!;
 }
 
-/** 建物（外壁と屋根）をインスタンスにまとめる */
+/**
+ * 外壁テクスチャを貼る実寸 [m]。
+ *
+ * **サッシとベランダを立体で組む側（`facade.ts`）もこの値を見る。**
+ * ここを変えたら出っ張りの位置もそのぶん動くので、両方が同じ 1 か所を
+ * 参照するようにしてある。
+ */
+const WALL_TILE: Record<Archetype['wall'], readonly [number, number]> = {
+  // 木造 2 階建ての 1 枚ぶん。縦を 5.6m（2 階ぶん）に取ると、テクスチャに
+  // 描いてある 2 段の窓が 1 階（床上 0.8m）と 2 階（3.7m）にちょうど来る。
+  // ここを 1 階ぶんの高さにすると、2 段の窓が 1 階の中に 2 つ並ぶことになり、
+  // 窓だらけの家になる（実際そうなった）。
+  siding: [3.6, 5.6],
+  apartment: [16.5, 5.6],
+  corrugated: [3.0, 4.0],
+};
+
+/** 建物（外壁と屋根、サッシとベランダ）をインスタンスにまとめる */
 function buildBuildings(
   buckets: Map<string, Bucket>,
   byKey: Map<string, Archetype>,
+  environmentIntensity: number,
 ): THREE.Object3D[] {
   const out: THREE.Object3D[] = [];
   const walls = {
-    siding: () => sidingSurface().maps(3.6, 3.2),
-    apartment: () => apartmentSurface().maps(16.5, 5.6),
-    corrugated: () => corrugatedSurface().maps(3.0, 4.0),
+    siding: () => sidingSurface().maps(...WALL_TILE.siding),
+    apartment: () => apartmentSurface().maps(...WALL_TILE.apartment),
+    corrugated: () => corrugatedSurface().maps(...WALL_TILE.corrugated),
   };
+  // サッシ枠・庇・ベランダ。アルミと塗り壁が混じるが、どちらも
+  // 「白っぽくて少し光る」ので 1 つの材質でまとめる（建物ごとの色が掛かる）
+  const trim = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    roughness: 0.42,
+    metalness: 0.25,
+  });
+  const glass = glassMaterial(environmentIntensity);
   const roofTile = new THREE.MeshStandardMaterial({
     color: 0xffffff,
     ...roofTileSurface().maps(1.8),
@@ -768,6 +875,26 @@ function buildBuildings(
     for (const spot of bucket.spots) roofBucket.add({ ...spot, tint: 0xffffff });
     const roofMesh = instance(roofBucket, roofGeom, roofMaterial);
     if (roofMesh) out.push(roofMesh);
+
+    // 出っ張り（サッシ・庇・ベランダ）。壁のテクスチャに描いた窓と
+    // 同じ場所へ重ねる（`facade.ts`）
+    const facade = buildFacade({
+      width: type.width,
+      height: type.height,
+      depth: type.depth,
+      tile: WALL_TILE[type.wall],
+      openings: type.wall === 'siding' ? SIDING_OPENINGS : [],
+      balcony: type.wall === 'apartment',
+    });
+    if (facade.frame) {
+      const mesh = instance(bucket, facade.frame, trim);
+      if (mesh) out.push(mesh);
+    }
+    if (facade.glass) {
+      // ガラスは建物ごとの色を掛けない（室内の暗さと空の映り込みで決まる）
+      const mesh = instance(sameSpots(bucket, 0xffffff), facade.glass, glass);
+      if (mesh) out.push(mesh);
+    }
   }
   return out;
 }
@@ -1323,6 +1450,170 @@ function buildPaddies(
   }
   return out;
 }
+
+/**
+ * 遠景の地表（線路際の板の外側）。
+ *
+ * ## なぜ要るか
+ *
+ * 線路に沿って掃いた地表（`scene.ts` の `buildGround`）は左右 260m で尽きる。
+ * その先は空の球の「地平線下の色」がそのまま出るので、**運転席からは霞に
+ * 紛れて分からないが、俯瞰や側面から見ると板の縁がはっきり見える**。
+ * 遠景の山なみ（`buildHorizon`）は 3.6〜7.2km の距離に置いてあるから、
+ * 260m から山の根元までのあいだが抜けていることになる。
+ *
+ * ## なぜ掃引を延ばすだけでは駄目か
+ *
+ * 手前の板と同じやり方（軌道中心から `right` 方向へ何 m）で外へ延ばすと、
+ * **曲線の内側で面が折り返す**。この路線は R300 まで含むので、横 900m も
+ * 取れば曲率半径を越えて座標が反転し、地面が裏返って重なる。
+ *
+ * そこで外側は軌道に貼り付けるのをやめ、**世界座標の粗い格子**にする。
+ * 各格子点の高さは、軌道の標本点からの距離で重み付けした平均（逆距離加重）で
+ * 決める。線路の近くでは軌道の高さに一致し、離れるにつれて路線全体の平均へ
+ * ゆっくり寄るので、勾配 33‰ で 46m 上下するこの路線でも、線路が宙に浮いたり
+ * 地面に潜ったりしない。
+ *
+ * ## 高さの起伏
+ *
+ * 平らな板を広げただけでは「無限に続く床」になる。距離に応じて振幅の増える
+ * 緩い起伏（波長 600〜1700m）を足すと、丘陵地の縁を走っているように見える。
+ * 位置の関数なので**同じ場所は必ず同じ形になる**（決定論を壊さない）。
+ */
+export function buildOuterGround(
+  route: CompiledRoute,
+  frameAt: (s: number) => TrackFrame,
+  look: WeatherLook,
+): THREE.Object3D[] {
+  /** 軌道の標本。高さを決める種になる */
+  const samples: Array<{ x: number; z: number; y: number }> = [];
+  for (let s = 0; s <= route.length; s += 80) {
+    const p = frameAt(s).position;
+    samples.push({ x: p.x, z: p.z, y: p.y + OUTER.trackLevel });
+  }
+  if (samples.length === 0) return [];
+
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minZ = Infinity;
+  let maxZ = -Infinity;
+  let meanY = 0;
+  for (const p of samples) {
+    minX = Math.min(minX, p.x);
+    maxX = Math.max(maxX, p.x);
+    minZ = Math.min(minZ, p.z);
+    maxZ = Math.max(maxZ, p.z);
+    meanY += p.y;
+  }
+  meanY /= samples.length;
+  minX -= OUTER.reach;
+  maxX += OUTER.reach;
+  minZ -= OUTER.reach;
+  maxZ += OUTER.reach;
+
+  const nx = Math.ceil((maxX - minX) / OUTER.cell);
+  const nz = Math.ceil((maxZ - minZ) / OUTER.cell);
+  const positions: number[] = [];
+  const uvs: number[] = [];
+  const colors: number[] = [];
+  const tint = new THREE.Color();
+  for (let j = 0; j <= nz; j++) {
+    for (let i = 0; i <= nx; i++) {
+      const x = minX + (i * (maxX - minX)) / nx;
+      const z = minZ + (j * (maxZ - minZ)) / nz;
+      // 逆距離加重。`soften` は「これより近い標本は同じ重みで効く」半径で、
+      // これが無いと標本の真上だけが尖った針山になる。
+      let weight = 0;
+      let height = 0;
+      let nearest = Infinity;
+      for (const p of samples) {
+        const d2 = (x - p.x) ** 2 + (z - p.z) ** 2 + OUTER.soften * OUTER.soften;
+        const w = 1 / (d2 * d2);
+        weight += w;
+        height += w * p.y;
+        nearest = Math.min(nearest, d2);
+      }
+      height /= weight;
+      // 遠いところは路線の平均高さへ寄せる。近くの 1 点に引きずられて
+      // 何 km も先の地面が持ち上がるのを防ぐ。
+      const far = Math.min(1, Math.max(0, (Math.sqrt(nearest) - 600) / 2400));
+      height += (meanY - height) * far * 0.7;
+      // 緩い起伏。線路から離れるほど大きくする（線路際は造成されて平ら）
+      const swell =
+        Math.sin(x / 540 + z / 830) * 7.5 +
+        Math.sin(x / 1330 - z / 970 + 1.7) * 11 +
+        Math.sin(x / 260 + z / 310 + 4.1) * 2.2;
+      height += swell * far;
+      positions.push(x, height - OUTER.drop, z);
+      // UV は m 単位（手前の板と同じ尺度）。継ぎ目で草の大きさが変わらない
+      uvs.push(x, z);
+      // 遠景なので色のむらは大きく取る。細かくしても霞に消える
+      const n = 0.5 + 0.32 * Math.sin(x / 720 + 0.4) * Math.cos(z / 610) + 0.18 * Math.sin(z / 210);
+      const dry = Math.min(1, Math.max(0, (n - 0.2) * 1.2));
+      tint.setRGB(0.5 + dry * 1.0, 0.94 - dry * 0.26, 0.6 - dry * 0.26, THREE.SRGBColorSpace);
+      // 雪が積もれば下地のむらは見えない（`scene.ts` の頂点色と同じ理由）
+      if (look.surface.mix > 0) tint.lerp(WHITE, look.surface.mix);
+      colors.push(tint.r, tint.g, tint.b);
+    }
+  }
+
+  const indices: number[] = [];
+  const stride = nx + 1;
+  for (let j = 0; j < nz; j++) {
+    for (let i = 0; i < nx; i++) {
+      const a = j * stride + i;
+      indices.push(a, a + stride, a + 1, a + 1, a + stride, a + stride + 1);
+    }
+  }
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geom.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geom.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+  geom.setIndex(indices);
+  geom.computeVertexNormals();
+
+  const grassMaps = grassSurface().maps(7);
+  const mesh = new THREE.Mesh(
+    geom,
+    new THREE.MeshStandardMaterial({
+      color: mixColor(0x87a06a, look.surface.tint, look.surface.mix),
+      // 雪が積もれば下地の模様は見えない（`weather.ts` の `surfaceCoat` と同じ扱い）
+      map: look.surface.mix > 0.5 ? null : grassMaps.map,
+      normalMap: grassMaps.normalMap,
+      // 1 格子 = 220m もあるので、凹凸は繰り返しの模様としてしか見えない
+      normalScale: new THREE.Vector2(0.2, 0.2),
+      vertexColors: true,
+      roughness: 1,
+    }),
+  );
+  // 影の箱（列車の周り 200m）の外にしか無いので、影の受け渡しは要らない
+  mesh.receiveShadow = false;
+  mesh.castShadow = false;
+  return [mesh];
+}
+
+/** 掛けても何も変わらない色（雪に埋もれた地面の頂点色はこれへ寄る） */
+const WHITE = new THREE.Color(1, 1, 1);
+
+/**
+ * 遠景の地表の取り方。
+ *
+ * `cell` は 220m。これより細かくしても霞（視程 9km でも 2km 先はもう溶ける）で
+ * 潰れるだけで、頂点だけが増える。`reach` は遠景の山の根元（3.6km）を越える
+ * 4.2km に取り、地表と山が重なるようにする。
+ */
+const OUTER = {
+  /** 軌道の高さから地表までの落差（手前の板と同じ -1.2m） */
+  trackLevel: -1.2,
+  /** 手前の板と重ならないよう、さらに下げる量 [m] */
+  drop: 2.0,
+  /** 格子の 1 マス [m] */
+  cell: 220,
+  /** 路線の外接矩形をどれだけ広げるか [m] */
+  reach: 4200,
+  /** 逆距離加重の平滑化半径 [m] */
+  soften: 300,
+} as const;
 
 /**
  * 遠景の山なみ。

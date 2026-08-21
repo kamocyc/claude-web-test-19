@@ -7,7 +7,7 @@ import {
 } from '@railsim/core';
 import { buildCatenary } from './catenary.ts';
 import { makeFrameAt, type TrackFrame } from './frame.ts';
-import { buildHorizon, buildScenery, buildTunnels } from './scenery.ts';
+import { buildHorizon, buildOuterGround, buildScenery, buildTunnels } from './scenery.ts';
 import { aimShadowBox, createDaylight, createSky, type SkyHandle } from './sky.ts';
 import { coatMaterial, fogDensity, surfaceCoat, weatherLook, type WeatherLook } from './weather.ts';
 import { buildTrack, buildTurnouts } from './track.ts';
@@ -32,6 +32,15 @@ import { CAR } from './dimensions.ts';
 import { createEnvironment, grassSurface } from './textures.ts';
 
 const GROUND_COLOR = 0x87a06a;
+
+/**
+ * 環境マップ（空を焼いたもの）の寄与。
+ *
+ * 屋外では映り込みの元として使うだけなので弱くしてある。窓ガラスのように
+ * **空を映すこと自体が仕事**の材質は、`envMapIntensity` でこれを割り戻す
+ * （`facade.ts`）。
+ */
+const ENVIRONMENT_INTENSITY = 0.34;
 
 /**
  * 運転席の位置（先頭車の前端からの距離・中心からの左右・レール面からの高さ）。
@@ -105,7 +114,7 @@ export class TrackScene {
       this.scene.environment = createEnvironment(look, renderer);
       // 映り込みの元としては十分で、かつ影の中を照らしすぎない強さ。
       // 半球光（`ambient`）と足し合わさるので、両方を強くすると影が消える。
-      this.scene.environmentIntensity = 0.34;
+      this.scene.environmentIntensity = ENVIRONMENT_INTENSITY;
     }
 
     const inTunnel = (s: number): boolean => route.tunnels.at(s).length > 0;
@@ -129,8 +138,14 @@ export class TrackScene {
     this.add(crossings.objects, true);
     this.crossingHandles = crossings.handles;
     this.add(buildCatenary(route, this.frameAt, inTunnel), true);
-    this.add(buildScenery(route, this.frameAt, look), true);
-    // 遠景の山なみ。地表の板が尽きるところに立てて、空と地面の境目を埋める
+    this.add(
+      buildScenery(route, this.frameAt, look, { environmentIntensity: ENVIRONMENT_INTENSITY }),
+      true,
+    );
+    // 地表の板（左右 260m）の外側。ここが無いと、俯瞰や側面から見たときに
+    // 板の縁と「地平線下の色」の境目が定規で引いた線として出る。
+    this.add(buildOuterGround(route, this.frameAt, look), false);
+    // 遠景の山なみ。遠景の地表の上に立てて、空と地面の境目を埋める
     this.add(buildHorizon(route, this.frameAt), false);
 
     const signals = buildSignals(route, this.frameAt);
@@ -242,7 +257,10 @@ export class TrackScene {
     for (let i = 0; i < cars.length; i++) {
       const veh = cars[i]!;
       const lead = i === 0 || i === cars.length - 1;
-      const { group, lights } = buildCar(veh.spec, lead, i === 0);
+      const { group, lights } = buildCar(veh.spec, lead, i === 0, {
+        index: i + 1,
+        cars: cars.length,
+      });
       // 客室の内装は車体の子として付ける。車体動揺（ロール・ピッチ・左右）は
       // 車体に掛かるので、内装は車内から見て動かない — 実際の車内と同じで、
       // 揺れているのは車体のほうであり、乗っている側は窓の外が動くのを見る。
@@ -286,7 +304,10 @@ export class TrackScene {
       const cars = Math.max(1, Math.round(train.length / spec.length));
       const view = new ScheduledTrainView(train.id, train.track ?? 'own', spec.length);
       for (let i = 0; i < cars; i++) {
-        const { group } = buildCar(spec, i === 0 || i === cars - 1, false);
+        const { group } = buildCar(spec, i === 0 || i === cars - 1, false, {
+          index: i + 1,
+          cars,
+        });
         this.add([group], true);
         group.visible = false;
         view.cars.push(group);

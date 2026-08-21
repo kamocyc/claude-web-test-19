@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { formatClock, mpsToKmh, paToKpa, type Simulation } from '@railsim/core';
 import type { WiperMode } from '../input/driverState.ts';
 import { CAB_DESK } from './dimensions.ts';
+import { shadeWithVertexColor, tintVertices } from './interiorShading.ts';
 import {
   ATS_LAMPS,
   cabPanelTexture,
@@ -48,7 +49,7 @@ import {
 
 const FRAME_COLOR = 0x2f343b;
 const PANEL_COLOR = 0x39404a;
-const DESK_COLOR = 0x2d333a;
+const DESK_COLOR = 0x21262d;
 const TRIM_COLOR = 0x4d545c;
 const WALL_COLOR = 0x555c65;
 const STAINLESS = 0x9aa1a8;
@@ -56,8 +57,11 @@ const STAINLESS = 0x9aa1a8;
 /** 運転室は日の当たらない箱なので、面をわずかに自己発光させて沈み込みを防ぐ */
 function surface(
   color: number,
-  roughness = 0.82,
-  metalness = 0.05,
+  // 運転台の面は梨地の樹脂で、**すれすれの角度で見ても光らない**。粗さを
+  // 下げると机の面が空を映して白く光り、そこだけ別の材質に見えてしまう
+  // （前方の窓から入る空の光を、浅い角度で見た面がフレネルで拾うため）。
+  roughness = 0.93,
+  metalness = 0.02,
   glow = 0.06,
 ): THREE.MeshStandardMaterial {
   return new THREE.MeshStandardMaterial({
@@ -80,7 +84,7 @@ function panel(
 ): THREE.Mesh {
   const item = new THREE.Mesh(
     new THREE.BoxGeometry(width, height, depth),
-    surface(color, 0.82, 0.05),
+    surface(color, 0.93, 0.02),
   );
   item.position.set(x, y, z);
   return item;
@@ -108,14 +112,52 @@ function grained(
     new THREE.MeshStandardMaterial({
       map,
       color,
-      roughness: 0.86,
-      metalness: 0.06,
+      // 粗さの理由は `surface()` と同じ。机の面がいちばんすれすれに見えるので、
+      // ここを 0.86 のままにすると机だけが白い板に見える。
+      roughness: 0.95,
+      metalness: 0.01,
       emissive: color,
       emissiveIntensity: 0.06,
     }),
   );
   item.position.set(x, y, z);
   return item;
+}
+
+/**
+ * 大きな面に**光の届き方の勾配**を焼く。
+ *
+ * 運転室は窓からしか光の入らない箱で、光源は前面窓と側窓だけである。したがって
+ * 机の下・足元・壁の下・仕切りの陰は実物では必ず暗く、明るいのは窓に近い面だけ
+ * になる。ところが描画の環境光（半球光）は遮るものを知らないので、放っておくと
+ * 足元まで空の明るさで塗られ、**運転室全体が一様な灰色の板**になる。
+ *
+ * 光源を足すのではなく、面の側に勾配を持たせて解く。頂点色は拡散色にも自己発光
+ * にも掛かる（`interiorShading.ts` が着色器へ 1 行足している）ので、これだけで
+ * 「奥ほど暗い箱」になる。
+ *
+ * @param axis   勾配を付ける軸
+ * @param bright その軸の値がここのとき明るさ 1
+ * @param dark   その軸の値がここのとき明るさ `darkest`
+ */
+function grade(
+  mesh: THREE.Mesh,
+  axis: 'x' | 'y' | 'z',
+  bright: number,
+  dark: number,
+  darkest: number,
+): THREE.Mesh {
+  // 形は原点まわりに作って `position` で置いてあるので、勾配の基準も
+  // 置いたあとの座標で測る（形の局所座標のままだと、板の厚みぶんしか動かない）。
+  const at = mesh.position;
+  const pick = (x: number, y: number, z: number): number =>
+    axis === 'x' ? x + at.x : axis === 'y' ? y + at.y : z + at.z;
+  tintVertices(mesh.geometry, (x, y, z) => {
+    const t = Math.max(0, Math.min(1, (pick(x, y, z) - bright) / (dark - bright)));
+    return 1 + (darkest - 1) * t;
+  });
+  shadeWithVertexColor(mesh.material as THREE.Material);
+  return mesh;
 }
 
 /** 銘板つきの面（スイッチの名札・注意書き） */
@@ -445,9 +487,11 @@ export function createCabInterior(): CabInterior {
   }
 
   // --- 天井・側面・仕切り ---
-  group.add(panel(3.2, 0.1, 2.3, 0.7, D.ceilingY, -0.4, PANEL_COLOR));
-  group.add(panel(0.1, 2.2, 2.3, D.rightWallX, 0.0, -0.4, WALL_COLOR));
-  group.add(panel(3.2, 0.08, 2.3, 0.7, D.floorY, -0.4, 0x23272c));
+  // 面ごとに光の届き方が違う。天井は前面窓から入る光を受けるので前が明るく、
+  // 床は机の下へ行くほど暗い。壁は下half が机の陰に入る。
+  group.add(grade(panel(3.2, 0.1, 2.3, 0.7, D.ceilingY, -0.4, PANEL_COLOR), 'z', -1.5, 0.5, 0.55)); // prettier-ignore
+  group.add(grade(panel(0.1, 2.2, 2.3, D.rightWallX, 0.0, -0.4, WALL_COLOR), 'y', 0.6, -0.9, 0.4));
+  group.add(grade(panel(3.2, 0.08, 2.3, 0.7, D.floorY, -0.4, 0x23272c), 'z', 0.4, -1.5, 0.32));
   // 天井の照明（運転室灯。実物は減光して使う）
   const cabLamp = new THREE.Mesh(
     new THREE.PlaneGeometry(0.5, 0.14),
@@ -458,7 +502,7 @@ export function createCabInterior(): CabInterior {
   group.add(cabLamp);
 
   // 仕切り壁（後ろ）と、客室へ通じる仕切り扉
-  group.add(panel(3.2, 2.2, 0.08, 0.7, 0.0, D.partitionZ, PANEL_COLOR));
+  group.add(grade(panel(3.2, 2.2, 0.08, 0.7, 0.0, D.partitionZ, PANEL_COLOR), 'y', 0.6, -1.0, 0.45)); // prettier-ignore
   group.add(panel(0.74, 1.9, 0.05, 1.35, -0.25, D.partitionZ - 0.05, TRIM_COLOR));
   // 仕切り扉の窓（客室が透けて見える）。遮光幕が下りているので暗い。
   group.add(panel(0.5, 0.42, 0.03, 1.35, 0.45, D.partitionZ - 0.08, 0x0e1216));
@@ -492,7 +536,7 @@ export function createCabInterior(): CabInterior {
     [(sw.front + sw.back) / 2, sw.back - sw.front, (sw.top + D.ceilingY) / 2, D.ceilingY - sw.top],
   ];
   for (const [cz, dz, cy, dy] of wallSegments) {
-    group.add(panel(0.1, dy, dz, D.leftWallX, cy, cz, WALL_COLOR));
+    group.add(grade(panel(0.1, dy, dz, D.leftWallX, cy, cz, WALL_COLOR), 'y', 0.6, -1.0, 0.4));
   }
   for (const [cz, dz, cy, dy] of [
     [(sw.front + sw.back) / 2, sw.back - sw.front, sw.bottom, 0.05],
@@ -521,15 +565,18 @@ export function createCabInterior(): CabInterior {
   const desk = grained(DESK_COLOR, deskCentreX, D.deskY, (D.deskFrontZ + D.deskBackZ) / 2, deskWidth, 0.06, deskDepth); // prettier-ignore
   // 机の面は運転士側がわずかに低くなるよう傾ける
   desk.rotation.x = 0.1;
-  group.add(desk);
+  // 机の面は窓に近い前縁がいちばん明るく、運転士の体が覆う手前ほど暗い
+  group.add(grade(desk, 'z', D.deskFrontZ, D.deskBackZ, 0.52));
   // 机の縁（手前のふち。ここに肘や手首を置く）。少し明るい別部材にしておくと、
   // 机が「1 枚の灰色の板」に見えなくなる。
   const deskLip = panel(deskWidth, 0.05, 0.07, deskCentreX, D.deskY - 0.012, D.deskBackZ + 0.02, 0x3a4149); // prettier-ignore
   deskLip.rotation.x = 0.1;
   group.add(deskLip);
   // 机の前垂れ（膝の前の板）と、その下の足元の暗がり
-  group.add(panel(deskWidth, 0.58, 0.06, deskCentreX, D.deskY - 0.32, D.deskBackZ + 0.03, DESK_COLOR)); // prettier-ignore
-  group.add(panel(deskWidth, 0.06, 0.5, deskCentreX, D.deskY - 0.6, D.deskBackZ - 0.25, 0x1b1f24));
+  // 前垂れ（膝の前の板）は下へ行くほど暗い。実物の運転室でいちばん暗いのは
+  // ここと足元で、明るいままにすると運転台が宙に浮いて見える。
+  group.add(grade(panel(deskWidth, 0.58, 0.06, deskCentreX, D.deskY - 0.32, D.deskBackZ + 0.03, DESK_COLOR), 'y', D.deskY - 0.05, D.deskY - 0.72, 0.28)); // prettier-ignore
+  group.add(grade(panel(deskWidth, 0.06, 0.5, deskCentreX, D.deskY - 0.6, D.deskBackZ - 0.25, 0x1b1f24), 'y', D.deskY - 0.5, D.deskY - 0.66, 0.4)); // prettier-ignore
   // 計器盤と机のあいだの段（盤の土台）
   group.add(panel(deskWidth, 0.07, 0.1, deskCentreX, D.deskY + 0.03, D.deskFrontZ + 0.03, 0x30363d)); // prettier-ignore
 
@@ -537,7 +584,8 @@ export function createCabInterior(): CabInterior {
   const panelCentreZ = D.deskFrontZ + 0.06;
   const instrumentPanel = grained(PANEL_COLOR, deskCentreX, panelCentreY, panelCentreZ, deskWidth, D.panelHeight, 0.06); // prettier-ignore
   instrumentPanel.rotation.x = -D.panelTilt;
-  group.add(instrumentPanel);
+  // 盤の面は上端（窓に近い側）が明るく、机との取り合いが暗い
+  group.add(grade(instrumentPanel, 'y', panelCentreY + 0.15, panelCentreY - 0.15, 0.68));
 
   /**
    * 計器盤の面に載せる位置。

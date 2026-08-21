@@ -739,20 +739,41 @@ export function createEnvironment(look: WeatherLook, renderer: THREE.WebGLRender
 }
 
 /**
+ * 外壁テクスチャに描いてある窓の位置（テクスチャ 1 枚の正規化座標）。
+ *
+ * **描く側（この下の `surface()`）と、サッシを立体で作る側（`facade.ts`）が
+ * 同じ値を見る。**ずれると、描いた窓と出っ張ったサッシが重ならず、窓が
+ * 二重にあるように見えてしまう。
+ *
+ * キャンバスの y は上から下、テクスチャの v は下から上なので、
+ * `v = 1 - y/size` の関係になっている（描画の矩形をそのまま写すと上下が逆になる）。
+ */
+export const SIDING_OPENINGS = [
+  // 1 階の掃き出し窓と小窓。庇（ひさし）が付く
+  { u0: 0.1, v0: 0.14, u1: 0.44, v1: 0.44, hood: true },
+  { u0: 0.58, v0: 0.14, u1: 0.8, v1: 0.4, hood: true },
+  // 2 階の窓
+  { u0: 0.12, v0: 0.66, u1: 0.36, v1: 0.86 },
+  { u0: 0.62, v0: 0.66, u1: 0.8, v1: 0.86 },
+] as const;
+
+/**
  * 木造住宅の外壁（窯業系サイディング）。
  *
  * 日本の沿線でいちばん多く目に入る面である。455mm 幅の板を横に張った目地と、
- * 引違いの掃き出し窓・小窓を描く。1 枚を 3.6m（≒ 1 階ぶん）で貼ると、
- * 窓の大きさが実物とおよそ合う。
+ * 引違いの掃き出し窓・小窓を描く。**1 枚を 3.6m × 5.6m（＝ 2 階建て 1 軒の
+ * 半間口ぶん）で貼る**（`WALL_TILE`, `scenery.ts`）。この実寸で貼ると、
+ * 下段の窓が 1 階（床上 0.78m、1.22 × 1.68m の掃き出し窓）、上段が 2 階
+ * （3.70m、0.86 × 1.12m）に来て、実物の窓の大きさと高さに合う。
  */
 export const sidingSurface = surface(
   (ctx, size, rand) => {
     ctx.fillStyle = '#ddd6c8';
     ctx.fillRect(0, 0, size, size);
     speckle(ctx, size, rand, 1600, [0.6, 2.2], [200, 240], 0.22);
-    // 横の目地（サイディング 1 枚 455mm ≒ 1/8 タイル）
+    // 横の目地（サイディング 1 枚 455mm ≒ 1/12 タイル。1 枚を 5.6m で貼る）
     ctx.fillStyle = 'rgba(160,152,140,0.42)';
-    for (let i = 1; i < 8; i++) ctx.fillRect(0, (size * i) / 8, size, 2);
+    for (let i = 1; i < 12; i++) ctx.fillRect(0, (size * i) / 12, size, 2);
     // 掃き出し窓（下段）と小窓（上段）。サッシは銀、ガラスは空を映して暗い
     const window = (x: number, y: number, w: number, h: number): void => {
       ctx.fillStyle = '#2b333a';
@@ -766,10 +787,10 @@ export const sidingSurface = surface(
       ctx.lineTo(x + w / 2, y + h);
       ctx.stroke();
     };
-    window(size * 0.1, size * 0.56, size * 0.34, size * 0.3);
-    window(size * 0.58, size * 0.6, size * 0.22, size * 0.26);
-    window(size * 0.12, size * 0.14, size * 0.24, size * 0.2);
-    window(size * 0.62, size * 0.14, size * 0.18, size * 0.2);
+    // 位置は `SIDING_OPENINGS` から引く（立体のサッシと同じ値を使うため）
+    for (const o of SIDING_OPENINGS) {
+      window(size * o.u0, size * (1 - o.v1), size * (o.u1 - o.u0), size * (o.v1 - o.v0));
+    }
     // 雨だれ（窓の下に伸びる黒い筋）。新築でない家の顔になる
     for (let i = 0; i < 10; i++) {
       const x = rand() * size;
@@ -1335,7 +1356,7 @@ export function leafCardTexture(): { map: THREE.Texture; alpha: THREE.Texture } 
  * 縦に伸びた葉を数十本描き、交差板に貼る。下端は不透明、上端へ向かって
  * まばらになる（実際の草も先へ行くほど疎になる）。
  */
-export function grassTuftTexture(): { map: THREE.Texture; alpha: THREE.Texture } {
+export function grassTuftTexture(snowy = false): { map: THREE.Texture; alpha: THREE.Texture } {
   const w = 128;
   const h = 128;
   const colour = document.createElement('canvas');
@@ -1351,11 +1372,13 @@ export function grassTuftTexture(): { map: THREE.Texture; alpha: THREE.Texture }
   const rand = rng(0x77aa31);
   for (let i = 0; i < 46; i++) {
     const x0 = 6 + rand() * (w - 12);
-    const height = h * (0.45 + rand() * 0.5);
-    const lean = (rand() - 0.5) * w * 0.28;
+    // 雪の下の草は立っていない。積もった重みで倒れ、穂先だけが雪から出る。
+    const height = h * (snowy ? 0.26 + rand() * 0.34 : 0.45 + rand() * 0.5);
+    // 倒れているぶん、傾きも大きくなる
+    const lean = (rand() - 0.5) * w * (snowy ? 0.55 : 0.28);
     const width = 1.4 + rand() * 1.8;
     const l = 96 + rand() * 74;
-    const dry = rand() < 0.22;
+    const dry = rand() < (snowy ? 0.85 : 0.22);
     for (const ctx of [cx, ax]) {
       ctx.beginPath();
       ctx.moveTo(x0 - width, h);
@@ -1370,6 +1393,161 @@ export function grassTuftTexture(): { map: THREE.Texture; alpha: THREE.Texture }
             : `rgb(${Math.round(l * 0.6)},${Math.round(l)},${Math.round(l * 0.42)})`;
       ctx.fill();
     }
+  }
+  if (snowy) {
+    // 根元に積もった雪。**これが無いと、雪原の中で草束だけが緑のまま立つ**
+    // （実際そうなった）。材質の色で白く寄せるだけでは、抜き型が草の形の
+    // ままなので「白い草」にしかならない。雪は草のあいだを埋めて丸くなる
+    // ので、抜き型の側に山を足して形そのものを変える。
+    const mound = (ctx: CanvasRenderingContext2D, fill: string): void => {
+      ctx.fillStyle = fill;
+      ctx.beginPath();
+      ctx.moveTo(0, h);
+      for (let i = 0; i <= 12; i++) {
+        const x = (w * i) / 12;
+        // 山を 2 つ重ねた低い稜線。高さは束の下から 4 割まで
+        const y = h - h * (0.18 + 0.16 * Math.sin(i * 0.9) + 0.1 * Math.sin(i * 2.3 + 1.1));
+        ctx.lineTo(x, y);
+      }
+      ctx.lineTo(w, h);
+      ctx.closePath();
+      ctx.fill();
+    };
+    mound(ax, '#ffffff');
+    mound(cx, '#f2f5f8');
+    // 穂先に載った雪。倒れた葉の上側だけが白くなる
+    const capRand = rng(0x31aa77);
+    for (let i = 0; i < 22; i++) {
+      const x = capRand() * w;
+      const y = h - h * (0.2 + capRand() * 0.4);
+      for (const ctx of [cx, ax]) {
+        ctx.fillStyle = ctx === ax ? '#ffffff' : '#eef3f8';
+        ctx.fillRect(x, y, 2 + capRand() * 4, 1.5 + capRand() * 2);
+      }
+    }
+  }
+  const map = new THREE.CanvasTexture(colour);
+  map.colorSpace = THREE.SRGBColorSpace;
+  map.anisotropy = 8;
+  const alpha = new THREE.CanvasTexture(alphaCanvas);
+  alpha.anisotropy = 8;
+  return { map, alpha };
+}
+
+/**
+ * 車体側面の標記（号車番号・車号・所属・弱冷房車）。
+ *
+ * ## なぜ標記が要るか
+ *
+ * 実物の通勤形の側面には、無地の面がほとんど無い。号車番号、車号、所属標記、
+ * 定員、検査標記、優先席・弱冷房車の表示が、どれも決まった場所に決まった
+ * 大きさで入っている。**この細かい文字があるかどうかで、車体が「実物」に
+ * 見えるか「同じ形の箱」に見えるかが決まる。**遠くからは読めなくても、
+ * 面に細かい濃淡があること自体が効く。
+ *
+ * ## 位置と大きさ
+ *
+ * - **号車番号** — 戸袋部の窓上あたりに 200mm 角前後の札。ホームで並ぶ客が
+ *   遠くから読むためのもので、数字だけが大きい。
+ * - **車号**（例: クハ 1001） — 車端の腰板に 100mm 級の文字で 1 行。
+ * - **所属標記**（例: 都 中原） — 車号のすぐ下に一回り小さく。
+ * - **弱冷房車** — 冷房を弱めた車両の扉脇に貼る。JR 東日本は水色地に白抜き。
+ *
+ * @param lines 書く文字（上から）
+ * @param style 地の色づかい。`plate` は白地・`weak` は弱冷房車の水色地
+ */
+export function carMarkingTexture(
+  lines: readonly string[],
+  style: 'plate' | 'number' | 'weak',
+): THREE.Texture {
+  const key = `car:${style}:${lines.join('/')}`;
+  const cached = plateCache.get(key);
+  if (cached) return cached;
+  const h = 128;
+  const w = 256;
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d')!;
+  const look = {
+    // 車号・所属標記はステンレスの地に直接貼る転写文字。地は車体色に近い
+    plate: { bg: '#c9ced3', fg: '#20262c' },
+    // 号車番号の札は白地に黒
+    number: { bg: '#f4f6f8', fg: '#15191d' },
+    // 弱冷房車のステッカー
+    weak: { bg: '#1c8ec4', fg: '#ffffff' },
+  }[style];
+  ctx.fillStyle = look.bg;
+  ctx.fillRect(0, 0, w, h);
+  if (style === 'number') {
+    ctx.strokeStyle = '#8f959b';
+    ctx.lineWidth = 6;
+    ctx.strokeRect(3, 3, w - 6, h - 6);
+  }
+  ctx.fillStyle = look.fg;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  const lineHeight = h / (lines.length + 0.3);
+  for (let i = 0; i < lines.length; i++) {
+    const text = lines[i]!;
+    let font = lineHeight * 0.78;
+    ctx.font = `bold ${font}px sans-serif`;
+    const measured = ctx.measureText(text).width;
+    if (measured > w * 0.88) {
+      font *= (w * 0.88) / measured;
+      ctx.font = `bold ${font}px sans-serif`;
+    }
+    ctx.fillText(text, w / 2, lineHeight * (i + 0.65));
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.anisotropy = 8;
+  plateCache.set(key, texture);
+  return texture;
+}
+
+/**
+ * 優先席の表示。
+ *
+ * 窓ガラスの内側に貼る、シルエットの並んだステッカー。**これが車内にも
+ * 車外にも同じ位置に見えるのが実物**（ガラスに貼ってあるため）。
+ * ここでは車外側の窓に貼る板として使う。抜き型を持たせて、絵のない
+ * ところはガラスがそのまま見えるようにする。
+ */
+export function priorityStickerTexture(): { map: THREE.Texture; alpha: THREE.Texture } {
+  const w = 256;
+  const h = 128;
+  const colour = document.createElement('canvas');
+  colour.width = w;
+  colour.height = h;
+  const cx = colour.getContext('2d')!;
+  const alphaCanvas = document.createElement('canvas');
+  alphaCanvas.width = w;
+  alphaCanvas.height = h;
+  const ax = alphaCanvas.getContext('2d')!;
+  ax.fillStyle = '#000000';
+  ax.fillRect(0, 0, w, h);
+  // 地（濃紺のステッカー）。上半分に「優先席」、下半分にシルエット 4 つ
+  for (const [ctx, fill] of [
+    [cx, '#1b3f7a'],
+    [ax, '#ffffff'],
+  ] as const) {
+    ctx.fillStyle = fill;
+    ctx.fillRect(w * 0.06, h * 0.1, w * 0.88, h * 0.8);
+  }
+  cx.fillStyle = '#ffffff';
+  cx.textAlign = 'center';
+  cx.textBaseline = 'middle';
+  cx.font = `bold ${h * 0.3}px sans-serif`;
+  cx.fillText('優先席', w * 0.5, h * 0.3);
+  // 4 つのシルエット（お年寄り・けが人・妊婦・乳幼児連れ）。細かい形は
+  // 読めないので、頭と胴の丸みだけを白で置く
+  for (let i = 0; i < 4; i++) {
+    const x = w * (0.18 + i * 0.21);
+    cx.beginPath();
+    cx.arc(x, h * 0.58, h * 0.07, 0, Math.PI * 2);
+    cx.fill();
+    cx.fillRect(x - h * 0.06, h * 0.66, h * 0.12, h * 0.18);
   }
   const map = new THREE.CanvasTexture(colour);
   map.colorSpace = THREE.SRGBColorSpace;

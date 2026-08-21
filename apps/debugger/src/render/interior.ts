@@ -511,7 +511,11 @@ function registerOccluders(c: Ctx, field: OcclusionField): void {
       );
       // 吊り革棒（天井との取り合いに細い陰が落ちる）
       field.add(
-        [(bay.from + bay.to) / 2, c.floor + INTERIOR.strapBarHeight, side * INTERIOR.strapBarOffset],
+        [
+          (bay.from + bay.to) / 2,
+          c.floor + INTERIOR.strapBarHeight,
+          side * INTERIOR.strapBarOffset,
+        ],
         [width, INTERIOR.strapBarDiameter, INTERIOR.strapBarDiameter],
         0.5,
         0.12,
@@ -658,7 +662,10 @@ export function buildCarInterior(spec: VehicleSpec, lead: boolean, front: boolea
       }
     },
     setPlacement(index: number, loadFactor: number): void {
-      if (passengers) group.remove(passengers.group);
+      if (passengers) {
+        group.remove(passengers.group);
+        passengers.dispose();
+      }
       passengers = buildPassengers(layout, bays, index, loadFactor);
       group.add(passengers.group);
       const brightness = CAR_BRIGHTNESS[index % CAR_BRIGHTNESS.length]!;
@@ -745,7 +752,7 @@ function buildFloor(c: Ctx): THREE.Group {
   const to = c.layout.walkableTo + 0.02;
   // 頂点の割りは左右を細かく取る。陰も磨り減りも**左右方向に変わる**（座席の
   // 下が暗く、通路の中央が薄い）ので、前後は粗くてよい。
-  const sheet = quad(to - from, INTERIOR.width, [(from + to) / 2, c.floor, 0], 'py', [0.5, 0.09]);
+  const sheet = quad(to - from, INTERIOR.width, [(from + to) / 2, c.floor, 0], 'py', [0.9, 0.13]);
   // 模様は 1.2m 角で 1 枚。車両の長短で柄の大きさが変わらないよう実寸で割る。
   scaleUv(sheet, (to - from) / 1.2, INTERIOR.width / 1.2);
   c.field.bake(sheet, 0.76);
@@ -761,7 +768,10 @@ function buildFloor(c: Ctx): THREE.Group {
   g.add(
     new THREE.Mesh(
       sheet,
-      shadeWithVertexColor(textured(floorSheetTexture(FLOOR_COLOR, 11), 0.92, 0.1)),
+      // 床の粗さを上げるのは、すれすれに見える面が空を映して白く光るのを
+      // 抑えるため。塩ビシートには艶があるが、それは天井の蛍光灯を映すので
+      // あって、通路の先が白く飛ぶような映り方はしない。
+      shadeWithVertexColor(textured(floorSheetTexture(FLOOR_COLOR, 11), 0.97, 0.1)),
     ),
   );
 
@@ -785,7 +795,7 @@ function buildFloor(c: Ctx): THREE.Group {
   for (const centre of c.layout.doorCentres) {
     // 乗降位置の色分けは扉幅より少し広く取る（実物も戸口の前を広めに塗る）
     const zoneWidth = CAR.doorWidth + 0.3;
-    zones.push(quad(zoneWidth, 0.95, [centre, c.floor + 0.004, 0], 'py', [0.4, 0.09]));
+    zones.push(quad(zoneWidth, 0.95, [centre, c.floor + 0.004, 0], 'py', [0.6, 0.13]));
     // 色分けの縁。実物は別の色のシートを溶接して継ぐので、境目に細い線が出る。
     for (const dx of [-1, 1] as const) {
       edges.push(quad(0.02, 0.95, [centre + dx * zoneWidth * 0.5, c.floor + 0.006, 0], 'py'));
@@ -826,7 +836,7 @@ function buildSideWalls(c: Ctx): THREE.Group {
     const band = (a: number, b: number, y0: number, y1: number): void => {
       if (b - a < 1e-4 || y1 - y0 < 1e-4) return;
       // 上下を細かく割る（床際と荷棚の下の陰がここに乗る）
-      parts.push(box([b - a, y1 - y0, WALL_PANEL], [(a + b) / 2, (y0 + y1) / 2, z], [0.6, 0.1, 0])); // prettier-ignore
+      parts.push(box([b - a, y1 - y0, WALL_PANEL], [(a + b) / 2, (y0 + y1) / 2, z], [0.95, 0.14, 0])); // prettier-ignore
     };
     // 腰板（床から窓の下端まで）— 扉の開口だけ抜く
     for (const [a, b] of subtractSpans(from, to, c.doorSpans)) {
@@ -848,7 +858,7 @@ function buildSideWalls(c: Ctx): THREE.Group {
         box(
           [b - a, c.doorTop - c.floor, 0.015],
           [(a + b) / 2, (c.floor + c.doorTop) / 2, side * (c.inner - POCKET_STEP)],
-          [0.3, 0.12, 0],
+          [0.45, 0.17, 0],
         ),
       );
     }
@@ -917,7 +927,7 @@ function buildCeiling(c: Ctx): THREE.Group {
   const to = c.layout.walkableTo;
   const flat = INTERIOR.ceilingFlatWidth / 2;
   const panels: THREE.BufferGeometry[] = [];
-  panels.push(quad(to - from, flat * 2, [(from + to) / 2, c.ceiling, 0], 'ny', [0.8, 0.2]));
+  panels.push(quad(to - from, flat * 2, [(from + to) / 2, c.ceiling, 0], 'ny', [1.4, 0.35]));
 
   // 肩の斜面（平天井の縁から側の天井へ）。水平な面を分割して作ってから、外側の
   // 縁だけを下げて傾ける。4 点で張ると接地の陰を乗せる頂点が無く、荷棚の上や
@@ -925,7 +935,7 @@ function buildCeiling(c: Ctx): THREE.Group {
   for (const side of [-1, 1] as const) {
     const z0 = side * flat;
     const z1 = side * c.inner;
-    const face = quad(to - from, Math.abs(z1 - z0), [(from + to) / 2, c.ceiling, (z0 + z1) / 2], 'ny', [0.8, 0.06]); // prettier-ignore
+    const face = quad(to - from, Math.abs(z1 - z0), [(from + to) / 2, c.ceiling, (z0 + z1) / 2], 'ny', [1.3, 0.1]); // prettier-ignore
     const position = face.getAttribute('position');
     for (let i = 0; i < position.count; i++) {
       const t = Math.abs(position.getZ(i) - z0) / Math.abs(z1 - z0);
@@ -935,7 +945,21 @@ function buildCeiling(c: Ctx): THREE.Group {
     face.computeVertexNormals();
     panels.push(face);
   }
-  const panelMesh = shadedMesh(panels, lit(CEILING_COLOR, 0.8, 0.02, 0.17), c.field, 0.45);
+  /**
+   * 天井は**自分で光っているぶんが大きく、まわりからの照り返しはほとんど受けない**。
+   * 下を向いた面なので、環境光（半球光）からは地面側の色——つまり草の緑——しか
+   * 拾わないためで、放っておくと車内の天井が緑がかる。そこで拡散の色を落として
+   * 環境光の効きを弱め、そのぶんを蛍光灯の色の自己発光で戻す。明るさは変わらず、
+   * 色かぶりだけが消える。
+   */
+  const ceilingMaterial = new THREE.MeshStandardMaterial({
+    color: 0x9d9c98,
+    roughness: 0.85,
+    metalness: 0.02,
+    emissive: new THREE.Color(CEILING_COLOR).multiply(LAMP_TINT),
+    emissiveIntensity: 0.27 * CABIN_LIGHT,
+  });
+  const panelMesh = shadedMesh(panels, ceilingMaterial, c.field, 0.45);
   if (panelMesh) g.add(panelMesh);
 
   // 照明（カバー付きの蛍光灯 2 列）。自ら光る面なので陰影を持たせない。
@@ -1102,13 +1126,13 @@ function buildSeats(c: Ctx): THREE.Group {
         const w = pitch - 0.022;
         // 座面
         target.push(
-          box([w, INTERIOR.seatCushion, INTERIOR.seatDepth], [cx, seatY - INTERIOR.seatCushion / 2, side * (c.inner - INTERIOR.seatDepth / 2)], [0.1, 0.03, 0.07]), // prettier-ignore
+          box([w, INTERIOR.seatCushion, INTERIOR.seatDepth], [cx, seatY - INTERIOR.seatCushion / 2, side * (c.inner - INTERIOR.seatDepth / 2)], [0.16, 0.05, 0.15]), // prettier-ignore
         );
         // 背ずり（12 度後ろへ倒す）。座面とのあいだに 25mm の切れ目を空けて
         // 奥の暗い座席枠を覗かせる。実物にもこの隙間があり、**座面と背ずりの
         // 境目はここに落ちる影で読んでいる**（同じモケットなので色では分からない）。
         const gap = 0.025;
-        const back = box([w, backHeight - gap, 0.09], [0, 0, 0], [0.1, 0.06, 0.05]);
+        const back = box([w, backHeight - gap, 0.09], [0, 0, 0], [0.16, 0.1, 0.1]);
         back.rotateX(-side * INTERIOR.seatBackTilt);
         back.translate(
           cx,
@@ -1121,7 +1145,7 @@ function buildSeats(c: Ctx): THREE.Group {
       // けこみ（座席下の板）とヒーターのスリット
       const kickZ = side * (c.inner - INTERIOR.seatDepth + INTERIOR.seatToeSpace);
       kick.push(
-        box([width + 0.18, seatY - INTERIOR.seatCushion - c.floor, 0.03], [(a + b) / 2, (c.floor + seatY - INTERIOR.seatCushion) / 2, kickZ], [0.4, 0.05, 0]), // prettier-ignore
+        box([width + 0.18, seatY - INTERIOR.seatCushion - c.floor, 0.03], [(a + b) / 2, (c.floor + seatY - INTERIOR.seatCushion) / 2, kickZ], [0.7, 0.07, 0]), // prettier-ignore
       );
       for (let hx = a + 0.03; hx < b - 0.03; hx += 0.065) {
         heaters.push(
@@ -1139,7 +1163,7 @@ function buildSeats(c: Ctx): THREE.Group {
         const solidTop = c.floor + INTERIOR.seatBackHeight + 0.12;
         partitions.push(
           box([INTERIOR.armPartitionThickness, solidTop - c.floor, INTERIOR.armPartitionDepth], // prettier-ignore
-            [px, (c.floor + solidTop) / 2, side * (c.inner - INTERIOR.armPartitionDepth / 2)], [0, 0.07, 0.08]), // prettier-ignore
+            [px, (c.floor + solidTop) / 2, side * (c.inner - INTERIOR.armPartitionDepth / 2)], [0, 0.11, 0.13]), // prettier-ignore
         );
         // 曇りガラスの上半分（枠は下の板と同じ色）
         const glassTop = c.floor + INTERIOR.armPartitionHeight;
@@ -1253,6 +1277,8 @@ function buildDoors(c: Ctx): {
   const frames: THREE.BufferGeometry[] = [];
   const headers: THREE.BufferGeometry[] = [];
   const cocks: THREE.BufferGeometry[] = [];
+  /** 戸袋の口（開いた戸が消えていく暗い隙間） */
+  const pockets: THREE.BufferGeometry[] = [];
 
   for (const centre of c.layout.doorCentres) {
     for (const side of [-1, 1] as const) {
@@ -1303,6 +1329,12 @@ function buildDoors(c: Ctx): {
         frames.push(
           box([0.03, c.doorTop - c.floor, POCKET_STEP], [centre + dx * (CAR.doorWidth / 2 + 0.015), (c.floor + c.doorTop) / 2, jambZ]), // prettier-ignore
         );
+        // 戸袋の口。開いた戸が滑り込んでいく細い隙間で、**中は真っ暗**である。
+        // ここを塞いでしまうと、戸が壁の中へ消えるのではなく壁に貼り付いて
+        // 見える。実物でも、開いた扉の脇には黒い線が 1 本残っている。
+        pockets.push(
+          quad(0.028, c.doorTop - c.floor - 0.02, [centre + dx * (CAR.doorWidth / 2 + 0.032), (c.floor + c.doorTop) / 2, side * (c.inner - LEAF_INSET - 0.008)], side > 0 ? 'nz' : 'pz'), // prettier-ignore
+        );
       }
       frames.push(
         box([CAR.doorWidth + 0.06, 0.05, POCKET_STEP], [centre, c.doorTop + 0.025, jambZ]),
@@ -1333,7 +1365,8 @@ function buildDoors(c: Ctx): {
   const frameMesh = shadedMesh(frames, lit(0xc6cace, 0.5, 0.35, 0.13), c.field, 0.55);
   const headerMesh = shadedMesh(headers, lit(0xcfd3d7, 0.6, 0.2, 0.13), c.field, 0.5);
   const cockMesh = meshOf(cocks, lit(0xc94a3a, 0.6, 0.1, 0.18));
-  for (const mesh of [frameMesh, headerMesh, cockMesh]) if (mesh) g.add(mesh);
+  const pocketMesh = meshOf(pockets, lit(0x14171a, 0.95, 0, 0.02));
+  for (const mesh of [frameMesh, headerMesh, cockMesh, pocketMesh]) if (mesh) g.add(mesh);
 
   return {
     group: g,
@@ -1574,7 +1607,7 @@ function buildEndWalls(c: Ctx): THREE.Group {
     if (c.layout.cabSide === end) {
       // 運転室の仕切り。ここから先へは入れない。
       walls.push(
-        box([t, wallTop - c.floor, INTERIOR.width], [x - (end * t) / 2, (c.floor + wallTop) / 2, 0], [0, 0.15, 0.25]), // prettier-ignore
+        box([t, wallTop - c.floor, INTERIOR.width], [x - (end * t) / 2, (c.floor + wallTop) / 2, 0], [0, 0.22, 0.35]), // prettier-ignore
       );
       // 仕切り扉と、その上の小窓（運転室の様子がわずかに見える）
       trims.push(box([0.04, 1.9, 0.72], [x - end * (t / 2 + 0.02), c.floor + 0.95, -end * 0.55]));
@@ -1586,7 +1619,7 @@ function buildEndWalls(c: Ctx): THREE.Group {
     const sidePanelWidth = (INTERIOR.width - INTERIOR.gangwayWidth) / 2;
     for (const side of [-1, 1] as const) {
       walls.push(
-        box([t, c.ceilingSide - c.floor, sidePanelWidth], [x - (end * t) / 2, (c.floor + c.ceilingSide) / 2, side * (INTERIOR.width + INTERIOR.gangwayWidth) / 4], [0, 0.15, 0.2]), // prettier-ignore
+        box([t, c.ceilingSide - c.floor, sidePanelWidth], [x - (end * t) / 2, (c.floor + c.ceilingSide) / 2, side * (INTERIOR.width + INTERIOR.gangwayWidth) / 4], [0, 0.22, 0.3]), // prettier-ignore
       );
     }
     walls.push(
@@ -1632,7 +1665,9 @@ function buildEndWalls(c: Ctx): THREE.Group {
 
   const wallMesh = shadedMesh(walls, textured(panelTexture(0xcfcbc2, 5), 0.8, 0.12), c.field, 0.6); // prettier-ignore
   const trimMesh = shadedMesh(trims, lit(0xc4c9ce, 0.5, 0.35, 0.13), c.field, 0.55);
-  const bellowsMesh = meshOf(bellows, lit(0x35383c, 0.9, 0.02, 0.1));
+  // 幌の内側は**車内でいちばん暗いところ**である。屋根の外にある通路なので
+  // 車内の照明が届かず、両側の車の明かりが端から差し込むだけになる。
+  const bellowsMesh = shadedMesh(bellows, lit(0x35383c, 0.9, 0.02, 0.1), c.field, 0.5);
   for (const mesh of [wallMesh, trimMesh, bellowsMesh]) if (mesh) g.add(mesh);
 
   // 貫通扉の窓（隣の車が透けて見える）

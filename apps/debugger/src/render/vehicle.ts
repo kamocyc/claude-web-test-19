@@ -1,7 +1,13 @@
 import * as THREE from 'three';
 import type { VehicleSpec } from '@railsim/core';
 import { CAR, CATENARY } from './dimensions.ts';
-import { glowTexture, plateTexture, stainlessSurface } from './textures.ts';
+import {
+  carMarkingTexture,
+  glowTexture,
+  plateTexture,
+  priorityStickerTexture,
+  stainlessSurface,
+} from './textures.ts';
 import { hdrColor } from './postprocess.ts';
 
 /**
@@ -133,6 +139,14 @@ export interface CarParts {
   readonly lights: FrontLights | undefined;
 }
 
+/** 車体に入れる標記。編成の中でその車が何号車かで中身が変わる */
+export interface CarMarking {
+  /** 号車番号（1 から。省略すると号車札を付けない） */
+  readonly index?: number;
+  /** 編成の両数（弱冷房車をどこに置くか決めるのに使う） */
+  readonly cars?: number;
+}
+
 /**
  * 1 両ぶんの車両を組み立てる。
  *
@@ -143,13 +157,19 @@ export interface CarParts {
  * @param lead 先頭車（前面と運転室を付ける）
  * @param front 編成の前を向いているか（後端の先頭車は前面を後ろ向きに付ける）
  */
-export function buildCar(spec: VehicleSpec, lead: boolean, front: boolean): CarParts {
+export function buildCar(
+  spec: VehicleSpec,
+  lead: boolean,
+  front: boolean,
+  marking: CarMarking = {},
+): CarParts {
   const group = new THREE.Group();
   const bodyLength = spec.length - (CAR.couplerLength - CAR.bodyLength);
   const powered = spec.drivenAxleCount > 0;
 
   group.add(buildBody(bodyLength));
   group.add(buildSides(bodyLength, lead, front));
+  group.add(buildMarkings(bodyLength, lead, front, powered, marking));
   group.add(buildRoof(bodyLength, powered));
   group.add(buildUnderframe(spec, bodyLength, powered));
   for (const sign of [-1, 1] as const) {
@@ -354,6 +374,167 @@ function buildSides(bodyLength: number, lead: boolean, front: boolean): THREE.Gr
   }
 
   return group;
+}
+
+/**
+ * 車体側面の標記。
+ *
+ * 実物の通勤形の側面には、無地のところがほとんど無い。ここでは遠くからでも
+ * 効く 5 つを入れる。**細かい文字は読めなくてよい**（読めない距離でも、
+ * 面に濃淡があること自体が「実物」に見せる）。
+ *
+ *  - **号車番号** — 戸袋部の窓上、レール面上 2700mm に 220mm 角の札。
+ *    ホームで並ぶ客が読むものなので、扉のすぐ脇にある。
+ *  - **車号** — 車端の腰板、レール面上 1500mm に 1 行。形式（クハ/モハ/サハ）は
+ *    運転室と電動機の有無で決まるので、先頭車・動力車の別からそのまま出す。
+ *  - **所属標記** — 車号の下。区所名を丸で囲った略号（ここでは「中原」）。
+ *  - **弱冷房車** — 冷房を弱めた 1 両の扉脇。実物では 4 号車前後に置くことが多い。
+ *  - **優先席** — 車端の窓に貼るステッカー。車内からも車外からも同じ位置に見える。
+ *
+ * 貼り付けは側板（`sidePanel`）と同じ作りにする。車体は裾絞りがあるので、
+ * 平らな板を貼ると隅が車体へ潜る。高さごとの半幅をたどれば面に沿う。
+ */
+function buildMarkings(
+  bodyLength: number,
+  lead: boolean,
+  front: boolean,
+  powered: boolean,
+  marking: CarMarking,
+): THREE.Group {
+  const group = new THREE.Group();
+  const half = bodyLength / 2;
+  const index = marking.index;
+  const cars = marking.cars ?? 0;
+
+  /** 側面へ板を貼る（左右両側・車体の曲面に沿わせる） */
+  const decal = (
+    centre: number,
+    width: number,
+    bottom: number,
+    height: number,
+    material: THREE.Material,
+  ): void => {
+    group.add(
+      texturedPanel(centre - width / 2, centre + width / 2, bottom, bottom + height, material, 0.01),
+    );
+  };
+
+  // --- 車号と所属標記 ---
+  //
+  // 形式記号は実物の付け方どおりに出す。運転室があれば制御車の「クハ」、
+  // 電動機があれば「モハ」、どちらでもなければ付随車の「サハ」。
+  const kind = lead ? 'クハ' : powered ? 'モハ' : 'サハ';
+  const serial = 1000 + (index ?? 1) + (powered ? 100 : 0);
+  const numberTexture = carMarkingTexture([`${kind}${serial}`], 'plate');
+  const numberMaterial = new THREE.MeshStandardMaterial({
+    map: numberTexture,
+    roughness: 0.4,
+    metalness: 0.35,
+    side: THREE.DoubleSide,
+  });
+  // 車端（運転室と反対の端）の腰板。レール面上 1500mm、字高 100mm 級
+  const numberAt = front ? -half + 0.9 : half - 0.9;
+  decal(numberAt, 0.72, 1.5, 0.18, numberMaterial);
+
+  const depotMaterial = new THREE.MeshStandardMaterial({
+    map: carMarkingTexture(['都 中原'], 'plate'),
+    roughness: 0.4,
+    metalness: 0.35,
+    side: THREE.DoubleSide,
+  });
+  decal(numberAt, 0.5, 1.28, 0.13, depotMaterial);
+
+  // --- 号車札 ---
+  if (index !== undefined) {
+    const label = new THREE.MeshStandardMaterial({
+      map: carMarkingTexture([`${index}`], 'number'),
+      roughness: 0.55,
+      metalness: 0.1,
+      side: THREE.DoubleSide,
+    });
+    // 戸袋のあたり（中央寄りの扉の脇）の窓上へ。実物と同じ 220mm 角
+    const at = front ? 0.6 * CAR.doorPitch : -0.6 * CAR.doorPitch;
+    decal(at, 0.22, 2.7, 0.22, label);
+  }
+
+  // --- 弱冷房車 ---
+  //
+  // 編成の中の 1 両だけ。実物も「4 号車」など決まった号車に置き、
+  // 客が号車で覚えられるようにしてある。
+  if (index !== undefined && cars >= 4 && index === Math.min(4, cars - 1)) {
+    const weak = new THREE.MeshStandardMaterial({
+      map: carMarkingTexture(['弱冷房車'], 'weak'),
+      roughness: 0.5,
+      metalness: 0.1,
+      side: THREE.DoubleSide,
+    });
+    for (const sign of [-1, 1] as const) {
+      decal(sign * 0.5 * CAR.doorPitch + sign * 0.82, 0.44, 1.95, 0.16, weak);
+    }
+  }
+
+  // --- 優先席のステッカー ---
+  //
+  // 車端の窓に貼る。編成の端の車では運転室と反対の端だけになる。
+  const sticker = priorityStickerTexture();
+  const stickerMaterial = new THREE.MeshStandardMaterial({
+    map: sticker.map,
+    alphaMap: sticker.alpha,
+    alphaTest: 0.5,
+    roughness: 0.25,
+    metalness: 0,
+    side: THREE.DoubleSide,
+  });
+  const windowTop = CAR.floorHeight + CAR.windowSill + CAR.windowHeight;
+  for (const sign of [-1, 1] as const) {
+    if (lead && (front ? sign > 0 : sign < 0)) continue;
+    decal(sign * (half - 0.95), 0.46, windowTop - 0.34, 0.23, stickerMaterial);
+  }
+
+  return group;
+}
+
+/**
+ * 側面へテクスチャ付きの板を貼る。
+ *
+ * `sidePanel()` と同じく高さごとの半幅をたどるが、こちらは UV を張って
+ * 文字が読めるようにする（`sidePanel()` は無地の面しか作らない）。
+ */
+function texturedPanel(
+  x0: number,
+  x1: number,
+  y0: number,
+  y1: number,
+  material: THREE.Material,
+  lift: number,
+): THREE.Mesh {
+  const heights = [y0, y1];
+  const positions: number[] = [];
+  const uvs: number[] = [];
+  const indices: number[] = [];
+  for (const side of [-1, 1] as const) {
+    const base = positions.length / 3;
+    for (let i = 0; i < heights.length; i++) {
+      const y = heights[i]!;
+      const z = side * (halfWidthAt(y) + lift);
+      positions.push(x0, y, z, x1, y, z);
+      // 左右で前後が入れ替わるので、u も裏返す（裏側で鏡文字にならないように）
+      const v = i / (heights.length - 1);
+      if (side < 0) uvs.push(1, v, 0, v);
+      else uvs.push(0, v, 1, v);
+    }
+    for (let i = 0; i < heights.length - 1; i++) {
+      const a = base + i * 2;
+      if (side < 0) indices.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
+      else indices.push(a, a + 2, a + 1, a + 1, a + 2, a + 3);
+    }
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  return new THREE.Mesh(geometry, material);
 }
 
 /**
