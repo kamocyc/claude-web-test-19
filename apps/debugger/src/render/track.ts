@@ -181,15 +181,15 @@ export function buildTrack(
   });
   for (const [spanStart, spanEnd] of ballastedSpans(route)) {
     for (const [start, end] of chunkSpans(spanStart, spanEnd)) {
-    const bed = stationsBetween(start, end, 5, frameAt);
-    out.push(new THREE.Mesh(sweepSection(bed, ballastFaces), ballastMaterial));
-    out.push(new THREE.Mesh(sweepSection(bed, [section[0]!, section[1]!]), slope));
-    out.push(
-      new THREE.Mesh(
-        sweepSection(bed, [section[section.length - 2]!, section[section.length - 1]!]),
-        slope,
-      ),
-    );
+      const bed = stationsBetween(start, end, 5, frameAt);
+      out.push(new THREE.Mesh(sweepSection(bed, ballastFaces), ballastMaterial));
+      out.push(new THREE.Mesh(sweepSection(bed, [section[0]!, section[1]!]), slope));
+      out.push(
+        new THREE.Mesh(
+          sweepSection(bed, [section[section.length - 2]!, section[section.length - 1]!]),
+          slope,
+        ),
+      );
     }
   }
 

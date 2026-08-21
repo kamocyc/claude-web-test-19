@@ -7,10 +7,13 @@ import {
   cabPanelTexture,
   DIAL_SWEEP,
   atsPanelTexture,
+  createCabClock,
   createCabMonitor,
   dialTexture,
   labelTexture,
+  radioPanelTexture,
   timetableTexture,
+  trainNumberTexture,
 } from './cabTextures.ts';
 
 /**
@@ -242,6 +245,16 @@ export interface CabInterior {
    */
   update(sim: Simulation, handles: CabHandles, dt: number): void;
 }
+
+/**
+ * 運行番号と行先の符号。
+ *
+ * 助士側の設定器の小窓に出す。運行番号は「その日にその列車を担当する
+ * 運用の番号」で、行先の符号は側面の行先表示と対で決まっている。シナリオの
+ * 側にこの情報は無いので、路線の終点に合わせた固定の値を出している。
+ */
+const RUN_NUMBER = '0721';
+const DESTINATION_CODE = '橋本';
 
 /** ワイパーの原位置（下枠に沿って畳まれている角度） */
 const WIPER_PARK = 0.16;
@@ -494,24 +507,35 @@ export function createCabInterior(): CabInterior {
   /** 計器盤の中心（床上 870mm あたり）。上端が窓の下枠のすぐ下に来る高さ */
   const panelCentreY = -0.34;
   const deskDepth = D.deskBackZ - D.deskFrontZ;
-  const desk = grained(DESK_COLOR, 0.42, D.deskY, (D.deskFrontZ + D.deskBackZ) / 2, 2.6, 0.06, deskDepth); // prettier-ignore
+  /**
+   * 机と計器盤は**運転室の壁から壁まで**通っている。
+   *
+   * 実物の運転台は左右いっぱいに渡した 1 本の台で、運転士側に主幹制御器と
+   * 計器、助士側に無線・放送・設定器が並ぶ。1 周目は運転士側だけの幅
+   * （2600mm）しかなく、助士側の壁とのあいだが空いていた。
+   * 左の壁 −700mm から右の壁 2100mm までで 2800mm、壁へ差し込むぶんを見て
+   * 2980mm を中心 560mm に置く。
+   */
+  const deskWidth = 2.98;
+  const deskCentreX = 0.56;
+  const desk = grained(DESK_COLOR, deskCentreX, D.deskY, (D.deskFrontZ + D.deskBackZ) / 2, deskWidth, 0.06, deskDepth); // prettier-ignore
   // 机の面は運転士側がわずかに低くなるよう傾ける
   desk.rotation.x = 0.1;
   group.add(desk);
   // 机の縁（手前のふち。ここに肘や手首を置く）。少し明るい別部材にしておくと、
   // 机が「1 枚の灰色の板」に見えなくなる。
-  const deskLip = panel(2.6, 0.05, 0.07, 0.42, D.deskY - 0.012, D.deskBackZ + 0.02, 0x3a4149);
+  const deskLip = panel(deskWidth, 0.05, 0.07, deskCentreX, D.deskY - 0.012, D.deskBackZ + 0.02, 0x3a4149); // prettier-ignore
   deskLip.rotation.x = 0.1;
   group.add(deskLip);
   // 机の前垂れ（膝の前の板）と、その下の足元の暗がり
-  group.add(panel(2.6, 0.58, 0.06, 0.42, D.deskY - 0.32, D.deskBackZ + 0.03, DESK_COLOR));
-  group.add(panel(2.6, 0.06, 0.5, 0.42, D.deskY - 0.6, D.deskBackZ - 0.25, 0x1b1f24));
+  group.add(panel(deskWidth, 0.58, 0.06, deskCentreX, D.deskY - 0.32, D.deskBackZ + 0.03, DESK_COLOR)); // prettier-ignore
+  group.add(panel(deskWidth, 0.06, 0.5, deskCentreX, D.deskY - 0.6, D.deskBackZ - 0.25, 0x1b1f24));
   // 計器盤と机のあいだの段（盤の土台）
-  group.add(panel(2.6, 0.07, 0.1, 0.42, D.deskY + 0.03, D.deskFrontZ + 0.03, 0x30363d));
+  group.add(panel(deskWidth, 0.07, 0.1, deskCentreX, D.deskY + 0.03, D.deskFrontZ + 0.03, 0x30363d)); // prettier-ignore
 
   // 計器盤（机の奥から立ち上がり、運転士の方へ 25 度倒れている）
   const panelCentreZ = D.deskFrontZ + 0.06;
-  const instrumentPanel = grained(PANEL_COLOR, 0.42, panelCentreY, panelCentreZ, 2.6, D.panelHeight, 0.06); // prettier-ignore
+  const instrumentPanel = grained(PANEL_COLOR, deskCentreX, panelCentreY, panelCentreZ, deskWidth, D.panelHeight, 0.06); // prettier-ignore
   instrumentPanel.rotation.x = -D.panelTilt;
   group.add(instrumentPanel);
 
@@ -549,28 +573,37 @@ export function createCabInterior(): CabInterior {
   speedGauge.mount(...onPanel(-0.42, 0.01));
   group.add(speedGauge.group);
 
-  // 圧力計 2 個。
-  //  - 左: 元空気だめ圧（黒針）とブレーキ管圧（赤針）
-  //  - 右: ブレーキシリンダ圧（黒針）と釣り合い空気だめ圧（赤針）
-  // 実物の運転台にもこの 2 個が並んでいて、**元空気だめが減っていないか**と
-  // **シリンダに入っているか**を別々の計器で見る。
+  /**
+   * 二針圧力計（元空気ダメ圧と、ブレーキシリンダ圧）。
+   *
+   * **この車は電気指令式ブレーキ（`ElectroPneumaticBrakeSystem`）である。**
+   * ブレーキ指令は電線で各車へ届き、各車の中継弁が元空気ダメの空気から
+   * シリンダ圧を作る。したがって**ブレーキ管も釣り合い空気ダメも無い**——
+   * 釣り合い空気ダメは自動空気ブレーキの自弁に付くもので、運転士が
+   * ブレーキ管を直接減圧する方式でだけ意味を持つ。1 周目は「BC / ER」と
+   * 書いた計器に指令から作った近似値を出していたが、**実物に存在しない量**
+   * だったので消した。
+   *
+   * 実物の電気指令式の車に付いているのは MR と BC の二針で、どちらも
+   * `core` に実測値がある:
+   *  - MR = `sim.compressor.state.pressure`（空気圧縮機が積んでいる実体）
+   *  - BC = `sim.brake.averageCylinderPressure()`（むだ時間と一次遅れを経た実体）
+   *
+   * 目盛りは 0〜1000kPa の 1 枚で両方を読む（実物の二針計も 1 枚の文字板を
+   * 共用する）。黒針が MR、赤針が BC。停車中に圧縮機が回ると黒針が上がり、
+   * ブレーキを掛けると赤針が立つ。
+   */
   const small = D.smallDialDiameter / 2;
-  const mrGauge = new Gauge(small, dialTexture(1000, 200, 'kPa', { caption: 'MR / BP' }));
-  const mrNeedle = mrGauge.addNeedle(small, 0x1a1d21, 0.006);
-  const bpNeedle = mrGauge.addNeedle(small, 0xd02318, 0.005);
-  mrGauge.mount(...onPanel(-0.16, 0.01));
-  group.add(mrGauge.group);
-
-  const bcGauge = new Gauge(small, dialTexture(500, 100, 'kPa', { caption: 'BC / ER' }));
-  const bcNeedle = bcGauge.addNeedle(small, 0x1a1d21, 0.006);
-  const erNeedle = bcGauge.addNeedle(small, 0xd02318, 0.005);
-  bcGauge.mount(...onPanel(0.02, 0.01));
-  group.add(bcGauge.group);
+  const pressureGauge = new Gauge(small, dialTexture(1000, 200, 'kPa', { caption: 'MR / BC' }));
+  const mrNeedle = pressureGauge.addNeedle(small, 0x1a1d21, 0.006);
+  const bcNeedle = pressureGauge.addNeedle(small, 0xd02318, 0.005);
+  pressureGauge.mount(...onPanel(-0.14, 0.01));
+  group.add(pressureGauge.group);
 
   // 電流計（力行で右、回生で左に振れるので中央が 0）
   const currentGauge = new Gauge(small, dialTexture(1200, 300, 'A', { caption: '電流計', centreZero: true })); // prettier-ignore
   const currentNeedle = currentGauge.addNeedle(small, 0x1a1d21, 0.006);
-  currentGauge.mount(...onPanel(0.2, 0.01));
+  currentGauge.mount(...onPanel(0.06, 0.01));
   group.add(currentGauge.group);
 
   // ATS-P 表示器（速度計の左）。面板に名前を書き、その上に光る玉を並べる。
@@ -622,6 +655,105 @@ export function createCabInterior(): CabInterior {
     group.add(button);
     group.add(onPanelPlate(0.066, 0.016, labelTexture(name), dx, -0.122));
   }
+
+  // --- 助士側（右半分）---
+  //
+  // 実物の運転室の右半分は空いていない。**運転士が運転に使う道具は左半分に
+  // まとまっていて、右半分には「列車を走らせるために要るが運転操作ではない」
+  // 装置が並ぶ** — 指令と話す列車無線、車内放送の送受話器、側面の行先表示と
+  // 車内案内へ流す情報を合わせる設定器、そして時計。ワンマンでない通勤形でも
+  // 運転士がこれらを扱うので、いずれも座ったまま手が届く位置にある。
+
+  // 列車無線の操作器。押しボタンと通話チャネルの窓が並ぶ箱。
+  const radioBody = panel(0.4, 0.3, 0.05, 0, 0, 0, 0x22272d);
+  const [rx, ry, rz] = onPanel(1.14, 0.01, 0.03);
+  radioBody.position.set(rx, ry, rz);
+  radioBody.rotation.x = -D.panelTilt;
+  group.add(radioBody);
+  group.add(onPanelPlate(0.34, 0.255, radioPanelTexture(), 1.14, 0.01));
+
+  // 送受話器（無線の受話器）。実物は装置の脇のフックに掛かっていて、
+  // 走行中に落ちないよう受け金具で押さえてある。
+  const handsetAt = (x: number, y: number, zAt: number, tilt: number): THREE.Group => {
+    const cradle = new THREE.Group();
+    const hook = panel(0.07, 0.05, 0.11, 0, 0, 0, 0x1b1f24);
+    cradle.add(hook);
+    // 受話器の本体（送話口と受話口が両端で膨らんだ形）
+    const body = new THREE.Mesh(
+      new THREE.BoxGeometry(0.045, 0.045, 0.19),
+      surface(0x2a2f35, 0.75, 0.05, 0.05),
+    );
+    body.position.set(0, 0.05, 0);
+    cradle.add(body);
+    for (const dz of [-0.075, 0.075]) {
+      const cup = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.032, 0.028, 0.035, 10),
+        surface(0x2a2f35, 0.75, 0.05, 0.05),
+      );
+      cup.position.set(0, 0.062, dz);
+      cradle.add(cup);
+    }
+    // カールコード（垂れ下がる線。細い円柱 1 本で十分それらしく見える）
+    const cord = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.006, 0.006, 0.16, 6),
+      surface(0x15181c, 0.9, 0.02, 0.03),
+    );
+    cord.position.set(0, -0.06, 0.09);
+    cord.rotation.x = 0.35;
+    cradle.add(cord);
+    cradle.position.set(x, y, zAt);
+    cradle.rotation.y = tilt;
+    group.add(cradle);
+    return cradle;
+  };
+  handsetAt(1.86, D.deskY + 0.07, D.deskFrontZ + 0.14, -0.25);
+  // 車内放送の送受話器は助士側の壁に掛かる（無線とは別の装置）
+  handsetAt(D.rightWallX - 0.11, D.deskY + 0.42, D.deskBackZ - 0.02, -Math.PI / 2);
+
+  // 行先・運行番号設定器。数字を回す小窓が 2 つ並ぶ箱で、机の右奥に寝かせる。
+  const setter = panel(0.34, 0.06, 0.19, 1.62, D.deskY + 0.04, D.deskFrontZ + 0.2, 0x22272d);
+  setter.rotation.x = -0.5;
+  group.add(setter);
+  const setterFace = plate(0.3, 0.15, trainNumberTexture(RUN_NUMBER, DESTINATION_CODE));
+  setterFace.position.set(1.62, D.deskY + 0.08, D.deskFrontZ + 0.2);
+  setterFace.rotation.x = -Math.PI / 2 + 0.5;
+  group.add(setterFace);
+
+  // 時計。鉄道の運転は時刻がすべてなので、実物の運転台には必ず時計がある。
+  const clock = createCabClock();
+  const clockFrame = panel(0.26, 0.12, 0.03, 0, 0, 0, 0x14181c);
+  const [cx2, cy2, cz2] = onPanel(1.45, 0.05, 0.03);
+  clockFrame.position.set(cx2, cy2, cz2);
+  clockFrame.rotation.x = -D.panelTilt;
+  group.add(clockFrame);
+  const clockFace = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.22, 0.083),
+    new THREE.MeshBasicMaterial({ map: clock.texture }),
+  );
+  clockFace.position.set(...onPanel(1.45, 0.05, 0.048));
+  clockFace.rotation.x = -D.panelTilt;
+  group.add(clockFace);
+
+  // 小物入れ（乗務員の携帯品と信号炎管の予備を置く浅い受け皿）。
+  // 実物の机にも縁を立てた窪みがあり、走行中に物が滑り落ちないようにしてある。
+  group.add(panel(0.3, 0.012, 0.2, 1.55, D.deskY + 0.02, D.deskBackZ - 0.16, 0x1e2227));
+  for (const [dx, dz, w, d] of [
+    [0, -0.1, 0.3, 0.02],
+    [0, 0.1, 0.3, 0.02],
+    [-0.15, 0, 0.02, 0.2],
+    [0.15, 0, 0.02, 0.2],
+  ] as Array<[number, number, number, number]>) {
+    group.add(panel(w, 0.03, d, 1.55 + dx, D.deskY + 0.035, D.deskBackZ - 0.16 + dz, 0x2b3037));
+  }
+
+  // 助士側の握り棒。乗務員が立って前方を見るときにつかまる縦の棒で、
+  // 実物でも仕切り壁の脇に 1 本立っている。
+  const grabPole = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.018, 0.018, D.ceilingY - D.floorY - 0.12, 10),
+    surface(STAINLESS, 0.32, 0.75, 0.08),
+  );
+  grabPole.position.set(D.rightWallX - 0.14, (D.ceilingY + D.floorY) / 2, D.partitionZ - 0.3);
+  group.add(grabPole);
 
   // 時刻表差し。左の壁の窓の下、机の左端の奥に立てる。実物もここか
   // 前面窓の脇にあり、**運転しながら視線をほとんど動かさずに読める**位置に置く。
@@ -774,15 +906,13 @@ export function createCabInterior(): CabInterior {
       speedGauge.setRatio(speedNeedle, speedKmh / 120);
       // 元空気だめ圧は圧縮機が 780〜880kPa のあたりで保つ。ブレーキ管は
       // 電気指令式なので常用圧のまま（元空気だめから減圧弁で作る）。
+      // どちらも実測値。MR は圧縮機が締切／始動の閾値どおりに上下し、
+      // BC はむだ時間と一次遅れを経た値なので、滑走防止が動けば緩む。
       const mr = paToKpa(snap.compressor.pressure);
-      mrGauge.setRatio(mrNeedle, mr / 1000);
-      mrGauge.setRatio(bpNeedle, 490 / 1000);
       const bc = paToKpa(snap.cylinderPressure);
-      bcGauge.setRatio(bcNeedle, bc / 500);
-      // 釣り合い空気だめ圧は指令そのもの。BC 圧が遅れて追いつく先を示す。
+      pressureGauge.setRatio(mrNeedle, mr / 1000);
+      pressureGauge.setRatio(bcNeedle, bc / 1000);
       const brakeCount = Math.max(1, sim.scenario.consist.brake.notchCount);
-      const command = snap.emergency ? 1 : snap.brakeNotch / brakeCount;
-      bcGauge.setRatio(erNeedle, (command * 440) / 500);
       currentGauge.setRatio(currentNeedle, 0.5 + snap.motorCurrent / 2400);
 
       // ハンドルの角度は「手元の位置」に連動させる。実効ノッチ（保安装置で
@@ -833,6 +963,7 @@ export function createCabInterior(): CabInterior {
       // 車掌スイッチは戸閉めで倒れる
       conductorLever.rotation.x = handles.doorsClosed ? -0.5 : 0.5;
 
+      clock.update(formatClock(snap.time));
       monitor.update({
         speed: speedKmh,
         limit: mpsToKmh(Math.min(snap.speedLimit, sim.scenario.route.maxSpeed)),

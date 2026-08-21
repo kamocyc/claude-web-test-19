@@ -197,6 +197,12 @@ interface InteriorView {
 
 function createInteriorView(): InteriorView {
   const cars = scene.cars;
+  // 編成の何両目かと混雑率をここで教える。`scene.ts` は内装を組むだけで
+  // 編成の中の位置を知らないが、乗客の座り方と照明の明るさは車ごとに
+  // 違わなければならない（同じだと貫通路の先に同じ絵が並んで模型に見える）。
+  for (let i = 0; i < cars.length; i++) {
+    cars[i]!.interior.setPlacement(i, sim.scenario.loadFactor);
+  }
   return {
     cars,
     walker: new Walker(cars.map((car) => car.interior.layout)),
@@ -553,20 +559,26 @@ function advanceSimulation(wall: number): number {
 }
 
 /**
- * 車内を歩くモードの 1 フレーム。
+ * 吊り革の振れの誇張。
  *
- * 歩く速さは**実時間**で進める（時間倍率を上げても人が速く歩くわけではない）。
- * 一方、内装のうち吊り革の振れと扉の開閉はシミュレーションの状態そのものなので、
- * こちらは `sim` から読むだけでよい。
+ * `core` が出す振れ角は実物どおりで、常用 3km/h/s でも 5 度ほどにしかならない。
+ * 5 度は絵にすると「垂れているのと区別が付かない」ので、**描画側で誇張して
+ * いる**。物理の値は書き換えていない（`core` は読むだけ）ので、記録・再生や
+ * 状態ハッシュには影響しない。乗客の傾きも同じ考えで
+ * `interiorPassengers.ts` が誇張している。
  */
-function updateWalk(wall: number): void {
-  const { walker, shells, cars } = interior;
-  const keys = desk.walkKeys;
-  // キーで首を振る（マウスを使えない場面のための逃げ道）
-  walker.turn(keys.turn * wall * 2.0, keys.look * wall * 1.4);
-  const body = sim.dynamics.vehicles[walker.state.carIndex]?.body;
-  walker.step(wall, keys, body);
+const STRAP_SWAY_GAIN = 2.2;
 
+/**
+ * 内装をシミュレーションの状態へ合わせる。
+ *
+ * **視点によらず毎フレーム呼ぶ。**客室は外からも窓ごしに見えているので、
+ * 車内を歩いているときだけ動かすと、外から見た電車の扉が開かず、吊り革も
+ * 乗客も凍りついたままになる。費用はほとんどが `InstancedMesh` の姿勢の
+ * 積み直しで、1 両あたり数百回の行列合成にしかならない。
+ */
+function updateInteriors(): void {
+  const { cars, shells } = interior;
   // 車内案内表示器に出す文言。次の停車駅と、編成の行先（終点）。
   const next = sim.nextStation;
   const stations = sim.scenario.route.stations;
@@ -578,11 +590,14 @@ function updateWalk(wall: number): void {
 
   for (let i = 0; i < cars.length; i++) {
     const car = cars[i]!;
-    const strap = sim.dynamics.vehicles[i]?.body.passenger.strap;
+    const passenger = sim.dynamics.vehicles[i]?.body.passenger;
     car.interior.update({
       doorPosition,
-      strapLateral: strap?.lateral ?? 0,
-      strapLongitudinal: strap?.longitudinal ?? 0,
+      strapLateral: (passenger?.strap.lateral ?? 0) * STRAP_SWAY_GAIN,
+      strapLongitudinal: (passenger?.strap.longitudinal ?? 0) * STRAP_SWAY_GAIN,
+      // 立客の傾きは倒立振子の解そのもの。誇張は描画側（`interiorPassengers.ts`）で掛ける。
+      standLateral: passenger?.stance.lateral.lean ?? 0,
+      standLongitudinal: passenger?.stance.longitudinal.lean ?? 0,
       nextStation: nextName,
       kind: '各駅停車',
       destination,
@@ -590,6 +605,22 @@ function updateWalk(wall: number): void {
     });
   }
   shells.update(doorPosition);
+}
+
+/**
+ * 車内を歩くモードの 1 フレーム。
+ *
+ * 歩く速さは**実時間**で進める（時間倍率を上げても人が速く歩くわけではない）。
+ * 内装そのものは `updateInteriors()` が視点によらず動かしているので、ここは
+ * 歩行者の足と目だけを受け持つ。
+ */
+function updateWalk(wall: number): void {
+  const { walker, cars } = interior;
+  const keys = desk.walkKeys;
+  // キーで首を振る（マウスを使えない場面のための逃げ道）
+  walker.turn(keys.turn * wall * 2.0, keys.look * wall * 1.4);
+  const body = sim.dynamics.vehicles[walker.state.carIndex]?.body;
+  walker.step(wall, keys, body);
 
   // 目の位置と向きを車体局所系で組み立て、車体の姿勢で世界座標へ移す。
   const car = cars[walker.state.carIndex];
@@ -701,6 +732,7 @@ function frame(now: number): void {
   if (cameraRig.mode === 'cab') {
     cabInterior.update(sim, { ...handles, oneHandle: deskState.layout === 'one-handle' }, advance);
   }
+  updateInteriors();
   const walking = cameraRig.mode === 'walk';
   if (walking) updateWalk(wall);
   const frontFrame = scene.frontFrame(sim);

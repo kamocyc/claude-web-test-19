@@ -417,3 +417,126 @@ export function createCabMonitor(): CabMonitor {
   });
   return { texture, update };
 }
+
+/**
+ * 列車無線の操作器の面板。
+ *
+ * 通勤形の運転台では助士側に置かれ、乗務員が指令と話すための装置である。
+ * 面板そのものは光らない板で、押しボタンと通話チャネルの窓が並ぶ。実物の
+ * 装置に書いてある文字（発信・応答・試験・通話）をそのまま入れる。
+ */
+export function radioPanelTexture(): THREE.Texture {
+  return cached('radio-panel', () => {
+    const [element, ctx] = canvas(256, 192);
+    ctx.fillStyle = '#2b3138';
+    ctx.fillRect(0, 0, 256, 192);
+    ctx.fillStyle = '#1a1f24';
+    ctx.fillRect(6, 6, 244, 40);
+    ctx.fillStyle = '#c9d4de';
+    ctx.font = 'bold 22px sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('列車無線', 14, 26);
+    // 通話チャネルの窓（緑の蛍光表示管に見立てる）
+    ctx.fillStyle = '#06180d';
+    ctx.fillRect(140, 10, 106, 32);
+    ctx.fillStyle = '#5ef08a';
+    ctx.font = 'bold 24px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('CH 3', 193, 27);
+    // 押しボタンの並び
+    const names = ['発信', '応答', '試験', '通話'];
+    for (const [i, name] of names.entries()) {
+      const x = 12 + (i % 2) * 122;
+      const y = 58 + Math.floor(i / 2) * 62;
+      ctx.fillStyle = i === 0 ? '#7a3a32' : '#3c434b';
+      ctx.fillRect(x, y, 110, 50);
+      ctx.strokeStyle = '#1b2026';
+      ctx.lineWidth = 3;
+      ctx.strokeRect(x, y, 110, 50);
+      ctx.fillStyle = '#dfe6ec';
+      ctx.font = 'bold 24px sans-serif';
+      ctx.fillText(name, x + 55, y + 26);
+    }
+    return toTexture(element);
+  });
+}
+
+/**
+ * 行先・運行番号設定器。
+ *
+ * 側面の行先表示と車内案内へ流す情報を、乗務員がここで合わせる。実物は
+ * 数字を回す小窓（サムホイール）で、運行番号は 4 桁、行先は符号で入れる。
+ */
+export function trainNumberTexture(runNumber: string, destination: string): THREE.Texture {
+  return cached(`train-number-${runNumber}-${destination}`, () => {
+    const [element, ctx] = canvas(256, 128);
+    ctx.fillStyle = '#2b3138';
+    ctx.fillRect(0, 0, 256, 128);
+    ctx.fillStyle = '#9fa8b2';
+    ctx.font = '17px sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('運行番号', 12, 20);
+    ctx.fillText('行先', 148, 20);
+    // 数字を回す小窓。窓は白地で、数字だけが見えている。
+    ctx.fillStyle = '#e9edf1';
+    ctx.fillRect(10, 34, 124, 54);
+    ctx.fillRect(146, 34, 100, 54);
+    ctx.fillStyle = '#15191d';
+    ctx.font = 'bold 40px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(runNumber, 72, 62);
+    ctx.font = 'bold 30px sans-serif';
+    ctx.fillText(destination, 196, 62);
+    // 窓の下の目盛り（回す方向を示す刻み）
+    ctx.strokeStyle = '#4d545c';
+    ctx.lineWidth = 2;
+    for (let i = 0; i < 8; i++) {
+      const x = 18 + i * 16;
+      ctx.beginPath();
+      ctx.moveTo(x, 96);
+      ctx.lineTo(x, 112);
+      ctx.stroke();
+    }
+    return toTexture(element);
+  });
+}
+
+/**
+ * 運転室の時計。
+ *
+ * 鉄道の運転は時刻がすべてなので、実物の運転台には必ず時計がある。ここでは
+ * シミュレーションの時刻をそのまま出す（`formatClock` の書式）。**書き換えるので
+ * キャッシュしない。**
+ */
+export interface CabClock {
+  readonly texture: THREE.CanvasTexture;
+  update(clock: string): void;
+}
+
+export function createCabClock(): CabClock {
+  const [element, ctx] = canvas(256, 96);
+  const texture = toTexture(element);
+  let last = '';
+  const update = (clock: string): void => {
+    if (clock === last) return;
+    last = clock;
+    ctx.fillStyle = '#0a0f0c';
+    ctx.fillRect(0, 0, 256, 96);
+    ctx.strokeStyle = '#2a3238';
+    ctx.lineWidth = 4;
+    ctx.strokeRect(2, 2, 252, 92);
+    ctx.fillStyle = '#7fe6a6';
+    ctx.font = 'bold 52px monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(clock, 128, 52);
+    ctx.fillStyle = '#4b7d60';
+    ctx.font = '16px sans-serif';
+    ctx.fillText('時 刻', 128, 16);
+    texture.needsUpdate = true;
+  };
+  update('--:--:--');
+  return { texture, update };
+}

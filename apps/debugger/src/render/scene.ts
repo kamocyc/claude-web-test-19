@@ -129,7 +129,7 @@ export class TrackScene {
     this.add(crossings.objects, true);
     this.crossingHandles = crossings.handles;
     this.add(buildCatenary(route, this.frameAt, inTunnel), true);
-    this.add(buildScenery(route, this.frameAt), true);
+    this.add(buildScenery(route, this.frameAt, look), true);
     // 遠景の山なみ。地表の板が尽きるところに立てて、空と地面の境目を埋める
     this.add(buildHorizon(route, this.frameAt), false);
 
@@ -198,7 +198,7 @@ export class TrackScene {
         // 一面同じ緑の板は、どれだけ細かい模様を貼っても「板」に見える。
         // 実際の地面は、草地・枯れ草・裸地・畑が数十 m ごとに入れ替わる
         // まだら模様になっている。頂点の色でその大きなむらを作る。
-        groundTint(tint, u, lane);
+        groundTint(tint, u, lane, this.look);
         colors.push(tint.r, tint.g, tint.b);
       }
     }
@@ -462,7 +462,7 @@ class ScheduledTrainView {
  * 値の幅は狭い。ここを広げると地面が斑（まだら）になりすぎて、
  * 「草が生えた土」ではなく「模様の描かれた板」に見えてしまう。
  */
-function groundTint(out: THREE.Color, along: number, lateral: number): void {
+function groundTint(out: THREE.Color, along: number, lateral: number, look: WeatherLook): void {
   const wave = (a: number, b: number, phase: number): number =>
     Math.sin(along / a + phase) * Math.cos(lateral / b + phase * 1.7);
   // 3 つの周期を重ねる。いちばん長い波（170m）が「田んぼの区画・空き地・
@@ -473,4 +473,11 @@ function groundTint(out: THREE.Color, along: number, lateral: number): void {
   // 緑（草）と黄土（枯れ草・土）のあいだを行き来する。彩度を保ったまま
   // 明度だけ動かすと「照明のむら」に見えてしまうので、色相ごと動かす。
   out.setRGB(0.52 + dry * 1.05, 0.98 - dry * 0.28, 0.62 - dry * 0.28, THREE.SRGBColorSpace);
+  // **雪が積もったら草のむらは見えない。** 頂点色は材質の色に掛かるので、
+  // ここを枯れ草の黄土のままにしておくと、白いはずの雪原が砂色になる
+  // （実際そうなった）。積もる割合ぶんだけ白＝「掛けても何も変わらない値」へ寄せる。
+  if (look.surface.mix > 0) out.lerp(NEUTRAL, look.surface.mix);
 }
+
+/** 掛け算で何もしない色。雪に埋もれた地面の頂点色はこれへ寄る */
+const NEUTRAL = new THREE.Color(1, 1, 1);

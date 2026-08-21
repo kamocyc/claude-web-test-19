@@ -413,30 +413,50 @@ export class CarShells {
         }
       });
     }
+    this.makeGlassSeeThrough();
+  }
+
+  /**
+   * 側窓のガラスを**常に**透かす。
+   *
+   * 1 周目は「車内を歩くあいだだけ透過にする」割り切りだったが、**外から見て
+   * 窓が真っ黒な電車は外観としては嘘である。**客室の内装は視点によらず
+   * 描かれている（`scene.ts` が車体の子として組んでいる）ので、透かすのに
+   * 追加の形は要らない——増えるのは半透明の面の描画だけで、窓ガラスは
+   * もともと描いていたものである。
+   *
+   * 透過率は熱線吸収ガラスに合わせて低めにする。実物の側窓も外から見ると
+   * 中がうっすら見える程度で、素通しではない。
+   */
+  private makeGlassSeeThrough(): void {
+    for (const material of this.glass) {
+      material.transparent = true;
+      material.opacity = 0.3;
+      // 半透明の面が奥行きを書くと、その後ろの内装が消えてしまう
+      material.depthWrite = false;
+      material.needsUpdate = true;
+    }
   }
 
   /** 車内を歩くモードに入る／出る */
   setWalking(on: boolean): void {
     if (on === this.walking) return;
     this.walking = on;
-    for (const material of this.glass) {
-      material.transparent = on;
-      // 実物の側窓も熱線吸収ガラスで色が付いている。透かしても外は少し暗い。
-      material.opacity = on ? 0.22 : 1;
-      material.depthWrite = !on;
-      material.needsUpdate = true;
-    }
     for (const shell of this.shells) {
       // グループ 0 が押し出しの蓋、グループ 1 が側面。歩くあいだだけ蓋を消す。
       shell.mesh.material = on ? [this.hidden, shell.material] : shell.material;
     }
     for (const blocker of this.gangwayBlockers) blocker.visible = !on;
-    if (!on) for (const panel of this.doorPanels) panel.visible = true;
   }
 
-  /** 扉の開き具合に合わせて、外板側の扉板を出し入れする */
+  /**
+   * 扉の開き具合に合わせて、外板側の扉板を出し入れする。
+   *
+   * 外板の扉は開閉しない板なので、開いているあいだは隠して、内装側の（実際に
+   * 動く）扉に任せる。**視点によらず隠す**——外から見て扉が開かない電車は、
+   * ホームに停まったときにいちばん目立つ嘘になる。
+   */
   update(doorPosition: number): void {
-    if (!this.walking) return;
     const open = doorPosition > 0.02;
     for (const panel of this.doorPanels) panel.visible = !open;
   }

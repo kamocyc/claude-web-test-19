@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { Rng, type CompiledRoute } from '@railsim/core';
 import { TUNNEL } from './dimensions.ts';
 import type { TrackFrame } from './frame.ts';
+import { mixColor, type WeatherLook } from './weather.ts';
 import {
   frameQuaternion,
   meterBox,
@@ -322,6 +323,8 @@ const BY_LAND_USE: Record<LandUse, readonly string[]> = {
 export function buildScenery(
   route: CompiledRoute,
   frameAt: (s: number) => TrackFrame,
+  /** 天気。雪が積もれば植生も白くなる */
+  look: WeatherLook,
   options: SceneryOptions = {},
 ): THREE.Object3D[] {
   const step = options.step ?? 13;
@@ -482,7 +485,10 @@ export function buildScenery(
   out.push(
     ...buildContactShadows([
       ...[...buildings].flatMap(([key, bucket]) =>
-        bucket.spots.map((spot) => ({ spot, radius: (byKey.get(key)!.width + byKey.get(key)!.depth) * 0.42 })),
+        bucket.spots.map((spot) => ({
+          spot,
+          radius: (byKey.get(key)!.width + byKey.get(key)!.depth) * 0.42,
+        })),
       ),
       ...broadleaf.spots.map((spot) => ({ spot, radius: 2.8 })),
       ...cedar.spots.map((spot) => ({ spot, radius: 1.6 })),
@@ -490,12 +496,12 @@ export function buildScenery(
     ]),
   );
   out.push(...buildYards(walls, cars, units));
-  out.push(...buildVegetation(broadleaf, cedar, bamboo, shrub));
+  out.push(...buildVegetation(broadleaf, cedar, bamboo, shrub, look));
   out.push(...buildBoundaryFence(route, frameAt, outward));
   out.push(...buildUtilityLine(route, frameAt, outward));
   out.push(...buildServiceRoad(route, frameAt, outward));
   out.push(...buildPaddies(route, frameAt, seed));
-  out.push(...buildTracksideGrass(route, frameAt, outward, seed));
+  out.push(...buildTracksideGrass(route, frameAt, outward, seed, look));
   return out;
 }
 
@@ -562,11 +568,13 @@ function buildTracksideGrass(
   frameAt: (s: number) => TrackFrame,
   outward: (s: number, side: -1 | 1) => number,
   seed: number,
+  look: WeatherLook,
 ): THREE.Object3D[] {
   const out: THREE.Object3D[] = [];
   const tuft = grassTuftTexture();
   const material = new THREE.MeshStandardMaterial({
-    color: 0xffffff,
+    // 雪の日は雑草も埋もれる
+    color: mixColor(0xffffff, look.surface.tint, look.surface.mix * 0.9),
     map: tuft.map,
     alphaMap: tuft.alpha,
     alphaTest: 0.4,
@@ -782,6 +790,7 @@ function buildVegetation(
   cedar: Bucket,
   bamboo: Bucket,
   shrub: Bucket,
+  look: WeatherLook,
 ): THREE.Object3D[] {
   const out: THREE.Object3D[] = [];
   const cards = leafCardTexture();
@@ -795,7 +804,9 @@ function buildVegetation(
    */
   const leaf = (roughness: number): THREE.MeshStandardMaterial =>
     new THREE.MeshStandardMaterial({
-      color: 0xffffff,
+      // 雪の日は枝葉の上に雪が乗るので、緑が白へ寄る。落葉期（`leaves`）は
+      // 枯れ色へ寄せる。どちらも `weather.ts` の同じ 2 つの値から引く。
+      color: mixColor(0xffffff, look.surface.tint, look.surface.mix * 0.85),
       map: cards.map,
       alphaMap: cards.alpha,
       alphaTest: 0.42,

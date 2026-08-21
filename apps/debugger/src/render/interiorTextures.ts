@@ -156,18 +156,31 @@ export function rackMeshTexture(): THREE.Texture {
     const size = 128;
     const [element, ctx] = canvas(size, size);
     ctx.clearRect(0, 0, size, size);
-    ctx.strokeStyle = '#c8ccd2';
-    ctx.lineWidth = 5;
+    // 線を細くすると下から見上げたときに消えてしまい、荷棚が「白い細線」に
+    // 見える。実物のパイプは φ8mm 前後あって、間隔（約 60mm）に対して
+    // 十分に太い。その比をそのまま画に写す。
+    ctx.lineCap = 'square';
     for (let i = 0; i <= 4; i++) {
       const p = (i * size) / 4;
+      // 影側を先に描いてから明るい面を重ねると、平らな線が丸いパイプに見える
+      ctx.strokeStyle = '#6f757c';
+      ctx.lineWidth = 11;
       ctx.beginPath();
       ctx.moveTo(p, 0);
       ctx.lineTo(p, size);
       ctx.moveTo(0, p);
       ctx.lineTo(size, p);
       ctx.stroke();
+      ctx.strokeStyle = '#d2d7dd';
+      ctx.lineWidth = 6;
+      ctx.beginPath();
+      ctx.moveTo(p - 1.5, 0);
+      ctx.lineTo(p - 1.5, size);
+      ctx.moveTo(0, p - 1.5);
+      ctx.lineTo(size, p - 1.5);
+      ctx.stroke();
     }
-    const texture = toTexture(element, [8, 2]);
+    const texture = toTexture(element, [10, 2]);
     return texture;
   });
 }

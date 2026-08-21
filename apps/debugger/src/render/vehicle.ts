@@ -688,7 +688,11 @@ function buildFrontEnd(
   const destination = new THREE.Mesh(
     new THREE.BoxGeometry(0.04, 0.26, 0.9),
     new THREE.MeshStandardMaterial({
-      map: plateTexture(['各駅停車 登戸'], { background: '#101418', color: '#f2e6b4', aspect: 3.4 }),
+      map: plateTexture(['各駅停車 登戸'], {
+        background: '#101418',
+        color: '#f2e6b4',
+        aspect: 3.4,
+      }),
       emissive: 0xffffff,
       emissiveIntensity: 0.35,
       roughness: 0.4,
