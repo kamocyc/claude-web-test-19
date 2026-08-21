@@ -113,6 +113,12 @@ const HAIR_COLOR = 0x241c15;
 const THIN_HAIR_COLOR = 0x4a3c30;
 /** 目・眉・口。肌の色を掛けられても黒いままでいる暗さ。 */
 const FEATURE_COLOR = 0x140f0c;
+/**
+ * 眉の色。**目より薄い**。
+ * 実物の眉は 1 本ずつの毛の集まりで地肌が透けるので、瞳ほど黒くならない。
+ * 同じ黒にすると、少し離れただけで眉と目が 1 つの塊に見える。
+ */
+const BROW_COLOR = 0x3a2b22;
 
 /** 姿勢の種類 */
 type Posture =
@@ -291,6 +297,18 @@ function paintByHeight(geometry: THREE.BufferGeometry, base: number): THREE.Buff
 const HEAD_R = { x: 0.0961, y: 0.1085, z: 0.0775 } as const;
 /** 首の付け根から頭の中心までの高さ */
 const HEAD_RISE = 0.175;
+/**
+ * 生え際の深さ（頭の球の天頂からの角度 / π）。
+ *
+ * 0.30π = 54 度で、楕円体の上端から下へ 0.1085 × cos54° = 64mm の高さ。
+ * 眉の上端（+56.5mm）より 8mm 高いので、髪が眉に掛からない。
+ */
+const HAIRLINE_DEPTH = 0.3;
+/**
+ * 顔のために開ける方位角の半幅 [rad]。
+ * 62 度なので開口は 124 度ぶん。耳（方位角 ±72 度）は髪に隠れる側に残る。
+ */
+const FACE_OPENING = (62 * Math.PI) / 180;
 
 /**
  * 髪。
@@ -300,20 +318,50 @@ const HEAD_RISE = 0.175;
  */
 function hairParts(style: HairStyle): THREE.BufferGeometry[] {
   const c: [number, number, number] = [0, HEAD_RISE, 0];
-  const shell = (depth: number, grow: number, color = HAIR_COLOR): THREE.BufferGeometry => {
-    const g = new THREE.SphereGeometry(0.0775 + grow, 8, 5, 0, Math.PI * 2, 0, Math.PI * depth);
+  /**
+   * 髪の殻を 1 枚作る。
+   *
+   * `THREE.SphereGeometry` の方位角 φ は **φ = π が +X（顔の向き）**にあたる
+   * （`x = -r cosφ sinθ`）。ここを開けずに全周の殻をかぶせると、髪が額から
+   * 顎の手前まで顔を覆い、**目の高さに黒い横棒が 1 本走った顔**になる —
+   * 実際にそうなっていて、サングラスを掛けているように見えていた。眉と目の
+   * 間隔の問題ではなく、髪が目の上に垂れていたのが原因である。
+   *
+   * @param openFront 顔のぶんを開ける（後頭部と側頭部だけを描く）
+   */
+  const shell = (
+    depth: number,
+    grow: number,
+    color = HAIR_COLOR,
+    openFront = false,
+  ): THREE.BufferGeometry => {
+    const g = openFront
+      ? new THREE.SphereGeometry(
+          0.0775 + grow, 8, 5,
+          Math.PI + FACE_OPENING, Math.PI * 2 - 2 * FACE_OPENING,
+          0, Math.PI * depth,
+        ) // prettier-ignore
+      : new THREE.SphereGeometry(0.0775 + grow, 8, 5, 0, Math.PI * 2, 0, Math.PI * depth);
     g.scale(HEAD_R.x / HEAD_R.z, HEAD_R.y / HEAD_R.z, 1);
     g.translate(c[0], c[1], c[2]);
     return paint(g, color);
   };
+  /**
+   * 髪型によらず共通の部分 — 生え際まで全周をかぶる浅い冠と、そこから下は
+   * 顔を開けた深い殻。生え際（`HAIRLINE_DEPTH`）は眉の上端より 12mm 高い。
+   */
+  const cap = (depth: number, grow: number, color = HAIR_COLOR): THREE.BufferGeometry[] => [
+    shell(Math.min(depth, HAIRLINE_DEPTH), grow, color),
+    ...(depth > HAIRLINE_DEPTH ? [shell(depth, grow, color, true)] : []),
+  ];
   switch (style) {
     case 'crop':
       // 刈り上げ。生え際が高く、後頭部も短い。
-      return [shell(0.46, 0.004)];
+      return cap(0.46, 0.004);
     case 'parted':
       // 分け目つき。片側だけ前髪が額へ張り出す。
       return [
-        shell(0.62, 0.005),
+        ...cap(0.62, 0.005),
         // 前髪は額の上まで。眉まで下ろすと眉とつながって、
         // サングラスを掛けたような 1 本の黒い帯に見える。
         paint(ball([0.048, HEAD_RISE + 0.076, 0.03], 0.045, [0.9, 0.36, 1.1], 6, 4), HAIR_COLOR),
@@ -321,15 +369,15 @@ function hairParts(style: HairStyle): THREE.BufferGeometry[] {
     case 'bun':
       // 後ろで束ねる。うなじまで下ろして、後頭部に団子を付ける。
       return [
-        shell(0.8, 0.006),
+        ...cap(0.8, 0.006),
         paint(ball([-0.1, HEAD_RISE + 0.01, 0], 0.045, [1, 1, 0.9], 6, 5), HAIR_COLOR),
       ];
     case 'thin':
       // 薄い。頭のてっぺんだけ、色も明るい。
-      return [shell(0.34, 0.002, THIN_HAIR_COLOR)];
+      return cap(0.34, 0.002, THIN_HAIR_COLOR);
     case 'short':
     default:
-      return [shell(0.6, 0.005)];
+      return cap(0.6, 0.005);
   }
 }
 
@@ -365,7 +413,7 @@ function headGeometry(style: HairStyle): THREE.BufferGeometry {
   // **目とのあいだを 25mm ほど空ける**——近づけると眉と目が 1 本の黒い帯に
   // つながって、サングラスを掛けたように見える。
   for (const s of [-1, 1] as const) {
-    parts.push(paint(block([0.012, 0.009, 0.04], [0.088, hy + 0.052, s * 0.034]), FEATURE_COLOR));
+    parts.push(paint(block([0.012, 0.008, 0.036], [0.088, hy + 0.052, s * 0.036]), BROW_COLOR));
   }
   // 目。目尻から目頭まで 35mm、上下 13mm の暗い楕円。**頭の表面より外へ出す。**
   for (const s of [-1, 1] as const) {
@@ -714,6 +762,20 @@ function placePassengers(
   }
 
   // --- 立客 ---
+  /**
+   * 扉への近さ 0..1。
+   *
+   * 実物の車内で立客がどこに立つかを決めているのは吊り革ではなく**扉**である。
+   * 乗ってきた人はまず扉の脇に溜まり、次の駅で降りるつもりの人はそこを動かない。
+   * 座席の前まで詰めるのは、扉の前が埋まってからである。時定数 1.8m は
+   * 「扉から 2 歩ぶん」で、そこを外れると急に疎らになる実物の見え方に合わせた。
+   */
+  const nearDoor = (x: number): number => {
+    let best = Infinity;
+    for (const centre of layout.doorCentres) best = Math.min(best, Math.abs(x - centre));
+    return Math.exp(-best / 1.8);
+  };
+
   // 吊り革の下（棒の真下に立つと手が握りに届く）
   for (const side of [-1, 1] as const) {
     for (const bay of bays) {
@@ -723,13 +785,18 @@ function placePassengers(
       const count = Math.floor((b - a) / INTERIOR.strapPitch) + 1;
       const pitch = count > 1 ? (b - a) / (count - 1) : 0;
       for (let i = 0; i < count; i++) {
-        if (random() > loadFactor * 0.55) continue;
+        const x = a + i * pitch;
+        // 吊り革は 440mm ごとに等間隔で吊ってあるが、**人は等間隔には立たない**。
+        // 全部の吊り革に同じ確率で人を置くと、行進しているような列になる。
+        if (random() > loadFactor * (0.12 + 0.62 * nearDoor(x))) continue;
         // 吊り革を握る人は棒の真下を向いて立つ（右手が上がる作りなので、
         // 棒が右手側へ来るように向きを決める）。ただし体の向きまで揃っては
-        // いないので、少しずつ振る。
-        const x = a + i * pitch;
+        // いないので、少しずつ振る。立つ位置も前後左右へずらす — 吊り革の
+        // 握りは腕を伸ばせば 100mm ほどの余裕で届くので、真下に立つ必要はない。
         const turn = (random() - 0.5) * 0.7;
-        out.push(person('strap', x - 0.04, side * (INTERIOR.strapBarOffset - 0.16), (side > 0 ? Math.PI / 2 : -Math.PI / 2) + turn)); // prettier-ignore
+        const jitterX = (random() - 0.5) * 0.14;
+        const jitterZ = (random() - 0.5) * 0.16;
+        out.push(person('strap', x - 0.04 + jitterX, side * (INTERIOR.strapBarOffset - 0.16 + jitterZ), (side > 0 ? Math.PI / 2 : -Math.PI / 2) + turn)); // prettier-ignore
       }
     }
   }
