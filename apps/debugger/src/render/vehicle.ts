@@ -415,7 +415,14 @@ function buildMarkings(
     material: THREE.Material,
   ): void => {
     group.add(
-      texturedPanel(centre - width / 2, centre + width / 2, bottom, bottom + height, material, 0.01),
+      texturedPanel(
+        centre - width / 2,
+        centre + width / 2,
+        bottom,
+        bottom + height,
+        material,
+        0.01,
+      ),
     );
   };
 
@@ -444,6 +451,18 @@ function buildMarkings(
   });
   decal(numberAt, 0.5, 1.28, 0.13, depotMaterial);
 
+  /**
+   * 戸袋（扉の脇の、窓の無い 550mm）の中心。
+   *
+   * 標記はここに貼る。窓の上へ回すと、実物では冷房の吹き出し口や
+   * 車号灯が入っている場所と重なるし、絵としても窓に食い込む。
+   * 扉の並びは先頭車で 550mm ずれる（`doorCentres` と同じ扱い）。
+   */
+  const pocketAt = (k: number, sign: 1 | -1): number => {
+    const shift = lead ? (front ? -0.55 : 0.55) : 0;
+    return k * CAR.doorPitch + shift + sign * (CAR.doorWidth / 2 + 0.27);
+  };
+
   // --- 号車札 ---
   if (index !== undefined) {
     const label = new THREE.MeshStandardMaterial({
@@ -452,24 +471,27 @@ function buildMarkings(
       metalness: 0.1,
       side: THREE.DoubleSide,
     });
-    // 戸袋のあたり（中央寄りの扉の脇）の窓上へ。実物と同じ 220mm 角
-    const at = front ? 0.6 * CAR.doorPitch : -0.6 * CAR.doorPitch;
-    decal(at, 0.22, 2.7, 0.22, label);
+    // 中央寄りの扉の戸袋。実物と同じ 220mm 角、床上 900mm あたり
+    decal(pocketAt(front ? 0.5 : -0.5, front ? 1 : -1), 0.22, 2.02, 0.22, label);
   }
 
   // --- 弱冷房車 ---
   //
   // 編成の中の 1 両だけ。実物も「4 号車」など決まった号車に置き、
   // 客が号車で覚えられるようにしてある。
-  if (index !== undefined && cars >= 4 && index === Math.min(4, cars - 1)) {
+  if (index !== undefined && cars >= 4 && index === Math.min(4, cars)) {
     const weak = new THREE.MeshStandardMaterial({
       map: carMarkingTexture(['弱冷房車'], 'weak'),
       roughness: 0.5,
       metalness: 0.1,
       side: THREE.DoubleSide,
     });
-    for (const sign of [-1, 1] as const) {
-      decal(sign * 0.5 * CAR.doorPitch + sign * 0.82, 0.44, 1.95, 0.16, weak);
+    // 4 つの扉のうち中ほどの 2 か所。客が扉ごとに見つけられるようにする
+    for (const [k, sign] of [
+      [-0.5, -1],
+      [0.5, 1],
+    ] as ReadonlyArray<[number, 1 | -1]>) {
+      decal(pocketAt(k, sign), 0.4, 2.32, 0.15, weak);
     }
   }
 

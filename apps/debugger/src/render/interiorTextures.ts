@@ -146,46 +146,6 @@ export function panelTexture(base: number, seed: number): THREE.Texture {
 }
 
 /**
- * 荷棚（網棚）の網目。
- *
- * 実物はステンレスのパイプを格子に組んだもので、**下から見ると向こうが透ける**。
- * 板で作ると天井が低く見えてしまうので、透過つきのテクスチャで抜く。
- */
-export function rackMeshTexture(): THREE.Texture {
-  return cached('rack-mesh', () => {
-    const size = 128;
-    const [element, ctx] = canvas(size, size);
-    ctx.clearRect(0, 0, size, size);
-    // 線を細くすると下から見上げたときに消えてしまい、荷棚が「白い細線」に
-    // 見える。実物のパイプは φ8mm 前後あって、間隔（約 60mm）に対して
-    // 十分に太い。その比をそのまま画に写す。
-    ctx.lineCap = 'square';
-    for (let i = 0; i <= 4; i++) {
-      const p = (i * size) / 4;
-      // 影側を先に描いてから明るい面を重ねると、平らな線が丸いパイプに見える
-      ctx.strokeStyle = '#6f757c';
-      ctx.lineWidth = 11;
-      ctx.beginPath();
-      ctx.moveTo(p, 0);
-      ctx.lineTo(p, size);
-      ctx.moveTo(0, p);
-      ctx.lineTo(size, p);
-      ctx.stroke();
-      ctx.strokeStyle = '#d2d7dd';
-      ctx.lineWidth = 6;
-      ctx.beginPath();
-      ctx.moveTo(p - 1.5, 0);
-      ctx.lineTo(p - 1.5, size);
-      ctx.moveTo(0, p - 1.5);
-      ctx.lineTo(size, p - 1.5);
-      ctx.stroke();
-    }
-    const texture = toTexture(element, [10, 2]);
-    return texture;
-  });
-}
-
-/**
  * 車内案内表示器（扉上の LCD）。
  *
  * 実物と同じく黒地に色文字で、次の停車駅・種別・行先を出す。**書き換えるので
@@ -254,45 +214,80 @@ const AD_COPY: ReadonlyArray<{
   { title: 'まちの図書館', lead: '駅から歩いて 3 分', tint: 0x1f7f8f },
 ];
 
-export function adTexture(index: number, poster: boolean): THREE.Texture {
-  return cached(`ad-${index}-${poster}`, () => {
-    const copy = AD_COPY[index % AD_COPY.length]!;
-    // 中吊りは縦長のポスター、まど上は横長の額。判の違いがそのまま比率になる
+/**
+ * 広告を 1 枚の絵にまとめた版（アトラス）。
+ *
+ * 広告は 1 枚ずつ絵が違うので、そのまま貼ると**枚数ぶんの描画**になる。
+ * 1 両で中吊り 12 枚・まど上 6 枚あり、車内を歩くモードではこれが効いてくる。
+ * 全部を 1 枚の絵へ並べておけば、UV を振り分けるだけで 1 回の描画で済む
+ * （`interior.ts` の `remapUv`）。
+ *
+ * 並びは中吊り（縦長）が 3 列 × 2 段、まど上（横長）が 1 列 × 6 段。
+ */
+export const AD_ATLAS_COLUMNS = { poster: 3, banner: 1 } as const;
+export const AD_ATLAS_ROWS = { poster: 2, banner: 6 } as const;
+
+export function adAtlasTexture(poster: boolean): THREE.Texture {
+  return cached(`ad-atlas-${poster}`, () => {
+    const cols = poster ? AD_ATLAS_COLUMNS.poster : AD_ATLAS_COLUMNS.banner;
+    const rows = poster ? AD_ATLAS_ROWS.poster : AD_ATLAS_ROWS.banner;
     const w = poster ? 384 : 512;
     const h = poster ? 512 : 160;
-    const [element, ctx] = canvas(w, h);
-    const tint = new THREE.Color(copy.tint);
-    ctx.fillStyle = '#f4f2ec';
-    ctx.fillRect(0, 0, w, h);
-    ctx.fillStyle = `#${tint.getHexString()}`;
-    if (poster) {
-      ctx.fillRect(0, 0, w, h * 0.45);
-      ctx.fillStyle = '#ffffff';
-      ctx.font = `bold ${Math.round(w * 0.19)}px sans-serif`;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(copy.title, w / 2, h * 0.24);
-      ctx.fillStyle = '#22262c';
-      ctx.font = `${Math.round(w * 0.075)}px sans-serif`;
-      ctx.fillText(copy.lead, w / 2, h * 0.58);
-      // 本文に見立てた罫。読ませるためではなく、面を埋めるためにある
-      ctx.fillStyle = '#9aa0a8';
-      for (let i = 0; i < 6; i++) ctx.fillRect(w * 0.12, h * (0.68 + i * 0.045), w * 0.76, 4);
-    } else {
-      ctx.fillRect(0, 0, w * 0.34, h);
-      ctx.fillStyle = '#ffffff';
-      ctx.font = `bold ${Math.round(h * 0.34)}px sans-serif`;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(copy.title, w * 0.17, h / 2);
-      ctx.fillStyle = '#22262c';
-      ctx.font = `${Math.round(h * 0.2)}px sans-serif`;
-      ctx.fillText(copy.lead, w * 0.67, h * 0.42);
-      ctx.fillStyle = '#9aa0a8';
-      ctx.fillRect(w * 0.4, h * 0.66, w * 0.54, 5);
+    const [element, ctx] = canvas(w * cols, h * rows);
+    for (let i = 0; i < AD_COPY.length; i++) {
+      ctx.save();
+      // UV の v は下から数えるので、下の段から順に描く
+      ctx.translate((i % cols) * w, (rows - 1 - Math.floor(i / cols)) * h);
+      drawAd(ctx, i, poster, w, h);
+      ctx.restore();
     }
-    return toTexture(element);
+    const texture = toTexture(element);
+    // アトラスは端を繰り返さない（隣の広告がにじみ出る）
+    texture.wrapS = THREE.ClampToEdgeWrapping;
+    texture.wrapT = THREE.ClampToEdgeWrapping;
+    return texture;
   });
+}
+
+/** 広告 1 枚を（0,0）から `w` × `h` の範囲へ描く */
+function drawAd(
+  ctx: CanvasRenderingContext2D,
+  index: number,
+  poster: boolean,
+  w: number,
+  h: number,
+): void {
+  const copy = AD_COPY[index % AD_COPY.length]!;
+  const tint = new THREE.Color(copy.tint);
+  ctx.fillStyle = '#f4f2ec';
+  ctx.fillRect(0, 0, w, h);
+  ctx.fillStyle = `#${tint.getHexString()}`;
+  if (poster) {
+    ctx.fillRect(0, 0, w, h * 0.45);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = `bold ${Math.round(w * 0.19)}px sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(copy.title, w / 2, h * 0.24);
+    ctx.fillStyle = '#22262c';
+    ctx.font = `${Math.round(w * 0.075)}px sans-serif`;
+    ctx.fillText(copy.lead, w / 2, h * 0.58);
+    // 本文に見立てた罫。読ませるためではなく、面を埋めるためにある
+    ctx.fillStyle = '#9aa0a8';
+    for (let i = 0; i < 6; i++) ctx.fillRect(w * 0.12, h * (0.68 + i * 0.045), w * 0.76, 4);
+  } else {
+    ctx.fillRect(0, 0, w * 0.34, h);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = `bold ${Math.round(h * 0.34)}px sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(copy.title, w * 0.17, h / 2);
+    ctx.fillStyle = '#22262c';
+    ctx.font = `${Math.round(h * 0.2)}px sans-serif`;
+    ctx.fillText(copy.lead, w * 0.67, h * 0.42);
+    ctx.fillStyle = '#9aa0a8';
+    ctx.fillRect(w * 0.4, h * 0.66, w * 0.54, 5);
+  }
 }
 
 /**

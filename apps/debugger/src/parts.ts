@@ -21,6 +21,9 @@ import {
   buildStations,
 } from './render/wayside.ts';
 import { createCabInterior } from './render/cab.ts';
+import { buildCar } from './render/vehicle.ts';
+import { buildLevelCrossings } from './render/structures.ts';
+import { frameQuaternion } from './render/geometry.ts';
 
 /** 1 種類あたりに並べる数（多ければ間引く） */
 const PER_KIND = 6;
@@ -57,7 +60,48 @@ interface Kind {
   readonly side?: -1 | 0 | 1;
   /** 運転台は運転士の目の位置に組まれているので、線路ではなくそこから見る */
   readonly eye?: boolean;
+  /**
+   * 軌道中心から横へどれだけ離れて立つか [m]。
+   *
+   * 標識は運転席から見るのが正しいが、**車体の標記は運転席からは絶対に
+   * 見えない**（自分が乗っている車の側面だから）。ホームや線路脇から見た
+   * 位置に立たないと確かめられない。
+   */
+  readonly standOff?: number;
+  /** 立つ高さ [m]（既定は運転士の目） */
+  readonly height?: number;
+  /** 見る点の高さ [m]（既定 1.0m。車体は腰の高さを見る） */
+  readonly lookHeight?: number;
 }
+
+/**
+ * 車体標記を確かめるための編成。
+ *
+ * 号車札・車号・所属標記・弱冷房車・優先席は編成の中の位置で変わるので、
+ * 4 両編成を組んで **1 号車（先頭・クハ）と 4 号車（弱冷房車）が並ぶ**ように
+ * 置く。実物と同じ 20m 間隔。
+ */
+function markingTrain(): THREE.Object3D[] {
+  const spec = library.scenario('test-line-local').consist.vehicles[0];
+  if (!spec) return [];
+  const out: THREE.Object3D[] = [];
+  const cars = 4;
+  for (let i = 0; i < cars; i++) {
+    const s = MARKING_START + i * spec.length;
+    const f = frameAt(s);
+    const { group } = buildCar(spec, i === 0 || i === cars - 1, i === 0, {
+      index: i + 1,
+      cars,
+    });
+    group.quaternion.copy(frameQuaternion(f, true));
+    group.position.copy(f.position);
+    out.push(group);
+  }
+  return out;
+}
+
+/** 標記を見る編成の先頭車の中心 [m]。直線の平坦な区間へ置く */
+const MARKING_START = 2000;
 
 const KINDS: ReadonlyArray<Kind> = [
   {
@@ -109,6 +153,54 @@ const KINDS: ReadonlyArray<Kind> = [
     back: 22,
   },
   {
+    key: 'crossing',
+    label: '踏切（遮断桿は 1 か所おきに「下りきり」と「降下中」）',
+    /**
+     * 遮断桿の姿勢は装置（`LevelCrossingSystem`）が決めるので、姿見では
+     * 外から与える。**下りきった桿だけを見ても、降りている途中の斜めの桿が
+     * 正しいかは分からない**ので、1 か所おきに 1.0（下りきり）と 0.45
+     * （降下中）を入れて両方を並べる。警報灯は点灯した側だけが光る。
+     */
+    build: () => {
+      const built = buildLevelCrossings(route, frameAt);
+      route.levelCrossings.crossings.forEach((crossing, i) => {
+        built.handles.get(crossing.id)?.update(i % 2 === 0 ? 1 : 0.45, true, 0.3);
+      });
+      return built.objects;
+    },
+    spots: () => route.levelCrossings.crossings.map((c) => c.position),
+    back: 26,
+    side: 0,
+    standOff: -9,
+    height: 3.2,
+    lookHeight: 1.6,
+  },
+  {
+    key: 'stationhouse',
+    label: '駅ごとの違い（駅舎・改札・番線標・車止め）',
+    build: () => buildStations(route, frameAt),
+    spots: () => route.stations.map((s) => s.stopPosition),
+    // 駅舎はホームの背面（線路の左）に建つ。運転席の高さからはホームに隠れて
+    // 見えないので、**ホーム全体が視野に入るところまで下がって**高いところから
+    // 眺める。近づくと駅舎が視野の外（真横）へ出てしまう。
+    back: 150,
+    side: -1,
+    standOff: -32,
+    height: 24,
+    lookHeight: 4,
+  },
+  {
+    key: 'car',
+    label: '車体の標記（号車札・車号・所属・弱冷房車・優先席）',
+    build: markingTrain,
+    // 1 号車の車端（車号と所属）、1 号車の中ほど（号車札）、4 号車（弱冷房車）
+    spots: () => [MARKING_START - 6, MARKING_START + 4, MARKING_START + 62],
+    back: 4,
+    standOff: 7,
+    height: 2.0,
+    lookHeight: 2.0,
+  },
+  {
     key: 'cab',
     label: '運転台（静止状態）',
     build: () => [createCabInterior().group],
@@ -141,12 +233,15 @@ function aim(s: number, kind: Kind): void {
   const back = kind.back ?? 9;
   const here = frameAt(s);
   const from = frameAt(Math.max(0, s - back));
-  camera.position.copy(from.position).add(new THREE.Vector3(0, EYE_HEIGHT, 0));
+  camera.position
+    .copy(from.position)
+    .addScaledVector(from.right, kind.standOff ?? 0)
+    .add(new THREE.Vector3(0, kind.height ?? EYE_HEIGHT, 0));
   // 標識は線路際に建つので、軌道中心を見ていると隅へ寄ってしまう。建つ側を見る
   const target = here.position
     .clone()
     .addScaledVector(here.right, (kind.side ?? 0) * LATERAL)
-    .add(new THREE.Vector3(0, 1, 0));
+    .add(new THREE.Vector3(0, kind.lookHeight ?? 1, 0));
   camera.lookAt(target);
 }
 

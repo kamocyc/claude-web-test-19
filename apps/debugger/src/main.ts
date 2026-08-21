@@ -205,7 +205,12 @@ function createInteriorView(): InteriorView {
   }
   return {
     cars,
-    walker: new Walker(cars.map((car) => car.interior.layout)),
+    // 混雑率は描画側（`setPlacement`）と同じ値を渡す。歩行者が膝を
+    // 通り抜けないのは、両者が同じ割り付けを引くからである。
+    walker: new Walker(
+      cars.map((car) => car.interior.layout),
+      sim.scenario.loadFactor,
+    ),
     shells: new CarShells(cars),
   };
 }

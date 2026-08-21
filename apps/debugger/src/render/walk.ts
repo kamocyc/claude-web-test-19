@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import type { BodyMotionState } from '@railsim/core';
 import { CAR, INTERIOR } from './dimensions.ts';
 import { seatBays, type CarInterior, type CarLayout } from './interior.ts';
+import { SEATED_HALF_WIDTH, seatedOccupants, type SeatedOccupant } from './interiorPassengers.ts';
 
 /**
  * 車内を歩く。
@@ -101,6 +102,43 @@ export function corridorHalfWidth(
 }
 
 /**
+ * その前後位置で立てる左右の範囲（車体中心からの左右それぞれの限界）。
+ *
+ * `corridorHalfWidth` が返すのは**誰も座っていないときの**通路の広さで、
+ * 実際には座っている人の膝がそこから通路へ出ている。膝は左右で別々に出るので
+ * （右の席だけ埋まっていることもある）、左右を別に返す必要がある。
+ *
+ * 座っている人の居場所は `interiorPassengers.ts` の `seatedOccupants()` が
+ * 返す。描画側とまったく同じ割り付けなので、**見えている膝と当たり判定が
+ * ずれない**（どちらも seed から決まる）。
+ *
+ * 純粋な計算なので試験できる（`apps/debugger/test/walk.test.ts`）。
+ */
+export function corridorBounds(
+  layout: CarLayout,
+  bays: readonly { from: number; to: number }[],
+  seated: readonly SeatedOccupant[],
+  x: number,
+): { readonly left: number; readonly right: number } {
+  const base = corridorHalfWidth(layout, bays, x);
+  let left = -base;
+  let right = base;
+  for (const person of seated) {
+    // 肩幅ぶんだけ前後に幅を持たせる（真横に来たときだけ当たるのでは、
+    // 斜めから膝へ突っ込める）
+    if (Math.abs(person.x - x) > SEATED_HALF_WIDTH) continue;
+    if (person.side > 0) right = Math.min(right, person.kneeReach);
+    else left = Math.max(left, -person.kneeReach);
+  }
+  // 左右が入れ替わるほど詰まったら（両側の膝が触れ合うほどの狭さ）中央に寄せる
+  if (right < left) {
+    const middle = (left + right) / 2;
+    return { left: middle, right: middle };
+  }
+  return { left, right };
+}
+
+/**
  * その車両で歩ける前後の範囲。
  *
  * 運転室の側は仕切り壁で止まる。貫通路の側は連結面の中ほどまで歩けて、
@@ -129,6 +167,7 @@ export function confine(
   x: number,
   z: number,
   radius: number,
+  seated: readonly SeatedOccupant[] = [],
 ): { x: number; z: number; exit: -1 | 0 | 1 } {
   const limits = longitudinalLimits(layout, radius);
   let exit: -1 | 0 | 1 = 0;
@@ -136,8 +175,12 @@ export function confine(
   if (nx >= limits.gangwayEnd && layout.cabSide !== 1) exit = 1;
   if (nx <= -limits.gangwayEnd && layout.cabSide !== -1) exit = -1;
   nx = Math.min(limits.max, Math.max(limits.min, nx));
-  const half = Math.max(0.05, corridorHalfWidth(layout, bays, nx) - radius);
-  const nz = Math.min(half, Math.max(-half, z));
+  const bounds = corridorBounds(layout, bays, seated, nx);
+  // 体の半径ぶん内側へ寄せる。左右から詰められて通れなくなったら、
+  // 押し合いになる真ん中で止める（すり抜けさせない）。
+  const left = bounds.left + radius;
+  const right = bounds.right - radius;
+  const nz = right < left ? (bounds.left + bounds.right) / 2 : Math.min(right, Math.max(left, z));
   return { x: nx, z: nz, exit };
 }
 
@@ -160,9 +203,23 @@ export class Walker {
   /** よろけの残り [rad]（踏み出しの瞬間に立ち、指数で減る） */
   private lurch = 0;
   private readonly bays: Array<readonly { from: number; to: number }[]> = [];
+  /** 車ごとの「座っている人」。膝を通り抜けないために持つ。 */
+  private readonly seated: SeatedOccupant[][] = [];
 
-  constructor(private readonly layouts: readonly CarLayout[]) {
-    for (const layout of layouts) this.bays.push(seatBays(layout));
+  /**
+   * @param layouts 編成の各車の客室の割り付け
+   * @param loadFactor 混雑率。**描画側と同じ値を渡すこと**——乗客の割り付けは
+   *   これと編成の位置だけで決まるので、同じ値なら同じ人が同じ席に座る。
+   */
+  constructor(
+    private readonly layouts: readonly CarLayout[],
+    loadFactor = 0,
+  ) {
+    for (const [index, layout] of layouts.entries()) {
+      const bays = seatBays(layout);
+      this.bays.push(bays);
+      this.seated.push(seatedOccupants(layout, bays, index, loadFactor));
+    }
     this.reset();
   }
 
@@ -228,6 +285,7 @@ export class Walker {
       s.x + this.vx * dt,
       s.z + this.vz * dt,
       INTERIOR.bodyRadius,
+      this.seated[s.carIndex] ?? [],
     );
     s.x = result.x;
     s.z = result.z;
@@ -425,13 +483,23 @@ export class CarShells {
    * 追加の形は要らない——増えるのは半透明の面の描画だけで、窓ガラスは
    * もともと描いていたものである。
    *
-   * 透過率は熱線吸収ガラスに合わせて低めにする。実物の側窓も外から見ると
-   * 中がうっすら見える程度で、素通しではない。
+   * ## 透過率
+   *
+   * 通勤形の側窓は**熱線吸収ガラス**で、可視光の 4 割ほどしか通さない。
+   * ここを素通しに近くすると、車内が蛍光灯で明るいぶん**窓の外だけが白く
+   * 飛ぶ**（実物でも外は明るいが、緑が白に抜けるほどではない）。
+   *
+   * 描画は `結果 = 不透明度 × ガラス + (1 − 不透明度) × 外の景色` なので、
+   * 外を暗くするには**濃い色のガラスを厚く重ねる**しかない。色を熱線吸収
+   * ガラスの緑がかった灰色にして、不透明度を上げてある。金属度の高い材質
+   * なので映り込みもこの色に染まるが、それは色付きガラスの映り方そのもので
+   * 正しい。
    */
   private makeGlassSeeThrough(): void {
     for (const material of this.glass) {
       material.transparent = true;
-      material.opacity = 0.3;
+      material.color.setHex(0x33423d);
+      material.opacity = 0.44;
       // 半透明の面が奥行きを書くと、その後ろの内装が消えてしまう
       material.depthWrite = false;
       material.needsUpdate = true;

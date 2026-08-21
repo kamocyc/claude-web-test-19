@@ -14,6 +14,7 @@ import {
   tactileSurface,
 } from './textures.ts';
 import { hdrColor } from './postprocess.ts';
+import { buildStationExtras, needsFootbridge, stationCharacter } from './station.ts';
 import { Rng } from '@railsim/core';
 
 /**
@@ -593,7 +594,8 @@ export function buildStations(
   frameAt: (s: number) => TrackFrame,
 ): THREE.Object3D[] {
   const out: THREE.Object3D[] = [];
-  for (const station of route.stations) {
+  for (let i = 0; i < route.stations.length; i++) {
+    const station = route.stations[i]!;
     out.push(...buildPlatform(station, frameAt));
     /**
      * 隣に線路がある駅は、その線路にもホームが要る。
@@ -604,10 +606,16 @@ export function buildStations(
      * 片側にしかホームが無い複線駅は、上りの客が乗れないので成り立たない。
      */
     const adjacent = route.adjacentTrack.offsetAt(station.stopPosition);
+    const character = stationCharacter(route, station, i);
     if (Math.abs(adjacent) > 2.5) {
       out.push(...buildOppositePlatform(station, frameAt, adjacent));
-      out.push(...buildFootbridge(station, frameAt, adjacent));
+      if (needsFootbridge(character)) {
+        out.push(...buildFootbridge(station, frameAt, adjacent));
+      }
     }
+    // 駅舎・改札・番線標・車止め。**駅ごとに違うのはここだけ**で、
+    // ホームと上屋は全駅で同じものを使う（実物もそうなっている）。
+    out.push(...buildStationExtras(route, station, frameAt, character));
   }
   return out;
 }
@@ -908,6 +916,17 @@ function buildFootbridge(
   roof.position.set(0, clearance + deckThickness + 2.45, centre);
   group.add(roof);
 
+  // 通路の照明（蛍光灯を桁の下に並べる）。跨線橋の中はいつも薄暗いので、
+  // 実物も昼間から点いている。**中に光るものがあるかどうかで、通路が
+  // 「箱の中」に見えるか「向こうへ抜ける道」に見えるかが変わる。**
+  const tubeMaterial = new THREE.MeshBasicMaterial({ color: 0xfff4d8 });
+  for (let i = 0; i < 4; i++) {
+    const z = centre + span * ((i + 0.5) / 4 - 0.5);
+    const tube = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.07, 1.2), tubeMaterial);
+    tube.position.set(0, clearance + deckThickness + 2.3, z);
+    group.add(tube);
+  }
+
   // 階段（両ホームへ降りる。踏面 300mm・蹴上げ 170mm の実物どおりの寸法）
   for (const end of [from, to] as const) {
     // 段は「ホームの端から橋の中央へ向かって」上がっていく
@@ -923,6 +942,39 @@ function buildFootbridge(
     const landing = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.2, 1.4), steel);
     landing.position.set(0, clearance, end + dir * (0.3 * steps + 0.7));
     group.add(landing);
+    /**
+     * 手すりと側げた。
+     *
+     * **段板だけだと、空中に板が並んでいるようにしか見えない。**実物の跨線橋は
+     * 段の両脇に側げた（斜めの鋼板）があり、その上に高さ 1100mm の手すりが
+     * 通っている。手すりは笠木（丸パイプ）・中桟・支柱の 3 つでできていて、
+     * 逆光で見ると細い線の集まりとして見える — それが階段の勾配を読ませる。
+     */
+    const run = steps * 0.3;
+    const slope = Math.atan2(rise, run);
+    const diagonal = Math.hypot(rise, run);
+    for (const dx of [-1.2, 1.2]) {
+      // 側げた（段の外側を塞ぐ斜めの板）
+      const stringer = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.45, diagonal), steel);
+      stringer.rotation.x = -dir * slope;
+      stringer.position.set(dx, PLATFORM.height + rise / 2 - 0.1, end + dir * (run / 2));
+      group.add(stringer);
+      // 笠木（高さ 1100mm）と中桟（550mm）
+      for (const height of [1.1, 0.55]) {
+        const rail = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, diagonal, 6), steel);
+        rail.rotation.x = Math.PI / 2 - dir * slope;
+        rail.position.set(dx, PLATFORM.height + rise / 2 + height, end + dir * (run / 2));
+        group.add(rail);
+      }
+      // 支柱（1.5m ごと）
+      const posts = Math.max(2, Math.round(run / 1.5));
+      for (let i = 0; i <= posts; i++) {
+        const t = i / posts;
+        const post = new THREE.Mesh(new THREE.BoxGeometry(0.04, 1.1, 0.04), steel);
+        post.position.set(dx, PLATFORM.height + rise * t + 0.55, end + dir * run * t);
+        group.add(post);
+      }
+    }
   }
 
   // 橋脚（ホーム上に立つ 2 本）

@@ -3,7 +3,9 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 import type { VehicleSpec } from '@railsim/core';
 import { CAR, INTERIOR } from './dimensions.ts';
 import {
-  adTexture,
+  AD_ATLAS_COLUMNS,
+  AD_ATLAS_ROWS,
+  adAtlasTexture,
   createCarDisplay,
   doorStickerTexture,
   floorSheetTexture,
@@ -11,7 +13,6 @@ import {
   noticeTexture,
   panelTexture,
   priorityStickerTexture,
-  rackMeshTexture,
   type CarDisplay,
 } from './interiorTextures.ts';
 import { buildPassengers, type CarPassengers } from './interiorPassengers.ts';
@@ -310,6 +311,23 @@ function shadedMesh(
   const geometry = mergeGeometries(parts as THREE.BufferGeometry[], false)!;
   field.bake(geometry, strength);
   return new THREE.Mesh(geometry, shadeWithVertexColor(material));
+}
+
+/**
+ * UV をアトラスの 1 区画へ振り分ける。
+ *
+ * 絵を 1 枚にまとめておいて、面ごとにどの区画を見るかを UV で決める。これで
+ * 「絵が違うから材質も違う」＝「面の数だけ描画が要る」という縛りが外れる。
+ * `v` は下から数えるので、`interiorTextures.ts` の側も下の段から描いている。
+ */
+function remapUv(geometry: THREE.BufferGeometry, index: number, cols: number, rows: number): void {
+  const uv = geometry.getAttribute('uv');
+  const col = index % cols;
+  const row = Math.floor(index / cols) % rows;
+  for (let i = 0; i < uv.count; i++) {
+    uv.setXY(i, (col + uv.getX(i)) / cols, (row + uv.getY(i)) / rows);
+  }
+  uv.needsUpdate = true;
 }
 
 /** UV を実寸に合わせて引き伸ばす（模様の大きさを面の大小で変えないため） */
@@ -1047,8 +1065,28 @@ function buildRacks(c: Ctx): THREE.Group {
         // 壁への取り付け金具。板 1 枚ぶんの厚みがあり、根元に陰が落ちる。
         brackets.push(box([0.05, 0.09, 0.055], [x, y + 0.02, side * (c.inner - 0.045)]));
       }
-      // 網（上向きの面。下から見上げると格子越しに天井が見える）
-      nets.push(quad(b - a, depth - 0.02, [(a + b) / 2, y, side * (c.inner - depth / 2)], 'py'));
+      /**
+       * 網。
+       *
+       * 1 周目・2 周目は抜きのあるテクスチャを貼った 1 枚の面で作っていたが、
+       * **真横から見ると板になる**（面が薄いので抜きが効かず、縁の線だけが
+       * 残って 1 枚の板に見える）。実物はステンレスの丸棒を格子に組んだもので、
+       * どの角度から見ても棒の断面が見える。棒として作れば角度に関係なく
+       * 正しく見えるので、そのまま桟で組む。
+       *
+       * 目の粗さは実物どおり 60mm 前後。細かくすると桟の数がそのまま
+       * 三角形の数になるので、ここが荷棚の費用を決めている。
+       */
+      const rail = 0.011;
+      for (let k = 0; k <= 4; k++) {
+        const rz = side * (c.inner - 0.06 - (k / 4) * (depth - 0.1));
+        nets.push(tube(rail / 2, b - a, [(a + b) / 2, y, rz], 'x', 4));
+      }
+      const rungs = Math.max(2, Math.round((b - a) / 0.09));
+      for (let k = 0; k <= rungs; k++) {
+        const rx = a + ((b - a) * k) / rungs;
+        nets.push(tube(rail / 2, depth - 0.1, [rx, y - 0.008, side * (c.inner - 0.06 - (depth - 0.1) / 2)], 'z', 4)); // prettier-ignore
+      }
       // 置かれた荷物（決まった位置に置く。走行のたびに変わっては困る）
       if ((i + (side > 0 ? 1 : 0)) % 3 === 0) {
         bags.push(box([0.46, 0.24, 0.26], [(a + b) / 2 + 0.2, y + 0.13, side * (c.inner - depth / 2)])); // prettier-ignore
@@ -1057,20 +1095,7 @@ function buildRacks(c: Ctx): THREE.Group {
   }
   const tubeMesh = shadedMesh(tubes, lit(STAINLESS, 0.32, 0.72, 0.12), c.field, 0.45);
   const bracketMesh = shadedMesh(brackets, lit(0x9aa0a6, 0.45, 0.5, 0.1), c.field, 0.5);
-  const netGeometry = nets.length > 0 ? mergeGeometries(nets, false) : null;
-  const netMesh = netGeometry
-    ? new THREE.Mesh(
-        netGeometry,
-        new THREE.MeshStandardMaterial({
-          map: rackMeshTexture(),
-          transparent: true,
-          alphaTest: 0.45,
-          roughness: 0.4,
-          metalness: 0.55,
-          side: THREE.DoubleSide,
-        }),
-      )
-    : null;
+  const netMesh = shadedMesh(nets, lit(0xb4bac0, 0.35, 0.65, 0.11), c.field, 0.4);
   const bagMesh = shadedMesh(bags, lit(0x4a4740, 0.85, 0.03, 0.12), c.field, 0.5);
   for (const mesh of [tubeMesh, bracketMesh, netMesh, bagMesh]) if (mesh) g.add(mesh);
   return g;
@@ -1246,8 +1271,18 @@ function buildStanchions(c: Ctx): THREE.Group {
  * 側扉（両開き 4 か所）。
  *
  * 開閉は `sim.doors` が決める（`DoorSystem`）。扉は左右へ 650mm ずつ開いて
- * 戸袋へ納まるので、開き具合をそのまま横移動に掛ければよい。扉の上には
- * 車内案内表示器が付き、脇には非常用の戸開ボタン（コック）の蓋がある。
+ * 戸袋へ納まるので、開き具合をそのまま横移動に掛ければよい。
+ *
+ * ## 1 両に 16 枚あっても描画は 6 回で済む
+ *
+ * 1 周目は戸 1 枚ごとに `Group` を作り、その中に戸・ガラス・ステッカーの
+ * 3 つのメッシュを置いていた。4 か所 × 両側 × 2 枚 = 16 枚で 48 回の描画に
+ * なり、車内を歩くモードでいちばん重い部分になっていた。
+ *
+ * ところが**戸の動きは 2 とおりしかない**。前寄りへ開く 8 枚と後ろ寄りへ開く
+ * 8 枚で、同じ側へ開く戸はどれも同じ量だけ動く。したがって「同じ向きへ開く
+ * 戸」をまとめて 1 つの形にし、それを載せた `Group` を横へ動かせばよい。
+ * 材質は 3 つ（戸・ガラス・ステッカー）なので、2 × 3 = 6 回で 16 枚が動く。
  */
 function buildDoors(c: Ctx): {
   group: THREE.Group;
@@ -1255,7 +1290,6 @@ function buildDoors(c: Ctx): {
   update(position: number): void;
 } {
   const g = new THREE.Group();
-  const leaves: Array<{ object: THREE.Object3D; home: number; dir: number }> = [];
   const displays: CarDisplay[] = [];
   const leafWidth = CAR.doorWidth / 2;
   // 戸は開くと戸袋へ滑り込むので、位置で陰を焼くわけにいかない。代わりに
@@ -1277,50 +1311,56 @@ function buildDoors(c: Ctx): {
   const frames: THREE.BufferGeometry[] = [];
   const headers: THREE.BufferGeometry[] = [];
   const cocks: THREE.BufferGeometry[] = [];
-  /** 戸袋の口（開いた戸が消えていく暗い隙間） */
-  const pockets: THREE.BufferGeometry[] = [];
+  /** 戸袋の奥（開いた戸が消えていく暗い空間） */
+  const slots: THREE.BufferGeometry[] = [];
+  /** 案内表示器の面（全部の扉に同じ文言が出るので 1 枚の絵を共有する） */
+  const displayFaces: THREE.BufferGeometry[] = [];
+  /** 開く向きごとの戸の形（-1 = 後ろ寄りへ / +1 = 前寄りへ） */
+  const leaves = new Map<number, THREE.BufferGeometry[]>([
+    [-1, []],
+    [1, []],
+  ]);
+  const glass = new Map<number, THREE.BufferGeometry[]>([
+    [-1, []],
+    [1, []],
+  ]);
+  const stickers = new Map<number, THREE.BufferGeometry[]>([
+    [-1, []],
+    [1, []],
+  ]);
+
+  const winA = -INTERIOR.doorWindowWidth / 2;
+  const winB = INTERIOR.doorWindowWidth / 2;
+  const winY0 = c.floor + INTERIOR.doorWindowSill;
+  const winY1 = winY0 + INTERIOR.doorWindowHeight;
+  const t = LEAF_THICKNESS;
 
   for (const centre of c.layout.doorCentres) {
     for (const side of [-1, 1] as const) {
       const z = side * (c.inner - LEAF_INSET);
       for (const dir of [-1, 1] as const) {
         // 1 枚の戸。窓を抜くため、上下と左右の框に分けて組む。
+        const home = centre + dir * (leafWidth / 2);
         const parts: THREE.BufferGeometry[] = [];
-        const wLeft = -leafWidth / 2;
-        const wRight = leafWidth / 2;
-        const winA = -INTERIOR.doorWindowWidth / 2;
-        const winB = INTERIOR.doorWindowWidth / 2;
-        const winY0 = c.floor + INTERIOR.doorWindowSill;
-        const winY1 = winY0 + INTERIOR.doorWindowHeight;
-        const t = LEAF_THICKNESS;
-        parts.push(box([leafWidth, winY0 - c.floor, t], [0, (c.floor + winY0) / 2, 0]));
-        parts.push(box([leafWidth, c.doorTop - winY1, t], [0, (winY1 + c.doorTop) / 2, 0]));
-        parts.push(box([winA - wLeft, winY1 - winY0, t], [(wLeft + winA) / 2, (winY0 + winY1) / 2, 0])); // prettier-ignore
-        parts.push(box([wRight - winB, winY1 - winY0, t], [(winB + wRight) / 2, (winY0 + winY1) / 2, 0])); // prettier-ignore
-        // 戸先のゴム。両開きの**合わせ目**は戸袋と反対の側（局所 -dir 側）にある。
-        parts.push(box([0.022, c.doorTop - c.floor, t + 0.012], [-dir * (leafWidth / 2 - 0.011), (c.floor + c.doorTop) / 2, 0])); // prettier-ignore
-
-        const pivot = new THREE.Group();
+        const wLeft = home - leafWidth / 2;
+        const wRight = home + leafWidth / 2;
+        parts.push(box([leafWidth, winY0 - c.floor, t], [home, (c.floor + winY0) / 2, z]));
+        parts.push(box([leafWidth, c.doorTop - winY1, t], [home, (winY1 + c.doorTop) / 2, z]));
+        parts.push(box([winA + home - wLeft, winY1 - winY0, t], [(wLeft + home + winA) / 2, (winY0 + winY1) / 2, z])); // prettier-ignore
+        parts.push(box([wRight - home - winB, winY1 - winY0, t], [(home + winB + wRight) / 2, (winY0 + winY1) / 2, z])); // prettier-ignore
+        // 戸先のゴム。両開きの**合わせ目**は戸袋と反対の側（-dir 側）にある。
+        parts.push(box([0.022, c.doorTop - c.floor, t + 0.012], [home - dir * (leafWidth / 2 - 0.011), (c.floor + c.doorTop) / 2, z])); // prettier-ignore
         const leaf = mergeGeometries(parts, false)!;
         tintVertices(leaf, (_x, ly) => 0.5 + 0.5 * Math.min(1, (ly - c.floor) / 0.6));
-        pivot.add(new THREE.Mesh(leaf, doorMaterial));
-        pivot.add(
-          new THREE.Mesh(
-            box([INTERIOR.doorWindowWidth, INTERIOR.doorWindowHeight, 0.008], [0, (winY0 + winY1) / 2, 0]), // prettier-ignore
-            glassMaterial,
-          ),
-        );
+        leaves.get(dir)!.push(leaf);
+
+        glass
+          .get(dir)!
+          .push(box([INTERIOR.doorWindowWidth, INTERIOR.doorWindowHeight, 0.008], [home, (winY0 + winY1) / 2, z])); // prettier-ignore
         // 指はさみ注意のステッカー（戸先の側、腰の高さ）
-        pivot.add(
-          new THREE.Mesh(
-            quad(0.115, 0.115, [-dir * (leafWidth / 2 - 0.11), c.floor + 1.3, -side * (t / 2 + 0.004)], side > 0 ? 'nz' : 'pz'), // prettier-ignore
-            stickerMaterial,
-          ),
-        );
-        const home = centre + dir * (leafWidth / 2);
-        pivot.position.set(home, 0, z);
-        leaves.push({ object: pivot, home, dir });
-        g.add(pivot);
+        stickers
+          .get(dir)!
+          .push(quad(0.115, 0.115, [home - dir * (leafWidth / 2 - 0.11), c.floor + 1.3, z - side * (t / 2 + 0.004)], side > 0 ? 'nz' : 'pz')); // prettier-ignore
       }
 
       // 戸当たりの枠（開口の縁。ここを塞がないと壁の厚みの隙間から外が見える）
@@ -1329,12 +1369,21 @@ function buildDoors(c: Ctx): {
         frames.push(
           box([0.03, c.doorTop - c.floor, POCKET_STEP], [centre + dx * (CAR.doorWidth / 2 + 0.015), (c.floor + c.doorTop) / 2, jambZ]), // prettier-ignore
         );
-        // 戸袋の口。開いた戸が滑り込んでいく細い隙間で、**中は真っ暗**である。
-        // ここを塞いでしまうと、戸が壁の中へ消えるのではなく壁に貼り付いて
-        // 見える。実物でも、開いた扉の脇には黒い線が 1 本残っている。
-        pockets.push(
-          quad(0.028, c.doorTop - c.floor - 0.02, [centre + dx * (CAR.doorWidth / 2 + 0.032), (c.floor + c.doorTop) / 2, side * (c.inner - LEAF_INSET - 0.008)], side > 0 ? 'nz' : 'pz'), // prettier-ignore
-        );
+        /**
+         * 戸袋の奥。
+         *
+         * 開いた戸は内張りの**裏**（外板寄り）へ滑り込むので、戸口の脇には
+         * 内張りの厚みぶんの隙間が残り、そこから戸袋の中の暗がりが見える。
+         * ここを 1 枚の黒い面で済ませると「壁に黒い線を引いた」だけになるので、
+         * 内張りの小口・戸の走る奥の面・上下の縁で囲った**深さのある溝**にする。
+         */
+        const slotX = centre + dx * (CAR.doorWidth / 2 + 0.032);
+        const slotHeight = c.doorTop - c.floor - 0.02;
+        const slotMid = (c.floor + c.doorTop) / 2;
+        // 奥の面（戸の裏側が走るところ）
+        slots.push(quad(0.05, slotHeight, [slotX, slotMid, side * (c.inner - 0.012)], side > 0 ? 'nz' : 'pz')); // prettier-ignore
+        // 内張りの小口（溝の手前側の壁）
+        slots.push(quad(POCKET_STEP - LEAF_INSET, slotHeight, [slotX - dx * 0.025, slotMid, side * (c.inner - (POCKET_STEP + LEAF_INSET) / 2)], dx > 0 ? 'px' : 'nx')); // prettier-ignore
       }
       frames.push(
         box([CAR.doorWidth + 0.06, 0.05, POCKET_STEP], [centre, c.doorTop + 0.025, jambZ]),
@@ -1345,14 +1394,10 @@ function buildDoors(c: Ctx): {
         box([CAR.doorWidth + 0.32, c.ceilingSide - c.doorTop - 0.05, 0.07], [centre, (c.doorTop + 0.05 + c.ceilingSide) / 2, side * (c.inner - 0.06)]), // prettier-ignore
       );
 
-      // 車内案内表示器
-      const display = createCarDisplay();
-      displays.push(display);
-      g.add(
-        new THREE.Mesh(
-          quad(INTERIOR.displayWidth, INTERIOR.displayHeight, [centre, (c.doorTop + 0.05 + c.ceilingSide) / 2, side * (c.inner - 0.1)], side > 0 ? 'nz' : 'pz'), // prettier-ignore
-          new THREE.MeshBasicMaterial({ map: display.texture }),
-        ),
+      // 車内案内表示器の面。**1 両ぶんで絵は 1 枚**（どの扉にも同じ文言が
+      // 出るので、扉ごとにキャンバスを持つ理由が無い）。
+      displayFaces.push(
+        quad(INTERIOR.displayWidth, INTERIOR.displayHeight, [centre, (c.doorTop + 0.05 + c.ceilingSide) / 2, side * (c.inner - 0.1)], side > 0 ? 'nz' : 'pz'), // prettier-ignore
       );
 
       // 非常用の戸開コック（扉の脇の赤い蓋）
@@ -1362,18 +1407,34 @@ function buildDoors(c: Ctx): {
     }
   }
 
+  // 開く向きごとに 1 つの `Group` へまとめる。中身は動かさず、群ごと横へ滑らせる。
+  const pivots: Array<{ object: THREE.Group; dir: number }> = [];
+  for (const dir of [-1, 1] as const) {
+    const pivot = new THREE.Group();
+    pivot.add(new THREE.Mesh(mergeGeometries(leaves.get(dir)!, false)!, doorMaterial));
+    pivot.add(new THREE.Mesh(mergeGeometries(glass.get(dir)!, false)!, glassMaterial));
+    pivot.add(new THREE.Mesh(mergeGeometries(stickers.get(dir)!, false)!, stickerMaterial));
+    g.add(pivot);
+    pivots.push({ object: pivot, dir });
+  }
+
+  const display = createCarDisplay();
+  displays.push(display);
+  const displayMesh = meshOf(displayFaces, new THREE.MeshBasicMaterial({ map: display.texture }));
+  if (displayMesh) g.add(displayMesh);
+
   const frameMesh = shadedMesh(frames, lit(0xc6cace, 0.5, 0.35, 0.13), c.field, 0.55);
   const headerMesh = shadedMesh(headers, lit(0xcfd3d7, 0.6, 0.2, 0.13), c.field, 0.5);
   const cockMesh = meshOf(cocks, lit(0xc94a3a, 0.6, 0.1, 0.18));
-  const pocketMesh = meshOf(pockets, lit(0x14171a, 0.95, 0, 0.02));
-  for (const mesh of [frameMesh, headerMesh, cockMesh, pocketMesh]) if (mesh) g.add(mesh);
+  const slotMesh = meshOf(slots, lit(0x14171a, 0.95, 0, 0.02));
+  for (const mesh of [frameMesh, headerMesh, cockMesh, slotMesh]) if (mesh) g.add(mesh);
 
   return {
     group: g,
     displays,
     update(position: number): void {
       const travel = leafWidth * Math.max(0, Math.min(1, position));
-      for (const leaf of leaves) leaf.object.position.x = leaf.home + leaf.dir * travel;
+      for (const pivot of pivots) pivot.object.position.x = pivot.dir * travel;
     },
   };
 }
@@ -1698,54 +1759,71 @@ function buildEndWalls(c: Ctx): THREE.Group {
  *
  * 中吊り（天井から下がる縦長のもの）、まど上（荷棚の上の横長のもの）、
  * 優先席の表示。**実在の企業名や商標は使わない**ので、架空の題字だけで作る。
- * 中吊りは 2 枚を背中合わせに張る（1 枚を両面表示にすると裏から鏡像に見える）。
+ *
+ * ## 中吊りの向き
+ *
+ * 中吊りは**車軸の方向を向いて**吊る。通路を歩く人・立っている人が正面から
+ * 読むためのもので、実物も車内を見通したときに面が並んで見える。1 周目は
+ * これを真横（座席の側）へ向けていたので、通路からは紙の小口しか見えず、
+ * 天井の中央に色の付いた細い縦線が 1 本走っているようにしか見えなかった。
+ *
+ * 2 枚を背中合わせに張るのは変わらない（1 枚を両面表示にすると裏から
+ * 鏡像に見える）。
+ *
+ * ## 1 枚の絵にまとめる
+ *
+ * 広告は 1 枚ずつ絵が違うので、そのまま貼ると枚数ぶんの描画になる。
+ * 6 種類を並べたアトラス（`adAtlasTexture`）から UV で切り出せば、
+ * 中吊り 12 枚とまど上 6 枚がそれぞれ 1 回の描画で済む。
  */
 function buildAds(c: Ctx): THREE.Group {
   const g = new THREE.Group();
   let n = 0;
   const hangers: THREE.BufferGeometry[] = [];
+  const posters: THREE.BufferGeometry[] = [];
+  const banners: THREE.BufferGeometry[] = [];
+  const priority: THREE.BufferGeometry[] = [];
+
   for (const bay of c.bays) {
     if (bay.to - bay.from < 3) continue;
     for (const ratio of [0.28, 0.72]) {
       const x = bay.from + (bay.to - bay.from) * ratio;
-      for (const facing of ['pz', 'nz'] as const) {
-        g.add(
-          new THREE.Mesh(
-            quad(0.36, 0.5, [x, c.ceiling - 0.33, facing === 'pz' ? 0.005 : -0.005], facing),
-            printed(adTexture(n++, true)),
-          ),
-        );
+      // 前を向く面と後ろを向く面を、紙 1 枚ぶん離して背中合わせに張る
+      for (const facing of ['px', 'nx'] as const) {
+        const sheet = quad(0.36, 0.5, [x + (facing === 'px' ? 0.005 : -0.005), c.ceiling - 0.33, 0], facing); // prettier-ignore
+        remapUv(sheet, n++, AD_ATLAS_COLUMNS.poster, AD_ATLAS_ROWS.poster);
+        posters.push(sheet);
       }
       hangers.push(box([0.02, 0.1, 0.02], [x, c.ceiling - 0.05, 0]));
     }
   }
   // まど上（荷棚の上、幕板のところ）
+  let m = 0;
   for (const side of [-1, 1] as const) {
     for (const bay of c.bays) {
       if (bay.to - bay.from < 2) continue;
-      g.add(
-        new THREE.Mesh(
-          quad(0.64, 0.2, [(bay.from + bay.to) / 2, c.floor + 1.93, side * (c.inner - 0.04)], side > 0 ? 'nz' : 'pz'), // prettier-ignore
-          printed(adTexture(n++, false)),
-        ),
-      );
+      const sheet = quad(0.64, 0.2, [(bay.from + bay.to) / 2, c.floor + 1.93, side * (c.inner - 0.04)], side > 0 ? 'nz' : 'pz'); // prettier-ignore
+      remapUv(sheet, m++, AD_ATLAS_COLUMNS.banner, AD_ATLAS_ROWS.banner);
+      banners.push(sheet);
     }
   }
   // 優先席の表示（席の頭上の壁）
-  const priorityMaterial = printed(priorityStickerTexture(), 0.22);
   for (const side of [-1, 1] as const) {
     for (const bay of c.bays) {
       if (!bay.priority) continue;
-      g.add(
-        new THREE.Mesh(
-          quad(0.46, 0.17, [(bay.from + bay.to) / 2, c.floor + 1.63, side * (c.inner - 0.04)], side > 0 ? 'nz' : 'pz'), // prettier-ignore
-          priorityMaterial,
-        ),
+      priority.push(
+        quad(0.46, 0.17, [(bay.from + bay.to) / 2, c.floor + 1.63, side * (c.inner - 0.04)], side > 0 ? 'nz' : 'pz'), // prettier-ignore
       );
     }
   }
-  const hangerMesh = meshOf(hangers, lit(STAINLESS, 0.4, 0.6, 0.12));
-  if (hangerMesh) g.add(hangerMesh);
+
+  const meshes = [
+    meshOf(posters, printed(adAtlasTexture(true))),
+    meshOf(banners, printed(adAtlasTexture(false))),
+    meshOf(priority, printed(priorityStickerTexture(), 0.22)),
+    meshOf(hangers, lit(STAINLESS, 0.4, 0.6, 0.12)),
+  ];
+  for (const mesh of meshes) if (mesh) g.add(mesh);
   return g;
 }
 
@@ -1754,43 +1832,41 @@ function buildAds(c: Ctx): THREE.Group {
  *
  * どちらも備え付けが決まっているもので、置き場所もおおむね決まっている。
  * 消火器は車端の座席の下、非常通報器は扉の脇の目に付くところにある。
+ * 同じ材質のものはまとめて 1 つのメッシュにする（標記の板だけは絵が違うので
+ * 分かれる）。
  */
 function buildEquipment(c: Ctx): THREE.Group {
   const g = new THREE.Group();
+  const bodies: THREE.BufferGeometry[] = [];
+  const buttons: THREE.BufferGeometry[] = [];
+  const extinguisherNotices: THREE.BufferGeometry[] = [];
+  const callNotices: THREE.BufferGeometry[] = [];
+
   const end = c.bays[0];
   if (end) {
     const x = (end.from + end.to) / 2;
-    const body = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.06, 0.06, 0.3, 10),
-      lit(0xc03a2c, 0.5, 0.2, 0.16),
-    );
-    body.position.set(x, c.floor + 0.15, -(c.inner - 0.18));
-    g.add(body);
-    g.add(
-      new THREE.Mesh(
-        quad(0.17, 0.085, [x, c.floor + 0.36, -(c.inner - 0.05)], 'pz'),
-        printed(noticeTexture('消火器', 'この下にあります', 0xc03a2c)),
-      ),
-    );
+    const body = new THREE.CylinderGeometry(0.06, 0.06, 0.3, 10);
+    body.translate(x, c.floor + 0.15, -(c.inner - 0.18));
+    bodies.push(body);
+    extinguisherNotices.push(quad(0.17, 0.085, [x, c.floor + 0.36, -(c.inner - 0.05)], 'pz'));
   }
   const centre = c.layout.doorCentres[1] ?? c.layout.doorCentres[0];
   if (centre !== undefined) {
-    const notice = printed(noticeTexture('非常通報器', '押すと乗務員を呼べます', 0xc03a2c), 0.2);
     for (const side of [-1, 1] as const) {
       const x = centre - CAR.doorWidth / 2 - 0.26;
-      g.add(
-        new THREE.Mesh(
-          box([0.17, 0.25, 0.03], [x, c.floor + 1.42, side * (c.inner - 0.045)]),
-          lit(0xe9c33a, 0.6, 0.1, 0.2),
-        ),
-      );
-      g.add(
-        new THREE.Mesh(
-          quad(0.16, 0.08, [x, c.floor + 1.5, side * (c.inner - 0.062)], side > 0 ? 'nz' : 'pz'),
-          notice,
-        ),
+      buttons.push(box([0.17, 0.25, 0.03], [x, c.floor + 1.42, side * (c.inner - 0.045)]));
+      callNotices.push(
+        quad(0.16, 0.08, [x, c.floor + 1.5, side * (c.inner - 0.062)], side > 0 ? 'nz' : 'pz'),
       );
     }
   }
+
+  const meshes = [
+    meshOf(bodies, lit(0xc03a2c, 0.5, 0.2, 0.16)),
+    meshOf(buttons, lit(0xe9c33a, 0.6, 0.1, 0.2)),
+    meshOf(extinguisherNotices, printed(noticeTexture('消火器', 'この下にあります', 0xc03a2c))),
+    meshOf(callNotices, printed(noticeTexture('非常通報器', '押すと乗務員を呼べます', 0xc03a2c), 0.2)), // prettier-ignore
+  ];
+  for (const mesh of meshes) if (mesh) g.add(mesh);
   return g;
 }

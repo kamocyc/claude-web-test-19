@@ -39,6 +39,20 @@ import { shadeWithVertexColor } from './interiorShading.ts';
 
 /** 立っている人の傾きの誇張。実物の 5 度では絵として読めないため。 */
 const LEAN_GAIN = 1.9;
+
+/**
+ * 座っている人の膝が、その人の原点（腰の位置）から通路側へ出ている量 [m]。
+ *
+ * ロングシートの奥行きは 430mm しかないのに大腿長は 400mm 前後あるので、
+ * **座れば必ず膝が座席の前縁より前へ出る**。実物の通勤形で通路が狭く感じるのは
+ * 座席の奥行きではなく、この膝のためである。歩くモードの当たり判定
+ * （`walk.ts` の `corridorBounds`）も同じ値を見る——見えている膝を通り抜けたら
+ * その場で嘘になる。
+ */
+export const SEATED_KNEE_REACH = 0.27;
+
+/** 人 1 人が前後に占める幅の半分 [m]（肩幅の半分に少し余裕を見た値） */
+export const SEATED_HALF_WIDTH = 0.24;
 /** 座っている人は背ずりに預けているので、傾きはほとんど出ない */
 const SEATED_LEAN_RATIO = 0.15;
 
@@ -191,7 +205,7 @@ function paint(geometry: THREE.BufferGeometry, base: number): THREE.BufferGeomet
 function darkenBehind(geometry: THREE.BufferGeometry, headY: number): void {
   const position = geometry.getAttribute('position');
   const color = geometry.getAttribute('color') as THREE.BufferAttribute;
-  const hair = new THREE.Color(0x2b2119);
+  const hair = new THREE.Color(HAIR_COLOR);
   for (let i = 0; i < position.count; i++) {
     const x = position.getX(i);
     const y = position.getY(i);
@@ -210,31 +224,49 @@ function darkenBehind(geometry: THREE.BufferGeometry, headY: number): void {
   color.needsUpdate = true;
 }
 
-/** 頭と首と手（肌の色で塗る部位）。髪だけは暗く焼いておく。 */
+/** 髪の色（`instanceColor` の肌色を掛けても暗いままでいる程度に暗くする） */
+const HAIR_COLOR = 0x2b2119;
+
+/**
+ * 頭。
+ *
+ * 人体計測の平均で頭幅 155mm・頭長（前後）200mm・頭高 230mm。顔は作り込まないが、
+ * **目・鼻・耳の当たりだけは置く**——正面から見て肌色の面で終わると、人ではなく
+ * マネキンに見える。逆に言えば、この 3 つがあれば 1m の距離でも人の頭に見える。
+ * 目は `instanceColor`（肌の色）を掛けられても暗いままの色で焼いてある。
+ */
 function headParts(
   headY: number,
   tilt: number,
-  hands: THREE.BufferGeometry[],
+  hands: readonly THREE.BufferGeometry[],
 ): THREE.BufferGeometry {
   const parts: THREE.BufferGeometry[] = [];
-  // 首
-  parts.push(paint(limb([0, headY - 0.16, 0], [0, headY - 0.07, 0], 0.048, 0.045), 0xffffff));
-  // 頭。人体計測の平均で頭幅 155mm・頭長（前後）200mm・頭高 230mm なので、
-  // 球を左右に**細く**前後に長く潰す。ここを球のままにすると、顔を作らない
-  // ぶんだけ余計に「きのこ」に見える。局所 +X が向いている向き。
-  const head = paint(ball([0, headY, 0], 0.0775, [1.29, 1.45, 1.0]), 0xffffff);
-  // 後頭部は髪に覆われている。**顔は作らないので、頭のどこまでが髪かで
+  const wide = 1.24;
+  const tall = 1.4;
+  // 首。実物の首は前へ少し傾いていて、頭は背骨の真上より前に載る。
+  parts.push(paint(limb([-0.012, headY - 0.17, 0], [0, headY - 0.07, 0], 0.05, 0.046), 0xffffff));
+  const head = paint(ball([0, headY, 0], 0.0775, [wide, tall, 1.0]), 0xffffff);
+  // 後頭部は髪に覆われている。**顔を作らないので、頭のどこまでが髪かで
   // 「どちらを向いているか」を読ませる**——顔の無い肌色の球がこちらを向いて
-  // いるより、後頭部の黒がこちらを向いているほうが人に見える。形は増やさず、
-  // 頭の球の後ろ半分を髪の色で塗るだけで足りる。
+  // いるより、後頭部の黒がこちらを向いているほうが人に見える。
   darkenBehind(head, headY);
   parts.push(head);
-  // 髪（頭のてっぺんを覆う殻）。服の色に引きずられないよう暗く焼く。
+  // 髪（頭のてっぺんを覆う殻）
   const hair = new THREE.SphereGeometry(0.0795, 8, 5, 0, Math.PI * 2, 0, Math.PI * 0.62);
-  hair.scale(1.29, 1.45, 1.0);
+  hair.scale(wide, tall, 1.0);
   hair.translate(0, headY, 0);
-  parts.push(paint(hair, 0x2b2119));
-  for (const hand of hands) parts.push(paint(hand, 0xffffff));
+  parts.push(paint(hair, HAIR_COLOR));
+  // 目（瞳孔まで作らない。眼窩の影に見える程度の暗い粒で足りる）
+  for (const s of [-1, 1] as const) {
+    parts.push(paint(ball([0.083, headY + 0.012, s * 0.032], 0.016, [0.45, 0.7, 1.25], 5, 3), 0x2a231e)); // prettier-ignore
+  }
+  // 鼻。横顔の輪郭を決めるのはここで、無いと頭が球のままに見える。
+  parts.push(paint(ball([0.096, headY - 0.014, 0], 0.017, [1.1, 0.95, 0.65], 5, 3), 0xffffff));
+  // 耳（頭幅のいちばん外。帽子や髪より外に出るので輪郭に効く）
+  for (const s of [-1, 1] as const) {
+    parts.push(paint(ball([-0.012, headY + 0.004, s * 0.077], 0.023, [0.5, 1.25, 0.45], 5, 3), 0xffffff)); // prettier-ignore
+  }
+  for (const hand of hands) parts.push(hand);
   const merged = mergeGeometries(parts, false)!;
   if (tilt !== 0) {
     merged.translate(0, -headY, 0);
@@ -242,6 +274,118 @@ function headParts(
     merged.translate(0, headY, 0);
   }
   return merged;
+}
+
+/**
+ * 手。
+ *
+ * 球 1 つでは「腕の先に付いた玉」にしかならない。手のひらの板と、そこから
+ * 出る指の塊 2 つ（親指と残り 4 本）に分けるだけで手に見える。`grip` を
+ * 立てると、吊り革や手すりを握った形（指を丸める）になる。
+ *
+ * @param at 手首の位置
+ * @param dir 手のひらが向いている向き（+1 = 局所 +X 側）
+ */
+function handParts(
+  at: readonly [number, number, number],
+  dir: number,
+  grip: boolean,
+): THREE.BufferGeometry {
+  const [x, y, z] = at;
+  const parts: THREE.BufferGeometry[] = [];
+  const palm = new THREE.BoxGeometry(0.048, 0.078, 0.03);
+  palm.translate(x + dir * 0.01, y - 0.037, z);
+  parts.push(palm);
+  if (grip) {
+    // 握った手。指は手のひらの前で丸まって、親指が反対から回る。
+    const fingers = new THREE.BoxGeometry(0.042, 0.05, 0.036);
+    fingers.translate(x + dir * 0.038, y - 0.055, z);
+    parts.push(fingers);
+    const thumb = new THREE.BoxGeometry(0.026, 0.03, 0.024);
+    thumb.translate(x + dir * 0.02, y - 0.028, z - 0.024);
+    parts.push(thumb);
+  } else {
+    // 開いた手。指 4 本の塊と親指。
+    const fingers = new THREE.BoxGeometry(0.044, 0.062, 0.03);
+    fingers.translate(x + dir * 0.016, y - 0.107, z);
+    parts.push(fingers);
+    const thumb = new THREE.BoxGeometry(0.03, 0.045, 0.022);
+    thumb.translate(x + dir * 0.018, y - 0.06, z - 0.03);
+    parts.push(thumb);
+  }
+  return paint(mergeGeometries(parts, false)!, 0xffffff);
+}
+
+/**
+ * 上半身（骨盤・胴・肩・首の付け根）。
+ *
+ * 1 周目・2 周目は**腰から肩まで太さの変わらない 1 本の円柱**だったので、
+ * 近くで見ると幅の広い板にしか見えなかった。人の胴が板に見えないのは
+ *
+ *  - 腰（幅 280mm）より胸（320mm）が広く、肩（肩峰間 400mm）でさらに広がる
+ *  - その肩の広がりは**胴ではなく肩の稜線**が作っていて、腕は胴の外側に垂れる
+ *
+ * という 2 つのためで、逆に言えばこの 2 つを作れば板には見えなくなる。
+ * 前後（局所 X）は左右より薄いので、部位ごとに潰して楕円断面にする。
+ *
+ * @param hip   骨盤の中心
+ * @param tilt  上体を後ろへ倒す角（座っている人は背ずりの角度だけ寝る）
+ * @returns 形と、腕を生やす肩の位置
+ */
+function upperBody(
+  hip: readonly [number, number],
+  tilt: number,
+): { parts: THREE.BufferGeometry[]; shoulder: (side: number) => [number, number, number] } {
+  const parts: THREE.BufferGeometry[] = [];
+  const [hx, hy] = hip;
+  /** 上体を倒したときの、骨盤からの相対位置 */
+  const up = (along: number, out = 0): [number, number, number] => [
+    hx - Math.sin(tilt) * along + Math.cos(tilt) * out,
+    hy + Math.cos(tilt) * along + Math.sin(tilt) * out,
+    0,
+  ];
+  const squash = (g: THREE.BufferGeometry, k: number): THREE.BufferGeometry => {
+    g.translate(-hx, -hy, 0);
+    g.scale(k, 1, 1);
+    g.translate(hx, hy, 0);
+    return g;
+  };
+
+  // 骨盤（いちばん下。座っていても立っていても幅は変わらない）
+  parts.push(paint(squash(limb(up(-0.09), up(0.08), 0.145, 0.15, 8), 0.74), 0xffffff));
+  // 腰（くびれ）から胸へ
+  parts.push(paint(squash(limb(up(0.06), up(0.34), 0.138, 0.163, 8), 0.62), 0xffffff));
+  // 胸から肩の付け根へ（肩へ向かって少し細る）
+  parts.push(paint(squash(limb(up(0.32), up(0.5), 0.163, 0.142, 8), 0.62), 0xffffff));
+
+  // 肩の稜線。首の付け根から肩峰へ渡す 1 本の丸太で、これが人の輪郭のうち
+  // いちばん人らしいところである（板の上端を水平に切ると衝立に見える）。
+  const yokeY = up(0.47);
+  const yoke = limb([yokeY[0], yokeY[1], -0.135], [yokeY[0], yokeY[1], 0.135], 0.072, 0.072, 6);
+  yoke.scale(0.78, 1, 1);
+  parts.push(paint(yoke, 0xffffff));
+  for (const s of [-1, 1] as const) {
+    parts.push(paint(ball([yokeY[0], yokeY[1], s * 0.135], 0.075, [0.8, 1, 1], 6, 4), 0xffffff));
+  }
+
+  return {
+    parts,
+    shoulder: (side: number) => [yokeY[0], yokeY[1] - 0.02, side * 0.175],
+  };
+}
+
+/** 腕 1 本（上腕・前腕・手）。手だけは肌の側へ渡す。 */
+function arm(
+  shoulder: readonly [number, number, number],
+  elbow: readonly [number, number, number],
+  wrist: readonly [number, number, number],
+  into: THREE.BufferGeometry[],
+  hands: THREE.BufferGeometry[],
+  grip: boolean,
+): void {
+  into.push(paint(limb(shoulder, elbow, 0.052, 0.043), 0xffffff));
+  into.push(paint(limb(elbow, wrist, 0.043, 0.033), 0xffffff));
+  hands.push(handParts(wrist, 1, grip));
 }
 
 /**
@@ -255,37 +399,23 @@ function headParts(
  * @param raised 片手を吊り革へ上げるか
  */
 function standingBody(raised: boolean): BodyParts {
-  const shoulderY = 1.4;
   const hipY = 0.9;
-  const shoulderZ = 0.19;
   const hipZ = 0.095;
   const top: THREE.BufferGeometry[] = [];
   const bottom: THREE.BufferGeometry[] = [];
   const hands: THREE.BufferGeometry[] = [];
 
-  // 胴（腰から肩まで）。円柱を前後に潰して楕円断面にする。
-  const torso = limb([0, hipY - 0.06, 0], [0, shoulderY + 0.02, 0], 0.17, 0.185, 8);
-  torso.scale(0.66, 1, 1);
-  top.push(paint(torso, 0xffffff));
-  // 肩の丸み
-  for (const s of [-1, 1] as const) top.push(paint(ball([0, shoulderY, s * shoulderZ], 0.06, [1, 1, 1], 6, 4), 0xffffff)); // prettier-ignore
+  const body = upperBody([0, hipY], 0);
+  top.push(...body.parts);
 
   for (const s of [-1, 1] as const) {
-    const shoulder: [number, number, number] = [0, shoulderY, s * shoulderZ];
+    const shoulder = body.shoulder(s);
     if (raised && s > 0) {
-      // 吊り革を握る腕。肘は外へ張り、手は頭の上あたりへ来る。
-      const elbow: [number, number, number] = [0.02, 1.55, s * 0.25];
-      const wrist: [number, number, number] = [0, 1.69, s * 0.15];
-      top.push(paint(limb(shoulder, elbow, 0.05, 0.042), 0xffffff));
-      top.push(paint(limb(elbow, wrist, 0.042, 0.034), 0xffffff));
-      hands.push(ball(wrist, 0.042, [1, 1, 1], 5, 3));
+      // 吊り革を握る腕。肘は外へ張り、手は頭の上あたりで握りをつかむ。
+      arm(shoulder, [0.03, 1.55, s * 0.245], [0.005, 1.68, s * 0.15], top, hands, true);
     } else {
-      // 垂らした腕。体側にぴったり付けると板に見えるので、少し外へ開く。
-      const elbow: [number, number, number] = [0.02, 1.1, s * (shoulderZ + 0.02)];
-      const wrist: [number, number, number] = [0.06, 0.84, s * (shoulderZ + 0.03)];
-      top.push(paint(limb(shoulder, elbow, 0.05, 0.042), 0xffffff));
-      top.push(paint(limb(elbow, wrist, 0.042, 0.034), 0xffffff));
-      hands.push(ball(wrist, 0.04, [1, 1, 1], 5, 3));
+      // 垂らした腕。**胴の外側**へ出す（胴の中に埋めると腕が消えて板に見える）。
+      arm(shoulder, [0.025, 1.09, s * 0.2], [0.06, 0.83, s * 0.205], top, hands, false);
     }
   }
 
@@ -312,51 +442,45 @@ function standingBody(raised: boolean): BodyParts {
  *
  * ロングシートは座面 430mm・奥行き 430mm と浅く、背ずりが 12 度倒れている
  * （`INTERIOR.seatBackTilt`）ので、背中を預けると上体もその角度で寝る。
- * 膝から先は通路へ出るため、**通路の広さは実際には座っている人の膝で決まる**。
+ * **膝から先は通路へ出る**——座面の奥行きより大腿長（約 400mm）のほうが長いので、
+ * 座れば必ず膝が前へ出る。この出っ張りは歩くときの当たり判定にも効くので、
+ * `SEATED_KNEE_REACH` として外へ出してある。
+ *
  * 局所座標の +X は座っている人が向いている向き（通路側）。
  */
 function seatedBody(): BodyParts {
   const seat = INTERIOR.seatHeight;
   const tilt = INTERIOR.seatBackTilt;
-  const hip: [number, number, number] = [-0.06, seat + 0.04, 0];
-  const shoulderY = seat + 0.58;
-  const shoulderX = hip[0] - Math.sin(tilt) * 0.54;
-  const shoulderZ = 0.17;
   const top: THREE.BufferGeometry[] = [];
   const bottom: THREE.BufferGeometry[] = [];
   const hands: THREE.BufferGeometry[] = [];
 
-  // 胴。立っている人と同じく前後（局所 X）に潰して楕円断面にする。丸のままだと
-  // 背中が座席の背ずりを突き抜け、膝が通路の半分まで出てしまう。
-  const torso = limb(hip, [shoulderX, shoulderY + 0.02, 0], 0.175, 0.185, 8);
-  torso.scale(0.66, 1, 1);
-  top.push(paint(torso, 0xffffff));
-  for (const s of [-1, 1] as const) top.push(paint(ball([shoulderX, shoulderY, s * shoulderZ], 0.06, [1, 1, 1], 6, 4), 0xffffff)); // prettier-ignore
+  // 尻は座面の上。背中を背ずりへ預けるので、骨盤は座面の奥寄りに来る。
+  const body = upperBody([-0.055, seat + 0.09], tilt);
+  top.push(...body.parts);
 
   for (const s of [-1, 1] as const) {
-    const shoulder: [number, number, number] = [shoulderX, shoulderY, s * shoulderZ];
-    // 腕は膝の上へ。座っている人はたいてい手を膝か鞄の上に置いている。
-    const elbow: [number, number, number] = [-0.06, seat + 0.2, s * (shoulderZ + 0.02)];
-    const wrist: [number, number, number] = [0.16, seat + 0.09, s * (shoulderZ - 0.02)];
-    top.push(paint(limb(shoulder, elbow, 0.055, 0.045), 0xffffff));
-    top.push(paint(limb(elbow, wrist, 0.045, 0.036), 0xffffff));
-    hands.push(ball(wrist, 0.042, [1, 1, 1], 5, 3));
+    const shoulder = body.shoulder(s);
+    // 肘は体側、手は**腿の上**。座っている人はたいてい手を膝か鞄の上に置いて
+    // いる。手首を腿から離すと、手だけが宙に浮いた白い塊に見える。
+    arm(shoulder, [-0.075, seat + 0.26, s * 0.2], [0.055, seat + 0.145, s * 0.135], top, hands, false); // prettier-ignore
   }
 
-  // 膝から先は通路へ出る。座席の奥行きが 430mm しかないので、太ももが
-  // 座面に収まりきらないのが実物である（座っている人が足を引くのはこのため）。
+  // 大腿と脛を分けて折る。座面の前縁で折れて、膝から下は床へ落ちる。
   for (const s of [-1, 1] as const) {
-    const knee: [number, number, number] = [0.19, seat + 0.02, s * 0.11];
-    bottom.push(paint(limb([hip[0], seat + 0.02, s * 0.1], knee, 0.09, 0.075), 0xffffff));
-    bottom.push(paint(limb(knee, [0.21, 0.075, s * 0.115], 0.075, 0.05), 0xffffff));
+    const knee: [number, number, number] = [SEATED_KNEE_REACH - 0.05, seat + 0.015, s * 0.105];
+    bottom.push(paint(limb([-0.05, seat + 0.02, s * 0.095], knee, 0.095, 0.078), 0xffffff));
+    bottom.push(paint(limb(knee, [SEATED_KNEE_REACH - 0.045, 0.075, s * 0.11], 0.078, 0.052), 0xffffff)); // prettier-ignore
     const shoe = new THREE.BoxGeometry(0.25, 0.07, 0.1);
-    shoe.translate(0.24, 0.037, s * 0.115);
+    shoe.translate(SEATED_KNEE_REACH - 0.01, 0.037, s * 0.11);
     bottom.push(paint(shoe, 0x1a1a1c));
   }
 
   // 頭は少し下を向く（座っている人はたいてい手元を見ている）
+  const head = headParts(seat + 0.79, -tilt * 0.4, hands);
+  head.translate(-0.055 - Math.sin(tilt) * 0.62, 0, 0);
   return {
-    skin: headParts(seat + 0.75, -tilt * 0.4, hands).translate(shoulderX, 0, 0),
+    skin: head,
     top: mergeGeometries(top, false)!,
     bottom: mergeGeometries(bottom, false)!,
   };
@@ -469,6 +593,40 @@ function placePassengers(
   return out;
 }
 
+/**
+ * 座っている人の居場所（当たり判定用）。
+ *
+ * `buildPassengers` が置くのとまったく同じ割り付けを返す。割り付けは
+ * seed（＝編成の何両目か）と混雑率だけで決まるので、**描画と当たり判定が
+ * 別々に呼んでも必ず同じ答えになる**。人の居場所を持ち回す配線を増やさずに
+ * 「見えている膝を通り抜けない」を成り立たせるのに、この決定論を使っている。
+ */
+export interface SeatedOccupant {
+  /** 車体局所系の前後位置 [m] */
+  readonly x: number;
+  /** どちら側の座席か（+1 = 右 / -1 = 左） */
+  readonly side: -1 | 1;
+  /** 膝の前縁の位置（車体中心からの距離）[m] */
+  readonly kneeReach: number;
+}
+
+export function seatedOccupants(
+  layout: CarLayout,
+  bays: readonly SeatBay[],
+  index: number,
+  loadFactor: number,
+): SeatedOccupant[] {
+  return placePassengers(layout, bays, loadFactor, index + 1)
+    .filter((p) => p.posture === 'seated')
+    .map((p) => ({
+      x: p.x,
+      side: p.z > 0 ? 1 : -1,
+      // 局所 +X（座っている人が向いている向き）は通路側なので、車体中心から
+      // 見た膝の位置は「腰の位置 − 膝の出っ張り」になる。
+      kneeReach: Math.abs(p.z) - SEATED_KNEE_REACH,
+    }));
+}
+
 // --- 組み立て -------------------------------------------------------------
 
 /** 部位ごとの `InstancedMesh` を作る */
@@ -514,7 +672,9 @@ export function buildPassengers(
     stand: standingBody(false),
   };
   const materials: THREE.MeshStandardMaterial[] = [];
-  const makeMaterial = (roughness: number): THREE.MeshStandardMaterial => {
+  /** 車ごとの明るさを掛ける前の自己発光の強さ */
+  const base: number[] = [];
+  const makeMaterial = (roughness: number, glow = 0.19): THREE.MeshStandardMaterial => {
     const material = shadeWithVertexColor(
       new THREE.MeshStandardMaterial({
         color: 0xffffff,
@@ -523,13 +683,15 @@ export function buildPassengers(
         // 車内と同じ考え方で、面そのものをわずかに光らせて「照らされている」
         // ことにする（`interior.ts` の `lit()` と同じ値の並び）
         emissive: 0xffffff,
-        emissiveIntensity: 0.19,
+        emissiveIntensity: glow,
       }),
     );
     materials.push(material);
+    base.push(glow);
     return material;
   };
-  const skinMaterial = makeMaterial(0.72);
+  // 肌は服より明るいので、同じ自己発光にすると顔だけが光って見える
+  const skinMaterial = makeMaterial(0.72, 0.15);
   const clothMaterial = makeMaterial(0.92);
 
   const standing: Array<{ mesh: THREE.InstancedMesh; people: Placement[] }> = [];
@@ -602,7 +764,7 @@ export function buildPassengers(
     group,
     update,
     setBrightness(k: number): void {
-      for (const material of materials) material.emissiveIntensity = 0.19 * k;
+      for (const [i, material] of materials.entries()) material.emissiveIntensity = base[i]! * k;
     },
     dispose(): void {
       group.traverse((node) => {

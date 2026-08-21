@@ -2,7 +2,17 @@ import { describe, expect, it } from 'vitest';
 import type { VehicleSpec } from '@railsim/core';
 import { CAR, INTERIOR } from '../src/render/dimensions.ts';
 import { carLayout, seatBays, subtractSpans, windowPanes } from '../src/render/interior.ts';
-import { confine, corridorHalfWidth, longitudinalLimits } from '../src/render/walk.ts';
+import {
+  confine,
+  corridorBounds,
+  corridorHalfWidth,
+  longitudinalLimits,
+} from '../src/render/walk.ts';
+import {
+  SEATED_KNEE_REACH,
+  seatedOccupants,
+  type SeatedOccupant,
+} from '../src/render/interiorPassengers.ts';
 import { WALK_BINDINGS, KEY_BINDINGS, lookupWalkKey } from '../src/input/keymap.ts';
 
 /**
@@ -207,6 +217,86 @@ describe('歩行のキー', () => {
     for (const key of Object.keys(WALK_BINDINGS)) {
       const action = KEY_BINDINGS[key];
       if (action) expect(action.kind).not.toBe('ui');
+    }
+  });
+});
+
+/**
+ * 座っている人の膝。
+ *
+ * 見えている膝を通り抜けたら、その場で嘘になる。当たり判定は描画とまったく
+ * 同じ割り付け（`seatedOccupants`）を引くので、**人が座っているところだけ**
+ * 通路が狭くなる。
+ */
+describe('座っている人の膝', () => {
+  const layout = carLayout(SPEC, false, false);
+  const bays = seatBays(layout);
+  const inner = INTERIOR.width / 2;
+  const bay = bays[1] ?? bays[0]!;
+  const seat = (side: -1 | 1): SeatedOccupant => ({
+    x: (bay.from + bay.to) / 2,
+    side,
+    kneeReach: inner - INTERIOR.seatDepth + 0.02 - SEATED_KNEE_REACH,
+  });
+
+  it('誰も座っていなければ座席の前縁まで寄れる', () => {
+    const x = (bay.from + bay.to) / 2;
+    const bounds = corridorBounds(layout, bays, [], x);
+    expect(bounds.right).toBeCloseTo(corridorHalfWidth(layout, bays, x), 6);
+    expect(bounds.left).toBeCloseTo(-corridorHalfWidth(layout, bays, x), 6);
+  });
+
+  it('座っている側だけ通路が狭くなる', () => {
+    const x = (bay.from + bay.to) / 2;
+    const bounds = corridorBounds(layout, bays, [seat(1)], x);
+    expect(bounds.right).toBeLessThan(corridorHalfWidth(layout, bays, x));
+    // 反対側は空いたまま
+    expect(bounds.left).toBeCloseTo(-corridorHalfWidth(layout, bays, x), 6);
+  });
+
+  it('離れたところの膝は効かない', () => {
+    const x = (bay.from + bay.to) / 2 + 1.5;
+    const bounds = corridorBounds(layout, bays, [seat(1)], x);
+    expect(bounds.right).toBeCloseTo(corridorHalfWidth(layout, bays, x), 6);
+  });
+
+  it('膝を通り抜けない', () => {
+    const x = (bay.from + bay.to) / 2;
+    const knees = [seat(1)];
+    // 右の壁へ向かって突っ込む
+    const result = confine(layout, bays, x, 5, INTERIOR.bodyRadius, knees);
+    expect(result.z).toBeLessThanOrEqual(knees[0]!.kneeReach - INTERIOR.bodyRadius + 1e-9);
+  });
+
+  it('両側に座られても通路は残る（膝どうしの間は 1.4m ある）', () => {
+    const x = (bay.from + bay.to) / 2;
+    const knees = [seat(1), seat(-1)];
+    const bounds = corridorBounds(layout, bays, knees, x);
+    // 膝から膝まで。ここが体の幅（480mm）を割ると誰も通れなくなる。
+    expect(bounds.right - bounds.left).toBeGreaterThan(2 * INTERIOR.bodyRadius);
+    const result = confine(layout, bays, x, 5, INTERIOR.bodyRadius, knees);
+    expect(result.z).toBeLessThanOrEqual(bounds.right - INTERIOR.bodyRadius + 1e-9);
+  });
+
+  it('通れないほど詰まったら真ん中で止める（すり抜けさせない）', () => {
+    const x = (bay.from + bay.to) / 2;
+    // 体の幅より狭い隙間を作って、押し合いになる場合を確かめる
+    const tight: SeatedOccupant[] = [
+      { x, side: 1, kneeReach: 0.1 },
+      { x, side: -1, kneeReach: 0.1 },
+    ];
+    const result = confine(layout, bays, x, 5, INTERIOR.bodyRadius, tight);
+    expect(Math.abs(result.z)).toBeLessThan(0.05);
+  });
+
+  it('描画と当たり判定は同じ割り付けを引く（決定論）', () => {
+    const a = seatedOccupants(layout, bays, 2, 0.5);
+    const b = seatedOccupants(layout, bays, 2, 0.5);
+    expect(a).toEqual(b);
+    expect(a.length).toBeGreaterThan(0);
+    // 膝は必ず座席の前縁より通路側にある
+    for (const person of a) {
+      expect(person.kneeReach).toBeLessThan(inner - INTERIOR.seatDepth);
     }
   });
 });
