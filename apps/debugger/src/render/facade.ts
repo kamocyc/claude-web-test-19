@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { FACADE } from './dimensions.ts';
 
 /**
  * 建物の外皮のうち、**壁面から出っ張っているもの**。
@@ -31,11 +32,8 @@ import * as THREE from 'three';
  *
  * ## 寸法の出どころ
  *
- * - アルミサッシの外付け出寸法 50mm、枠見込み 90mm — 住宅用サッシの標準。
- * - 窓庇（後付けのアルミ庇）の出 300mm。
- * - ベランダの床の出 950mm、手すり壁の高さ 1100mm — 建築基準法施行令 126 条が
- *   屋上・バルコニーの手すりを 1100mm 以上と定めているので、実物はほぼこの高さ。
- * - 団地の階高 2800mm（`textures.ts` の外壁テクスチャが 2 階ぶん 5600mm）。
+ * 実寸は `dimensions.ts` の `FACADE`（出典つき）に集めてある。ここはその値を
+ * 使って形を組むだけで、数値そのものは持たない。
  */
 
 /** 外壁テクスチャ 1 枚の中の開口（正規化座標。u は左→右、v は下→上） */
@@ -48,30 +46,22 @@ export interface Opening {
   readonly hood?: boolean;
 }
 
-/** 出っ張りの寸法 [m] */
+/** 出っ張りの寸法 [m]（出どころは `dimensions.ts` の `FACADE`） */
 const SASH = {
-  /** 枠の見込み（壁からの厚み全体） */
-  jamb: 0.09,
-  /** 枠が壁の外へ出る量 */
-  reveal: 0.05,
-  /** 枠の見付け（ガラスを囲む縁の幅） */
-  border: 0.06,
-  /** 庇の出と厚み */
-  hoodDepth: 0.3,
-  hoodThickness: 0.05,
+  jamb: FACADE.sashJamb,
+  reveal: FACADE.sashReveal,
+  border: FACADE.sashBorder,
+  hoodDepth: FACADE.hoodDepth,
+  hoodThickness: FACADE.hoodThickness,
 } as const;
 
 /** ベランダの寸法 [m] */
 const BALCONY = {
-  /** 床の出 */
-  depth: 0.95,
-  /** 床スラブの厚み */
-  slab: 0.14,
-  /** 手すり壁の高さと厚み */
-  railHeight: 1.05,
-  railThickness: 0.1,
-  /** 階高 */
-  floorHeight: 2.8,
+  depth: FACADE.balconyDepth,
+  slab: FACADE.balconySlab,
+  railHeight: FACADE.balconyRailHeight,
+  railThickness: FACADE.balconyRailThickness,
+  floorHeight: FACADE.floorHeight,
   /** 1 階の床（＝地面）からベランダ床までの立ち上がり */
   base: 0.05,
 } as const;

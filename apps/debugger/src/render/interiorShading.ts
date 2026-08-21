@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 
 /**
  * 客室の**接地の陰**を頂点色に焼き込む。
@@ -197,6 +198,52 @@ export function fillWhite(geometry: THREE.BufferGeometry): void {
     'color',
     new THREE.BufferAttribute(new Float32Array(position.count * 3).fill(1), 3),
   );
+}
+
+/**
+ * 形をまとめる（`mergeGeometries` の安全な入口）。
+ *
+ * ## なぜ包むのか
+ *
+ * `mergeGeometries` は**まとめる形の属性がひとつでも食い違うと、例外ではなく
+ * `null` を返す**。返ってきた `null` をそのまま `new THREE.Mesh()` へ渡すと
+ * `TypeError` になり、そこで内装の組み立てが止まって**客室まるごとが消える**。
+ * 実際、接地の陰を焼いた形（`color` を持つ）と焼いていない形（持たない）を
+ * 同じ配列に混ぜてしまい、天候を切り替えてシーンを組み直したときに車内が
+ * 消える不具合を出した。
+ *
+ * ここでは
+ *
+ *  1. ひとつでも `color` を持つなら、持たない形へ白（掛けても変わらない色）を
+ *     入れて**属性を揃えてから**まとめる
+ *  2. それでも失敗したら、**何をまとめようとして失敗したか**を出したうえで
+ *     `null` を返す（呼び出し側はその塊だけを飛ばして残りを組み立てる）
+ *
+ * の 2 段で守る。1 が本筋で、2 は次に別の属性で食い違ったときに**黙って
+ * 車内が消えないようにする**ための保険である。
+ *
+ * @param parts まとめる形
+ * @param where 失敗したときに出す、呼び出し元の名前
+ */
+export function mergeParts(
+  parts: readonly THREE.BufferGeometry[],
+  where: string,
+): THREE.BufferGeometry | null {
+  if (parts.length === 0) return null;
+  // 1 つでも頂点色を持つなら、持たない形に白を入れて揃える
+  if (parts.some((part) => part.getAttribute('color'))) {
+    for (const part of parts) fillWhite(part);
+  }
+  const merged = mergeGeometries(parts as THREE.BufferGeometry[], false);
+  if (!merged) {
+    // 属性の食い違いは形を見ないと分からないので、並びごと出す
+    const shapes = parts
+      .map((part, i) => `${i}: ${Object.keys(part.attributes).sort().join('+')}`)
+      .join(', ');
+    console.error(`interior: ${where} の形をまとめられませんでした（${shapes}）`);
+    return null;
+  }
+  return merged;
 }
 
 /**

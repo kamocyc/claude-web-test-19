@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import type { BodyMotionState } from '@railsim/core';
 import { CAR, INTERIOR } from './dimensions.ts';
-import { seatBays, type CarInterior, type CarLayout } from './interior.ts';
+import { seatBays, type CarInterior, type CarLayout, type SeatBay } from './interior.ts';
 import { SEATED_HALF_WIDTH, seatedOccupants, type SeatedOccupant } from './interiorPassengers.ts';
 
 /**
@@ -202,25 +202,30 @@ export class Walker {
   private lastSteps = 0;
   /** よろけの残り [rad]（踏み出しの瞬間に立ち、指数で減る） */
   private lurch = 0;
-  private readonly bays: Array<readonly { from: number; to: number }[]> = [];
+  private readonly bays: Array<readonly SeatBay[]> = [];
   /** 車ごとの「座っている人」。膝を通り抜けないために持つ。 */
   private readonly seated: SeatedOccupant[][] = [];
 
-  /**
-   * @param layouts 編成の各車の客室の割り付け
-   * @param loadFactor 混雑率。**描画側と同じ値を渡すこと**——乗客の割り付けは
-   *   これと編成の位置だけで決まるので、同じ値なら同じ人が同じ席に座る。
-   */
-  constructor(
-    private readonly layouts: readonly CarLayout[],
-    loadFactor = 0,
-  ) {
-    for (const [index, layout] of layouts.entries()) {
-      const bays = seatBays(layout);
-      this.bays.push(bays);
-      this.seated.push(seatedOccupants(layout, bays, index, loadFactor));
+  constructor(private readonly layouts: readonly CarLayout[]) {
+    for (const layout of layouts) {
+      this.bays.push(seatBays(layout));
+      this.seated.push([]);
     }
     this.reset();
+  }
+
+  /**
+   * 1 両ぶんの「座っている人」を取り直す。
+   *
+   * **描画側（`CarInterior.setPlacement`）とまったく同じ `seed` と
+   * `loadFactor` を渡すこと。**乗客の割り付けはこの 2 つだけで決まるので、
+   * 同じ値を渡すかぎり、見えている膝と当たり判定は必ず一致する。駅で顔ぶれが
+   * 入れ替わってもこの性質は変わらない。
+   */
+  setSeating(carIndex: number, seed: number, loadFactor: number): void {
+    const layout = this.layouts[carIndex];
+    if (!layout) return;
+    this.seated[carIndex] = seatedOccupants(layout, this.bays[carIndex] ?? [], seed, loadFactor);
   }
 
   /** 編成の中ほど（2 両目の中央）に立たせる。歩き始めの位置。 */

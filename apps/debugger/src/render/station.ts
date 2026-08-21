@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import type { CompiledRoute } from '@railsim/core';
-import { PLATFORM } from './dimensions.ts';
+import { PLATFORM, STATION } from './dimensions.ts';
 import { frameQuaternion, meterBox, meterPlane } from './geometry.ts';
 import type { TrackFrame } from './frame.ts';
 import {
@@ -37,10 +37,8 @@ import {
  *
  * ## 寸法の出どころ
  *
- * - 自動改札機 1 通路 — 幅 550mm・長さ 1800mm・高さ 1000mm（通路の有効幅 600mm、
- *   車椅子対応の広い通路は 900mm）。実物の据付図の標準値。
- * - 木造平屋の駅舎 — 桁行き 9m・梁間 5m・軒高 2.9m。地方の交換駅の標準的な大きさ。
- * - 車止め（第 1 種車止め・盛土式ではない鋼製） — レール面上 900mm の緩衝板。
+ * 実寸は `dimensions.ts` の `STATION`（出典つき）に集めてある。ここはその値を
+ * 使って形を組むだけで、数値そのものは持たない。
  */
 
 /** 駅に建つものの組み合わせ */
@@ -292,9 +290,7 @@ function stationMaterials(): StationMaterials {
  */
 function woodenStation(m: StationMaterials): THREE.Group {
   const group = new THREE.Group();
-  const w = 9;
-  const d = 5;
-  const h = 2.9;
+  const { width: w, depth: d, height: h } = STATION.hut;
   const body = new THREE.Mesh(meterBox(w, h, d), m.siding);
   body.position.y = h / 2;
   group.add(body);
@@ -330,9 +326,7 @@ function woodenStation(m: StationMaterials): THREE.Group {
  */
 function groundStation(m: StationMaterials): THREE.Group {
   const group = new THREE.Group();
-  const w = 16;
-  const d = 8;
-  const h = 7;
+  const { width: w, depth: d, height: h } = STATION.ground;
   const body = new THREE.Mesh(meterBox(w, h, d), m.concrete);
   body.position.y = h / 2;
   group.add(body);
@@ -380,8 +374,7 @@ function groundStation(m: StationMaterials): THREE.Group {
  */
 function terminusStation(m: StationMaterials, width: number): THREE.Group {
   const group = new THREE.Group();
-  const d = 12;
-  const h = 11;
+  const { depth: d, height: h } = STATION.terminus;
   const body = new THREE.Mesh(meterBox(width, h, d), m.concrete);
   body.position.y = h / 2;
   group.add(body);
@@ -423,9 +416,9 @@ function terminusStation(m: StationMaterials, width: number): THREE.Group {
  */
 function overheadStation(m: StationMaterials, span: number): THREE.Group {
   const group = new THREE.Group();
-  const w = 18;
+  const w = STATION.overhead.width;
   const d = Math.abs(span) + 12;
-  const h = 3.8;
+  const h = STATION.overhead.height;
   const body = new THREE.Mesh(meterBox(w, h, d), m.concrete);
   body.position.y = h / 2;
   group.add(body);
@@ -452,12 +445,15 @@ function overheadStation(m: StationMaterials, span: number): THREE.Group {
 function ticketGates(m: StationMaterials, lanes: number): THREE.Group {
   const group = new THREE.Group();
   const body = new THREE.MeshStandardMaterial({ color: 0xbfc4c8, metalness: 0.3, roughness: 0.45 });
-  const pitch = 1.15;
+  const pitch = STATION.gatePitch;
   const total = lanes * pitch;
   for (let i = 0; i <= lanes; i++) {
     const x = -total / 2 + i * pitch;
-    const unit = new THREE.Mesh(new THREE.BoxGeometry(0.55, 1.0, 1.8), body);
-    unit.position.set(x, 0.5, 0);
+    const unit = new THREE.Mesh(
+      new THREE.BoxGeometry(STATION.gateWidth, STATION.gateHeight, STATION.gateLength),
+      body,
+    );
+    unit.position.set(x, STATION.gateHeight / 2, 0);
     group.add(unit);
     // 読み取り部（上面の緑の光）
     const reader = new THREE.Mesh(
@@ -465,7 +461,7 @@ function ticketGates(m: StationMaterials, lanes: number): THREE.Group {
       new THREE.MeshBasicMaterial({ color: 0x35c26a }),
     );
     reader.rotation.x = -Math.PI / 2;
-    reader.position.set(x, 1.005, 0.5);
+    reader.position.set(x, STATION.gateHeight + 0.005, 0.5);
     group.add(reader);
   }
   // 改札上の案内表示器（自ら光る面）
@@ -511,15 +507,18 @@ function ticketGates(m: StationMaterials, lanes: number): THREE.Group {
  */
 function platformStair(m: StationMaterials, rise: number): THREE.Group {
   const group = new THREE.Group();
-  const steps = Math.max(1, Math.round(rise / 0.17));
+  const steps = Math.max(1, Math.round(rise / STATION.riser));
   const width = 2.2;
   for (let i = 0; i < steps; i++) {
-    const step = new THREE.Mesh(new THREE.BoxGeometry(width, 0.17, 0.3), m.concrete);
-    step.position.set(0, rise - (i + 0.5) * 0.17, -(i + 0.5) * 0.3);
+    const step = new THREE.Mesh(
+      new THREE.BoxGeometry(width, STATION.riser, STATION.tread),
+      m.concrete,
+    );
+    step.position.set(0, rise - (i + 0.5) * STATION.riser, -(i + 0.5) * STATION.tread);
     group.add(step);
   }
-  // 手すり（高さ 850mm。段の勾配に沿って傾ける）
-  const run = steps * 0.3;
+  // 手すり（笠木は高さ 1100mm。段の勾配に沿って傾ける）
+  const run = steps * STATION.tread;
   const slope = Math.atan2(rise, run);
   for (const sign of [-1, 1] as const) {
     const rail = new THREE.Mesh(
@@ -527,13 +526,13 @@ function platformStair(m: StationMaterials, rise: number): THREE.Group {
       m.steel,
     );
     rail.rotation.x = Math.PI / 2 - slope;
-    rail.position.set((sign * width) / 2, rise / 2 + 0.85, -run / 2);
+    rail.position.set((sign * width) / 2, rise / 2 + STATION.railHeight, -run / 2);
     group.add(rail);
     // 手すりの支柱
     for (let i = 0; i <= 3; i++) {
       const t = i / 3;
-      const post = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.85, 0.04), m.steel);
-      post.position.set((sign * width) / 2, rise * (1 - t) + 0.42, -run * t);
+      const post = new THREE.Mesh(new THREE.BoxGeometry(0.04, STATION.railHeight, 0.04), m.steel);
+      post.position.set((sign * width) / 2, rise * (1 - t) + STATION.railHeight / 2, -run * t);
       group.add(post);
     }
   }
@@ -562,7 +561,7 @@ function bufferStop(m: StationMaterials): THREE.Group {
   }
   // 緩衝板（列車の連結器が当たる面）
   const buffer = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.5, 1.4), frame);
-  buffer.position.set(0.6, 0.7, 0);
+  buffer.position.set(0.6, STATION.bufferHeight, 0);
   group.add(buffer);
   // 反射板（赤白の斜め縞。夜間これだけが見える）
   const board = new THREE.Mesh(
@@ -574,7 +573,7 @@ function bufferStop(m: StationMaterials): THREE.Group {
     }),
   );
   board.rotation.y = -Math.PI / 2;
-  board.position.set(0.72, 1.35, 0);
+  board.position.set(0.72, STATION.bufferBoardHeight, 0);
   group.add(board);
   const mast = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.7, 0.08), m.steel);
   mast.position.set(0.6, 1.15, 0);

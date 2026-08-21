@@ -920,7 +920,9 @@ function buildVegetation(
   look: WeatherLook,
 ): THREE.Object3D[] {
   const out: THREE.Object3D[] = [];
-  const cards = leafCardTexture();
+  // 積もる天気では葉の絵ごと差し替える。材質の色を白へ寄せても、
+  // 掛け算では緑は消えない（`leafCardTexture` を参照）
+  const cards = leafCardTexture(look.surface.mix > 0.5);
   /**
    * 葉の材質。
    *
@@ -1516,6 +1518,8 @@ export function buildOuterGround(
   const positions: number[] = [];
   const uvs: number[] = [];
   const colors: number[] = [];
+  /** 各頂点の軌道からの距離 [m]。線路際の格子を捨てるのに使う */
+  const distances: number[] = [];
   const tint = new THREE.Color();
   for (let j = 0; j <= nz; j++) {
     for (let i = 0; i <= nx; i++) {
@@ -1544,7 +1548,22 @@ export function buildOuterGround(
         Math.sin(x / 1330 - z / 970 + 1.7) * 11 +
         Math.sin(x / 260 + z / 310 + 4.1) * 2.2;
       height += swell * far;
-      positions.push(x, height - OUTER.drop, z);
+      /**
+       * 線路の近くほど深く沈める。
+       *
+       * **これが無いと、勾配の変わり目で遠景の地表が線路を埋める。**加重平均は
+       * 前後の標本を混ぜるので、平坦区間から 25‰ の登りが始まる点では
+       * 「これから登る先の高さ」に引かれて、その場の地面より 1〜2m 高い値が出る。
+       * 手前の板（軌道に貼り付いた ±260m）より高くなった瞬間、道床もレールも
+       * 遠景の板の下に潜って見えなくなる（実際そうなった）。
+       *
+       * 軌道から 300m 以内を最大 8m 沈めておけば、加重平均がどれだけ外れても
+       * 手前の板が必ず勝つ。沈めた面は手前の板に隠れて見えないので、絵には出ない。
+       */
+      const nearMetres = Math.sqrt(nearest);
+      const sink = OUTER.drop + OUTER.sink * Math.max(0, 1 - nearMetres / OUTER.sinkReach);
+      distances.push(nearMetres);
+      positions.push(x, height - sink, z);
       // UV は m 単位（手前の板と同じ尺度）。継ぎ目で草の大きさが変わらない
       uvs.push(x, z);
       // 遠景なので色のむらは大きく取る。細かくしても霞に消える
@@ -1562,6 +1581,11 @@ export function buildOuterGround(
   for (let j = 0; j < nz; j++) {
     for (let i = 0; i < nx; i++) {
       const a = j * stride + i;
+      const corners = [a, a + 1, a + stride, a + stride + 1];
+      // 四隅がすべて手前の板の内側にある升目は描かない。**そこは手前の板が
+      // 受け持っている**ので、描いても隠れるか、悪ければ線路を埋める。
+      // 1 隅でも外にある升目は残すので、継ぎ目に穴は空かない。
+      if (corners.every((k) => distances[k]! < OUTER.skipWithin)) continue;
       indices.push(a, a + stride, a + 1, a + 1, a + stride, a + stride + 1);
     }
   }
@@ -1605,14 +1629,32 @@ const WHITE = new THREE.Color(1, 1, 1);
 const OUTER = {
   /** 軌道の高さから地表までの落差（手前の板と同じ -1.2m） */
   trackLevel: -1.2,
-  /** 手前の板と重ならないよう、さらに下げる量 [m] */
-  drop: 2.0,
+  /**
+   * 手前の板と重ならないよう、さらに下げる量 [m]。
+   *
+   * 手前の板は軌道の高さを追い、こちらは標本の加重平均なので、境目（横 260m）で
+   * 数十 cm ずれることがある。下げておけば必ず手前が勝つ。下げすぎると
+   * 俯瞰から見たときに段差として見えるので、1m 弱に留める。
+   */
+  drop: 0.9,
   /** 格子の 1 マス [m] */
   cell: 220,
   /** 路線の外接矩形をどれだけ広げるか [m] */
   reach: 4200,
   /** 逆距離加重の平滑化半径 [m] */
-  soften: 300,
+  soften: 200,
+  /**
+   * 軌道の近くを余分に沈める深さ [m] と、その及ぶ範囲 [m]。
+   *
+   * 範囲は手前の板の縁（横 260m）にほぼ合わせてある。ここを広く取ると、
+   * 継ぎ目のところで遠景の地表が数 m 下がり、**俯瞰から見たときに段差**として
+   * 見えてしまう。縁でちょうど 0 に戻るようにしておけば、沈みは手前の板の
+   * 下でだけ効く。
+   */
+  sink: 7,
+  sinkReach: 270,
+  /** 四隅がこれより軌道に近い升目は描かない [m]（手前の板が受け持つ範囲） */
+  skipWithin: 200,
 } as const;
 
 /**

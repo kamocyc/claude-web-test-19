@@ -19,6 +19,7 @@ import { DriverDesk } from './input/keyboard.ts';
 import { createCabInterior } from './render/cab.ts';
 import type { CarInterior } from './render/interior.ts';
 import { CarShells, Walker } from './render/walk.ts';
+import { boardingLoadFactor } from './render/interiorPassengers.ts';
 import { Precipitation } from './render/precipitation.ts';
 import { CAMERA_LABEL, CAMERA_MODES, CameraRig, type CameraMode } from './render/cameras.ts';
 import { Presenter } from './render/renderer.ts';
@@ -197,23 +198,44 @@ interface InteriorView {
 
 function createInteriorView(): InteriorView {
   const cars = scene.cars;
-  // 編成の何両目かと混雑率をここで教える。`scene.ts` は内装を組むだけで
-  // 編成の中の位置を知らないが、乗客の座り方と照明の明るさは車ごとに
-  // 違わなければならない（同じだと貫通路の先に同じ絵が並んで模型に見える）。
-  for (let i = 0; i < cars.length; i++) {
-    cars[i]!.interior.setPlacement(i, sim.scenario.loadFactor);
-  }
-  return {
+  const view: InteriorView = {
     cars,
-    // 混雑率は描画側（`setPlacement`）と同じ値を渡す。歩行者が膝を
-    // 通り抜けないのは、両者が同じ割り付けを引くからである。
-    walker: new Walker(
-      cars.map((car) => car.interior.layout),
-      sim.scenario.loadFactor,
-    ),
+    walker: new Walker(cars.map((car) => car.interior.layout)),
     shells: new CarShells(cars),
   };
+  boardAt(view, 0);
+  return view;
 }
+
+/**
+ * 乗客を割り付け直す（発車前と、駅で扉が閉まるたび）。
+ *
+ * **描画（`setPlacement`）と当たり判定（`walker.setSeating`）へ同じ seed と
+ * 混雑率を渡す。**乗客の割り付けはこの 2 つだけで決まるので、同じ値を渡す
+ * かぎり、見えている膝と当たり判定は必ず一致する。ここが食い違うと、
+ * 何も無いところで止まったり、座っている人を通り抜けたりする。
+ *
+ * seed に停車回数を混ぜてあるので、駅ごとに顔ぶれが変わる。混雑率も駅ごとに
+ * 振れる（`boardingLoadFactor`）。歩いて乗り降りする動きは作らないが、
+ * 扉が閉まって振り向いたら車内が変わっている、というだけで「走っている電車に
+ * 乗っている」感じになる。
+ *
+ * @param stop 停車の通し番号（発車前は 0）
+ */
+function boardAt(view: InteriorView, stop: number): void {
+  const load = boardingLoadFactor(sim.scenario.loadFactor, stop);
+  for (let i = 0; i < view.cars.length; i++) {
+    // 車ごとに違う seed（同じだと貫通路の先に同じ絵が並んで模型に見える）
+    const seed = i * 101 + stop * 7919;
+    view.cars[i]!.interior.setPlacement(i, seed, load);
+    view.walker.setSeating(i, seed, load);
+  }
+}
+
+/** 停車の通し番号。扉が閉まりきるたびに増える。 */
+let stopCount = 0;
+/** 直前のフレームで扉が開いていたか（閉まりきった瞬間を捉えるために持つ） */
+let doorsWereOpen = false;
 
 /** 歩行者の目（車体局所座標系での位置と向きを一度ここへ入れてから世界へ移す） */
 const walkPose = new THREE.Object3D();
@@ -347,6 +369,9 @@ function restart(id = scenarioId, override: StartOverride = startOverride): void
   precipitation.setLook(scene.look);
   scene.scene.add(precipitation.group);
   recorder = new InputRecorder();
+  // 停車の数え直し（シナリオを組み替えたら乗客も最初から）
+  stopCount = 0;
+  doorsWereOpen = false;
   interior = createInteriorView();
   replaying = null;
   sampleTimer = 0;
@@ -592,6 +617,16 @@ function updateInteriors(): void {
   // 「まもなく」は停止位置まで 600m を切ってから（実物の案内もこのあたり）
   const arriving = next ? next.station.stopPosition - sim.dynamics.frontPosition < 600 : false;
   const doorPosition = sim.doors.state.position;
+
+  // 扉が**閉まりきった瞬間**に乗客を入れ替える。開いた瞬間にすると、まだ
+  // 乗り降りしている最中に車内が切り替わって見える。閉まったところで
+  // 変えれば「発車までに乗り降りが済んだ」に見える。
+  const doorsOpen = doorPosition > 0.02;
+  if (doorsWereOpen && !doorsOpen) {
+    stopCount += 1;
+    boardAt(interior, stopCount);
+  }
+  doorsWereOpen = doorsOpen;
 
   for (let i = 0; i < cars.length; i++) {
     const car = cars[i]!;

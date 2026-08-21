@@ -1280,7 +1280,7 @@ export function contactShadowTexture(): THREE.Texture {
  *
  * 1 枚に描くのは 1.6m 角ぶんの小枝で、葉が 30 枚ほど付いている。
  */
-export function leafCardTexture(): { map: THREE.Texture; alpha: THREE.Texture } {
+export function leafCardTexture(snowy = false): { map: THREE.Texture; alpha: THREE.Texture } {
   const size = 256;
   const colour = document.createElement('canvas');
   colour.width = size;
@@ -1338,6 +1338,27 @@ export function leafCardTexture(): { map: THREE.Texture; alpha: THREE.Texture } 
       rand() * Math.PI,
       54 + rand() * 40,
     );
+  }
+
+  if (snowy) {
+    // 枝葉に積もった雪。
+    //
+    // **材質の色を白へ寄せるだけでは緑は消えない。**材質の色は絵に
+    // 掛け算されるので、緑の葉に白を掛けても緑のままになる（雪の日に
+    // 草木だけが緑で残っていたのはこれが理由）。絵そのものの上に
+    // 白を重ねる必要がある。
+    //
+    // 一様に塗り潰さないのは、実際の雪が**上を向いた面にだけ載る**からで、
+    // 下から見上げた枝葉には緑が残る。ここでは上から下へ薄れる白を掛けて
+    // それを代える。
+    cx.globalCompositeOperation = 'source-atop';
+    const snow = cx.createLinearGradient(0, 0, 0, size);
+    snow.addColorStop(0, 'rgba(248,251,255,0.94)');
+    snow.addColorStop(0.55, 'rgba(240,246,252,0.72)');
+    snow.addColorStop(1, 'rgba(226,236,244,0.36)');
+    cx.fillStyle = snow;
+    cx.fillRect(0, 0, size, size);
+    cx.globalCompositeOperation = 'source-over';
   }
 
   const map = new THREE.CanvasTexture(colour);

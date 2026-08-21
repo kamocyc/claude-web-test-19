@@ -1,5 +1,4 @@
 import * as THREE from 'three';
-import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import type { VehicleSpec } from '@railsim/core';
 import { CAR, INTERIOR } from './dimensions.ts';
 import {
@@ -16,7 +15,12 @@ import {
   type CarDisplay,
 } from './interiorTextures.ts';
 import { buildPassengers, type CarPassengers } from './interiorPassengers.ts';
-import { OcclusionField, shadeWithVertexColor, tintVertices } from './interiorShading.ts';
+import {
+  mergeParts,
+  OcclusionField,
+  shadeWithVertexColor,
+  tintVertices,
+} from './interiorShading.ts';
 
 /**
  * 客室の内装。
@@ -105,17 +109,23 @@ export interface CarInterior {
   /** 扉の開閉・吊り革の振れ・案内表示を毎フレーム合わせる */
   update(state: InteriorUpdate): void;
   /**
-   * 編成の中での位置を教える。
+   * 乗客を割り付ける（駅で扉が閉まるたびに呼び直す）。
    *
    * これを呼ぶまで車内に乗客はいない。`buildCarInterior` は `scene.ts` が
    * 呼ぶもので編成の何両目かを知らないが、乗客の座り方と車内の明るさは
    * **車ごとに違わなければならない**（全車が同じだと、貫通路ごしに同じ絵が
    * 並んで模型に見える）ので、後から教える形にしてある。
    *
-   * @param index 先頭からの番号
-   * @param loadFactor 混雑率（`sim.scenario.loadFactor`）
+   * `index` と `seed` を分けてあるのは、**明るさは編成の位置で決まり、
+   * 顔ぶれは停車のたびに変わる**ためである。当たり判定
+   * （`walk.ts` の `Walker.setSeating`）へは同じ `seed` と `loadFactor` を
+   * 渡すこと——食い違うと、見えない膝に引っかかる。
+   *
+   * @param index 先頭からの番号（照明の明るさに使う）
+   * @param seed 乗客の割り付けの種（編成の位置と停車回数から作る）
+   * @param loadFactor 混雑率
    */
-  setPlacement(index: number, loadFactor: number): void;
+  setPlacement(index: number, seed: number, loadFactor: number): void;
 }
 
 // --- 色 -------------------------------------------------------------------
@@ -289,9 +299,10 @@ function quad(
 function meshOf(
   parts: readonly THREE.BufferGeometry[],
   material: THREE.Material,
+  where = 'meshOf',
 ): THREE.Mesh | null {
-  if (parts.length === 0) return null;
-  return new THREE.Mesh(mergeGeometries(parts as THREE.BufferGeometry[], false)!, material);
+  const geometry = mergeParts(parts, where);
+  return geometry ? new THREE.Mesh(geometry, material) : null;
 }
 
 /**
@@ -306,9 +317,10 @@ function shadedMesh(
   material: THREE.Material,
   field: OcclusionField,
   strength = 0.55,
+  where = 'shadedMesh',
 ): THREE.Mesh | null {
-  if (parts.length === 0) return null;
-  const geometry = mergeGeometries(parts as THREE.BufferGeometry[], false)!;
+  const geometry = mergeParts(parts, where);
+  if (!geometry) return null;
   field.bake(geometry, strength);
   return new THREE.Mesh(geometry, shadeWithVertexColor(material));
 }
@@ -679,12 +691,12 @@ export function buildCarInterior(spec: VehicleSpec, lead: boolean, front: boolea
         display.update(state.nextStation, state.kind, state.destination, state.arriving);
       }
     },
-    setPlacement(index: number, loadFactor: number): void {
+    setPlacement(index: number, seed: number, loadFactor: number): void {
       if (passengers) {
         group.remove(passengers.group);
         passengers.dispose();
       }
-      passengers = buildPassengers(layout, bays, index, loadFactor);
+      passengers = buildPassengers(layout, bays, seed, loadFactor);
       group.add(passengers.group);
       const brightness = CAR_BRIGHTNESS[index % CAR_BRIGHTNESS.length]!;
       lighting.setBrightness(brightness);
@@ -1350,9 +1362,11 @@ function buildDoors(c: Ctx): {
         parts.push(box([wRight - home - winB, winY1 - winY0, t], [(home + winB + wRight) / 2, (winY0 + winY1) / 2, z])); // prettier-ignore
         // 戸先のゴム。両開きの**合わせ目**は戸袋と反対の側（-dir 側）にある。
         parts.push(box([0.022, c.doorTop - c.floor, t + 0.012], [home - dir * (leafWidth / 2 - 0.011), (c.floor + c.doorTop) / 2, z])); // prettier-ignore
-        const leaf = mergeGeometries(parts, false)!;
-        tintVertices(leaf, (_x, ly) => 0.5 + 0.5 * Math.min(1, (ly - c.floor) / 0.6));
-        leaves.get(dir)!.push(leaf);
+        const leaf = mergeParts(parts, '側扉の戸');
+        if (leaf) {
+          tintVertices(leaf, (_x, ly) => 0.5 + 0.5 * Math.min(1, (ly - c.floor) / 0.6));
+          leaves.get(dir)!.push(leaf);
+        }
 
         glass
           .get(dir)!
@@ -1411,9 +1425,14 @@ function buildDoors(c: Ctx): {
   const pivots: Array<{ object: THREE.Group; dir: number }> = [];
   for (const dir of [-1, 1] as const) {
     const pivot = new THREE.Group();
-    pivot.add(new THREE.Mesh(mergeGeometries(leaves.get(dir)!, false)!, doorMaterial));
-    pivot.add(new THREE.Mesh(mergeGeometries(glass.get(dir)!, false)!, glassMaterial));
-    pivot.add(new THREE.Mesh(mergeGeometries(stickers.get(dir)!, false)!, stickerMaterial));
+    for (const [parts, material, name] of [
+      [leaves.get(dir)!, doorMaterial, '側扉の戸'],
+      [glass.get(dir)!, glassMaterial, '側扉の窓'],
+      [stickers.get(dir)!, stickerMaterial, '側扉のステッカー'],
+    ] as Array<[THREE.BufferGeometry[], THREE.Material, string]>) {
+      const mesh = meshOf(parts, material, name);
+      if (mesh) pivot.add(mesh);
+    }
     g.add(pivot);
     pivots.push({ object: pivot, dir });
   }
@@ -1552,7 +1571,7 @@ function buildStrapBelt(length: number): THREE.BufferGeometry {
   const loop = new THREE.TorusGeometry(INTERIOR.strapBarDiameter / 2 + 0.006, 0.005, 4, 10);
   loop.rotateY(Math.PI / 2);
   parts.push(loop);
-  return mergeGeometries(parts, false)!;
+  return mergeParts(parts, '吊り革の帯')!;
 }
 
 /**
@@ -1633,7 +1652,7 @@ function buildStrapGrip(beltLength: number): THREE.BufferGeometry {
 
   // `ExtrudeGeometry` は添字を持たない形なので、丸棒のほうを合わせてから繋ぐ
   // （添字のある形と無い形は混ぜられない）。
-  const merged = mergeGeometries([plate, bar.toNonIndexed()], false)!;
+  const merged = mergeParts([plate, bar.toNonIndexed()], '吊り革の握り手')!;
   // 握り手の面は**吊り革棒と直交する**（棒は前後に通っているので、板は
   // 左右に広がって前を向く）。組み上げてからまとめて向きを変える。
   merged.rotateY(Math.PI / 2);

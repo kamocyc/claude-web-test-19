@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import type { CompiledRoute } from '@railsim/core';
-import { BALLAST, BEACON, CAR, PLATFORM, RAIL, SIGNAL, SLEEPER } from './dimensions.ts';
+import { BALLAST, BEACON, CAR, PLATFORM, RAIL, SIGNAL, SLEEPER, STATION } from './dimensions.ts';
 import type { TrackFrame } from './frame.ts';
 import { frameQuaternion, meterPlane } from './geometry.ts';
 import {
@@ -932,10 +932,14 @@ function buildFootbridge(
     // 段は「ホームの端から橋の中央へ向かって」上がっていく
     const dir = Math.sign(centre - end) || 1;
     const rise = clearance - PLATFORM.height;
-    const steps = Math.round(rise / 0.17);
+    const steps = Math.round(rise / STATION.riser);
     for (let i = 0; i < steps; i++) {
-      const step = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.17, 0.3), steel);
-      step.position.set(0, PLATFORM.height + 0.085 + i * 0.17, end + dir * 0.3 * (i + 0.5));
+      const step = new THREE.Mesh(new THREE.BoxGeometry(2.4, STATION.riser, STATION.tread), steel);
+      step.position.set(
+        0,
+        PLATFORM.height + STATION.riser / 2 + i * STATION.riser,
+        end + dir * STATION.tread * (i + 0.5),
+      );
       group.add(step);
     }
     // 階段の踊り場から桁までのつなぎ
@@ -950,7 +954,7 @@ function buildFootbridge(
      * 通っている。手すりは笠木（丸パイプ）・中桟・支柱の 3 つでできていて、
      * 逆光で見ると細い線の集まりとして見える — それが階段の勾配を読ませる。
      */
-    const run = steps * 0.3;
+    const run = steps * STATION.tread;
     const slope = Math.atan2(rise, run);
     const diagonal = Math.hypot(rise, run);
     for (const dx of [-1.2, 1.2]) {
@@ -959,8 +963,8 @@ function buildFootbridge(
       stringer.rotation.x = -dir * slope;
       stringer.position.set(dx, PLATFORM.height + rise / 2 - 0.1, end + dir * (run / 2));
       group.add(stringer);
-      // 笠木（高さ 1100mm）と中桟（550mm）
-      for (const height of [1.1, 0.55]) {
+      // 笠木（高さ 1100mm）と中桟（550mm）。寸法は `dimensions.ts` の `STATION`
+      for (const height of [STATION.railHeight, STATION.railMiddle]) {
         const rail = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, diagonal, 6), steel);
         rail.rotation.x = Math.PI / 2 - dir * slope;
         rail.position.set(dx, PLATFORM.height + rise / 2 + height, end + dir * (run / 2));
